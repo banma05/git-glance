@@ -1,0 +1,9 @@
+node_modules/
+dist/
+ui/dist/
+core/internal/web/dist/*
+!core/internal/web/dist/.keep
+vscode/bin/
+vscode/media/ui/
+*.vsix
+.superpowers/
