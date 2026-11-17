@@ -41,6 +41,11 @@ func Allowed(args []string) error {
 	if sub == "" || strings.HasPrefix(sub, "-") {
 		return deny(args, "first argument must be a subcommand")
 	}
+	for _, a := range args[1:] {
+		if a == "--output" || strings.HasPrefix(a, "--output=") {
+			return deny(args, "--output would write files")
+		}
+	}
 	if readOnly[sub] {
 		return nil
 	}
