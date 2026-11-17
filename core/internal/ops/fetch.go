@@ -19,13 +19,13 @@ type FetchResult struct {
 	At       int64  `json:"at"`    // unix seconds
 }
 
-// Fetch runs `fetch --all --prune` and retries once on failure. The timeout of
+// Fetch runs `fetch --all --prune --no-prune-tags` and retries once on failure. The timeout of
 // each attempt is the one of the runner.
 func Fetch(ctx context.Context, r gitx.Runner, repoRoot string, now func() time.Time) FetchResult {
 	res := FetchResult{}
 	for res.Attempts < 2 {
 		res.Attempts++
-		_, err := r.Run(ctx, repoRoot, "fetch", "--all", "--prune")
+		_, err := r.Run(ctx, repoRoot, "fetch", "--all", "--prune", "--no-prune-tags")
 		if err == nil {
 			res.OK, res.Error = true, ""
 			break

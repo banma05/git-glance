@@ -56,7 +56,7 @@ func Allowed(args []string) error {
 	case "fetch":
 		ok = allowedFetch(args)
 	case "merge":
-		ok = len(args) == 3 && args[1] == "--ff-only" && plain(args[2])
+		ok = len(args) == 4 && args[1] == "--ff-only" && args[2] == "--no-overwrite-ignore" && plain(args[3])
 	case "switch":
 		ok = len(args) == 3 && args[1] == "--no-guess" && plain(args[2])
 	case "worktree":
@@ -90,7 +90,7 @@ func allowedReadOnly(args []string) error {
 }
 
 func allowedFetch(args []string) bool {
-	if eq(args, "fetch", "--all", "--prune") {
+	if eq(args, "fetch", "--all", "--prune", "--no-prune-tags") {
 		return true
 	}
 	if len(args) != 3 || args[1] != "." {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/banma05/git-glance/core/internal/gitx"
+	"github.com/banma05/git-glance/core/internal/repo"
 	"github.com/banma05/git-glance/core/internal/settings"
 	"github.com/banma05/git-glance/core/internal/testrepo"
 )
@@ -139,8 +140,19 @@ func TestAlign(t *testing.T) {
 	for _, o := range ops {
 		if o.Op == "align" {
 			n++
-			if o.Before == "" || o.After == "" || len(o.Command) == 0 || o.Repo != r.Dir {
+			if o.Before == "" || o.After == "" || o.Repo != r.Dir || o.Result != "ok" {
 				t.Fatalf("bad op %+v", o)
+			}
+			want, folder := "", ""
+			switch o.Branch {
+			case "x":
+				want = "git fetch . refs/remotes/origin/x:refs/heads/x"
+			case "y":
+				want = "git merge --ff-only --no-overwrite-ignore refs/remotes/origin/y"
+				folder = yWT
+			}
+			if strings.Join(o.Command, " ") != want || o.Folder != folder {
+				t.Fatalf("op %s: command %q folder %q", o.Branch, o.Command, o.Folder)
 			}
 		}
 	}
@@ -255,5 +267,145 @@ func TestAlignIgnoresLocalUpstream(t *testing.T) {
 		if u.Branch == "t1" {
 			t.Fatalf("t1 updated: %+v", u)
 		}
+	}
+}
+
+func (f *fixture) staleSnapshot(t *testing.T) repo.Snapshot {
+	t.Helper()
+	f.r.Git(f.r.Dir, "fetch", "--all", "--prune")
+	snap, err := repo.Read(context.Background(), f.run, f.r.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap
+}
+
+func (f *fixture) alignStale(t *testing.T, snap repo.Snapshot) AlignReport {
+	t.Helper()
+	return alignSnapshot(context.Background(), f.run, f.st, f.r.Dir, snap, time.Now)
+}
+
+func TestAlignFolderSwitchedAfterSnapshot(t *testing.T) {
+	f := newFixture(t)
+	yWT := f.r.AddWorktree("y", "y")
+	f.r.Branch("release", "main")
+	f.pushOther("y", "y.txt")
+	snap := f.staleSnapshot(t)
+	f.r.Git(yWT, "switch", "release")
+	releaseBefore := f.rev("release")
+	rep := f.alignStale(t, snap)
+	if f.rev("release") != releaseBefore {
+		t.Fatal("release moved")
+	}
+	s, ok := hasSkip(rep, "y", "git-failed")
+	if !ok || !strings.Contains(s.Detail, "HEAD") {
+		t.Fatalf("report %+v", rep)
+	}
+	if len(rep.Updated) != 0 {
+		t.Fatalf("updated %+v", rep.Updated)
+	}
+}
+
+func TestAlignBranchMovedAfterSnapshot(t *testing.T) {
+	f := newFixture(t)
+	yWT := f.r.AddWorktree("y", "y")
+	f.pushOther("y", "y.txt")
+	snap := f.staleSnapshot(t)
+	f.r.Git(yWT, "merge", "origin/y")
+	f.r.Commit(yWT, "own work", map[string]string{"own.txt": "own\n"})
+	own := f.rev("y")
+	rep := f.alignStale(t, snap)
+	if _, ok := hasSkip(rep, "y", "git-failed"); !ok || len(rep.Updated) != 0 {
+		t.Fatalf("report %+v", rep)
+	}
+	if f.rev("y") != own {
+		t.Fatal("y moved")
+	}
+	ops, _ := f.st.Ops("", 0)
+	if len(ops) != 0 {
+		t.Fatalf("ops logged: %+v", ops)
+	}
+}
+
+func TestAlignCheckedOutTwice(t *testing.T) {
+	f := newFixture(t)
+	f.r.AddWorktree("y1", "y")
+	wt2 := f.r.Root + "/wt-y2"
+	f.r.Git(f.r.Dir, "worktree", "add", "-f", wt2, "y")
+	f.pushOther("y", "y.txt")
+	before := f.rev("y")
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hasSkip(rep, "y", "checked-out-twice"); !ok || f.rev("y") != before {
+		t.Fatalf("report %+v", rep)
+	}
+	// A dirty second holder is reported as dirty, not as checked-out-twice.
+	if err := os.WriteFile(filepath.Join(wt2, "README"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = Align(context.Background(), f.run, f.st, f.r.Dir, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hasSkip(rep, "y", "dirty"); !ok || f.rev("y") != before {
+		t.Fatalf("report %+v", rep)
+	}
+}
+
+func TestAlignKeepsIgnoredFile(t *testing.T) {
+	f := newFixture(t)
+	yWT := f.r.AddWorktree("y", "y")
+	f.pushOther("y", "secret.env")
+	if err := os.WriteFile(f.r.Dir+"/.git/info/exclude", []byte("secret.env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(yWT, "secret.env")
+	if err := os.WriteFile(secret, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := f.rev("y")
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := hasSkip(rep, "y", "git-failed")
+	if !ok || s.Detail == "" {
+		t.Fatalf("report %+v", rep)
+	}
+	got, _ := os.ReadFile(secret)
+	if string(got) != "mine\n" || f.rev("y") != before {
+		t.Fatalf("ignored file lost or branch moved: %q", got)
+	}
+}
+
+func TestFetchKeepsLocalTags(t *testing.T) {
+	f := newFixture(t)
+	f.r.Git(f.r.Dir, "config", "fetch.pruneTags", "true")
+	f.r.Git(f.r.Dir, "tag", "local-only")
+	res := Fetch(context.Background(), f.run, f.r.Dir, time.Now)
+	if !res.OK {
+		t.Fatalf("fetch %+v", res)
+	}
+	if f.r.Git(f.r.Dir, "tag", "--list", "local-only") != "local-only" {
+		t.Fatal("local tag was pruned")
+	}
+}
+
+func TestAlignOpLogFailure(t *testing.T) {
+	f := newFixture(t)
+	f.pushOther("x", "x.txt")
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := settings.Store{Dir: blocker}
+	rep, err := Align(context.Background(), f.run, st, f.r.Dir, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Updated) != 1 || rep.Updated[0].Branch != "x" || rep.LogError == "" {
+		t.Fatalf("report %+v", rep)
 	}
 }
