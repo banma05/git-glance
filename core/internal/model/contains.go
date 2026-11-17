@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -77,15 +78,21 @@ func parseCommits(out string) ([]repo.CommitInfo, error) {
 	return commits, nil
 }
 
+// errNoForkPoint means the branch shares no history with the trunk.
+var errNoForkPoint = errors.New("no merge base")
+
 // OwnCommits lists the commits of branchRef that are not in trunkRef, newest
-// first and at most 200, with the fork point and its commit time.
+// first and at most 200, with the fork point and its commit time. Unrelated
+// histories give an error wrapping errNoForkPoint.
 func (m *Matcher) OwnCommits(ctx context.Context, trunkRef, branchRef string) ([]repo.CommitInfo, string, int64, error) {
 	out, err := m.run(ctx, "merge-base", trunkRef, branchRef)
 	fork := strings.TrimSpace(out)
-	if err != nil || fork == "" {
-		if err == nil {
-			err = fmt.Errorf("no merge base between %s and %s", trunkRef, branchRef)
-		}
+	var ge *gitx.GitError
+	if fork == "" && (err == nil || errors.As(err, &ge) && ge.ExitCode == 1) {
+		// merge-base exits 1 with no output when there is no common ancestor.
+		return nil, "", 0, fmt.Errorf("%w between %s and %s", errNoForkPoint, trunkRef, branchRef)
+	}
+	if err != nil {
 		return nil, "", 0, err
 	}
 	out, err = m.run(ctx, "log", "-1", "--format=%ct", fork, "--")
