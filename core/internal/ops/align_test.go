@@ -433,3 +433,38 @@ func TestAlignSameNamedTag(t *testing.T) {
 		t.Fatalf("v1 not in Updated: %+v", rep)
 	}
 }
+
+func TestAlignSkipsHiddenChanges(t *testing.T) {
+	f := newFixture(t)
+	wt := f.r.AddWorktree("y", "y")
+	f.pushOther("y", "y.txt")
+	f.r.Git(wt, "update-index", "--assume-unchanged", "README")
+	if err := os.WriteFile(filepath.Join(wt, "README"), []byte("edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := hasSkip(rep, "y", "hidden-changes")
+	if !ok || len(s.Files) != 1 || s.Files[0] != "README" {
+		t.Fatalf("report = %+v", rep)
+	}
+}
+
+func TestAlignSparseEntryIsNotHidden(t *testing.T) {
+	f := newFixture(t)
+	wt := f.r.AddWorktree("y", "y")
+	f.pushOther("y", "y.txt")
+	f.r.Git(wt, "update-index", "--skip-worktree", "README")
+	if err := os.Remove(filepath.Join(wt, "README")); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := updatedNames(rep); len(got) != 1 || got[0] != "y" {
+		t.Fatalf("report = %+v", rep)
+	}
+}

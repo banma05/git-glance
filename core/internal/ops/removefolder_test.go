@@ -24,8 +24,19 @@ type removeFixture struct {
 
 func newRemoveFixture(t *testing.T) *removeFixture {
 	t.Helper()
+	return newRemoveFixtureWith(t, nil)
+}
+
+// newRemoveFixtureWith also tracks the extra files on main before the branch
+// is created.
+func newRemoveFixtureWith(t *testing.T, extra map[string]string) *removeFixture {
+	t.Helper()
 	f := newFixture(t)
-	f.r.Commit(f.r.Dir, "ignore", map[string]string{".gitignore": ".env\nnode_modules/\nnotes/\n"})
+	files := map[string]string{".gitignore": ".env\nnode_modules/\nnotes/\n"}
+	for k, v := range extra {
+		files[k] = v
+	}
+	f.r.Commit(f.r.Dir, "ignore", files)
 	f.r.Push(f.r.Dir, "origin", "main")
 	f.r.Branch("alice/done", "main")
 	f.r.Push(f.r.Dir, "-u", "origin", "alice/done")
@@ -329,5 +340,142 @@ func TestRemoveFolderDoesNotFollowJunction(t *testing.T) {
 	})
 	if found {
 		t.Fatal("content behind a junction reached the backup")
+	}
+}
+
+func TestRemoveFolderRefusesHiddenChanges(t *testing.T) {
+	for _, flag := range []string{"--assume-unchanged", "--skip-worktree"} {
+		f := newRemoveFixture(t)
+		f.r.Git(f.wt, "update-index", flag, "README")
+		f.write(t, "README", "my edit\n")
+		res := f.remove(t, f.view(t), "alice/done")
+		if res.OK || res.Reason != "hidden-changes" || len(res.Files) != 1 || res.Files[0] != "README" {
+			t.Fatalf("%s: res = %+v", flag, res)
+		}
+		if readFile(t, filepath.Join(f.wt, "README")) != "my edit\n" {
+			t.Fatal("the edit is gone")
+		}
+	}
+}
+
+func TestRemoveFolderSparseEntryIsNotHidden(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.r.Git(f.wt, "update-index", "--skip-worktree", "README")
+	if err := os.Remove(filepath.Join(f.wt, "README")); err != nil {
+		t.Fatal(err)
+	}
+	res := f.remove(t, f.view(t), "alice/done")
+	if !res.OK {
+		t.Fatalf("res = %+v, want ok", res)
+	}
+}
+
+func TestRemoveFolderBacksUpFilesInsideBuildNamedDir(t *testing.T) {
+	f := newRemoveFixtureWith(t, map[string]string{"build/Dockerfile": "FROM x\n"})
+	f.write(t, "build/docker/.env", "TOKEN=1\n")
+	res := f.remove(t, f.view(t), "alice/done")
+	if !res.OK || len(res.DeletedBuild) != 0 {
+		t.Fatalf("res = %+v", res)
+	}
+	if readFile(t, filepath.Join(res.BackupDir, "build", "docker", ".env")) != "TOKEN=1\n" {
+		t.Fatal("the ignored file was not backed up")
+	}
+}
+
+func TestRemoveFolderBuildDirsNested(t *testing.T) {
+	f := newRemoveFixtureWith(t, map[string]string{
+		"app/keep.txt": "k\n", "pkg/keep.txt": "k\n",
+		".gitignore": ".env\nnode_modules/\nnotes/\ntarget/\n__pycache__/\n",
+	})
+	f.write(t, "app/target/a.class", "a\n")
+	f.write(t, "pkg/__pycache__/m.pyc", "m\n")
+	res := f.remove(t, f.view(t), "alice/done")
+	if !res.OK || len(res.DeletedBuild) != 2 || len(res.Files) != 0 {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+func TestRemoveFolderIgnoredDirListedWithItsFile(t *testing.T) {
+	f := newRemoveFixtureWith(t, map[string]string{"src/main.txt": "m\n"})
+	f.write(t, "src/local/.env", "A=1\n")
+	res := f.remove(t, f.view(t), "alice/done")
+	if !res.OK {
+		t.Fatalf("res = %+v", res)
+	}
+	if len(res.Files) != 1 || res.Files[0] != "src/local/.env" {
+		t.Fatalf("Files = %v, want the file once", res.Files)
+	}
+	if readFile(t, filepath.Join(res.BackupDir, "src", "local", ".env")) != "A=1\n" {
+		t.Fatal("not backed up")
+	}
+}
+
+func TestDropNestedPaths(t *testing.T) {
+	got := dropNested([]string{"a/", "a/b", "c/d/", "c/d/e/", "f"})
+	if strings.Join(got, ",") != "a/,c/d/,f" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestRemoveFolderGitFailed(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.write(t, ".env", "SECRET=1\n")
+	f.r.Git(f.r.Dir, "worktree", "lock", f.wt)
+	res := f.remove(t, f.view(t), "alice/done")
+	if res.OK || res.Reason != "git-failed" || !strings.Contains(res.Detail, "lock") || !strings.Contains(res.Detail, "still exists") {
+		t.Fatalf("res = %+v", res)
+	}
+	if res.BackupDir == "" || readFile(t, filepath.Join(res.BackupDir, ".env")) != "SECRET=1\n" {
+		t.Fatal("the backup was not kept")
+	}
+	if !exists(filepath.Join(f.wt, ".env")) {
+		t.Fatal("the folder is gone")
+	}
+	ops, _ := f.st.Ops(f.r.Dir, 1)
+	if len(ops) != 1 || !strings.HasPrefix(ops[0].Result, "git-failed: ") || ops[0].Detail != res.BackupDir {
+		t.Fatalf("ops = %+v", ops)
+	}
+}
+
+func TestRemoveFolderLogError(t *testing.T) {
+	f := newRemoveFixture(t)
+	if err := os.MkdirAll(filepath.Join(f.st.Dir, "oplog.jsonl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := f.remove(t, f.view(t), "alice/done")
+	if !res.OK || res.LogError == "" || exists(f.wt) {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+// ghostRunner lists one more ignored path than exists, so the copy fails after
+// real files were already copied.
+type ghostRunner struct{ gitx.ExecRunner }
+
+func (g ghostRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	out, err := g.ExecRunner.Run(ctx, dir, args...)
+	if err == nil && len(args) > 0 && args[0] == "ls-files" {
+		out = append(out, []byte("zzz-ghost.txt\x00")...)
+	}
+	return out, err
+}
+
+func TestRemoveFolderPartialBackupIsRemoved(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.write(t, ".env", "SECRET=1\n")
+	f.write(t, "notes/me.txt", "n\n")
+	v := f.view(t)
+	res, err := RemoveFolder(context.Background(), ghostRunner{}, f.st, v, "alice/done", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || res.Reason != "backup-failed" || res.BackupDir != "" {
+		t.Fatalf("res = %+v", res)
+	}
+	if exists(f.st.BackupDir(v.Repo, filepath.Base(f.wt), fixedNow())) {
+		t.Fatal("a partial backup is left")
+	}
+	if !exists(filepath.Join(f.wt, ".env")) || !exists(filepath.Join(f.wt, "notes", "me.txt")) {
+		t.Fatal("the folder was touched")
 	}
 }

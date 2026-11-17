@@ -182,3 +182,38 @@ func TestSwitchDetached(t *testing.T) {
 		t.Fatal("a refused switch must not be logged")
 	}
 }
+
+func TestSwitchRefusesHiddenChanges(t *testing.T) {
+	f := newFixture(t)
+	wt := f.r.AddWorktree("y", "y")
+	f.r.Git(wt, "update-index", "--assume-unchanged", "README")
+	if err := os.WriteFile(filepath.Join(wt, "README"), []byte("edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Switch(context.Background(), f.run, f.st, f.r.Dir, wt, "x", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || res.Reason != "hidden-changes" || len(res.Files) != 1 || res.Files[0] != "README" {
+		t.Fatalf("res = %+v", res)
+	}
+	if f.head(wt) != "refs/heads/y" {
+		t.Fatal("HEAD moved")
+	}
+}
+
+func TestSwitchSparseEntryIsNotHidden(t *testing.T) {
+	f := newFixture(t)
+	wt := f.r.AddWorktree("y", "y")
+	f.r.Git(wt, "update-index", "--skip-worktree", "README")
+	if err := os.Remove(filepath.Join(wt, "README")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Switch(context.Background(), f.run, f.st, f.r.Dir, wt, "x", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK {
+		t.Fatalf("res = %+v, want ok", res)
+	}
+}

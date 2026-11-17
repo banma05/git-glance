@@ -19,7 +19,8 @@ type AlignItem struct {
 }
 
 // AlignSkip is a branch that was left alone. Reason is one of dirty, ahead,
-// diverged, upstream-gone, folder-missing (its folder was deleted from disk),
+// diverged, upstream-gone, hidden-changes (tracked files marked skip-worktree or
+// assume-unchanged exist on disk), folder-missing (its folder was deleted from disk),
 // checked-out-twice (several folders hold the branch) or git-failed.
 type AlignSkip struct {
 	Branch string   `json:"branch"`
@@ -87,6 +88,17 @@ func alignSnapshot(ctx context.Context, r gitx.Runner, st settings.Store, repoRo
 		var wt *repo.Worktree
 		if len(holders) == 1 {
 			wt = holders[0]
+		}
+		if wt != nil {
+			hidden, err := hiddenChanges(ctx, r, wt.Path)
+			if err != nil {
+				rep.Skipped = append(rep.Skipped, AlignSkip{Branch: b.Name, Reason: "git-failed", Files: []string{}, Detail: lastLine(err)})
+				continue
+			}
+			if len(hidden) > 0 {
+				rep.Skipped = append(rep.Skipped, AlignSkip{Branch: b.Name, Reason: "hidden-changes", Files: capFiles(hidden)})
+				continue
+			}
 		}
 		item, skip, logErr, ok := update(ctx, r, st, repoRoot, b, wt, now)
 		if rep.LogError == "" {

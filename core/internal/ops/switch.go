@@ -15,7 +15,9 @@ import (
 
 // OpResult is the outcome of Switch and CreateFolder. When OK is false, Reason
 // says why nothing was done. Switch reasons: dirty (Files lists the changes),
-// folder-missing, detached (the folder is on a detached HEAD, leaving it could
+// folder-missing, hidden-changes (Files lists tracked files marked skip-worktree or
+// assume-unchanged that exist on disk, git status cannot show their edits),
+// detached (the folder is on a detached HEAD, leaving it could
 // orphan commits), checked-out-elsewhere (Path is that folder) and no-branch
 // (no local branch of that name). CreateFolder reasons: bad-name, branch-exists,
 // path-inside-folder (Path is the folder) and path-exists. LogError is empty
@@ -74,6 +76,13 @@ func Switch(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot, fol
 		if err != nil || done {
 			return res, err
 		}
+	}
+	hidden, err := hiddenChanges(ctx, r, wt.Path)
+	if err != nil {
+		return failed(), err
+	}
+	if len(hidden) > 0 {
+		return refused("hidden-changes", "", capFiles(hidden)), nil
 	}
 	before, err := headRef(ctx, r, wt.Path)
 	if err != nil {
