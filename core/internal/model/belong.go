@@ -17,7 +17,8 @@ type AheadBehind struct {
 }
 
 // Counter counts ahead/behind for many local branches against one trunk ref.
-// Keys of the result are the branch names exactly as passed in.
+// Keys of the result are the branch names exactly as passed in; a name that
+// is not a local branch is an error.
 type Counter interface {
 	Counts(ctx context.Context, branches []string, trunkRef string) (map[string]AheadBehind, error)
 }
@@ -37,8 +38,10 @@ type bulkCounter struct {
 }
 
 func (c bulkCounter) Counts(ctx context.Context, branches []string, trunkRef string) (map[string]AheadBehind, error) {
+	// lstrip=2 keeps the name a plain branch name even when a tag of the same
+	// name exists (refname:short would then say "heads/<name>").
 	out, err := c.r.Run(ctx, c.dir, "for-each-ref",
-		"--format=%(refname:short)%00%(ahead-behind:"+trunkRef+")", "refs/heads")
+		"--format=%(refname:lstrip=2)%00%(ahead-behind:"+trunkRef+")", "refs/heads")
 	if err != nil {
 		return nil, err
 	}
@@ -56,9 +59,11 @@ func (c bulkCounter) Counts(ctx context.Context, branches []string, trunkRef str
 	}
 	res := make(map[string]AheadBehind, len(branches))
 	for _, b := range branches {
-		if ab, ok := all[b]; ok {
-			res[b] = ab
+		ab, ok := all[b]
+		if !ok {
+			return nil, fmt.Errorf("not a local branch: %q", b)
 		}
+		res[b] = ab
 	}
 	return res, nil
 }
@@ -71,8 +76,9 @@ type perBranchCounter struct {
 func (c perBranchCounter) Counts(ctx context.Context, branches []string, trunkRef string) (map[string]AheadBehind, error) {
 	res := make(map[string]AheadBehind, len(branches))
 	for _, b := range branches {
+		// "--" makes a missing branch a bad-revision error, never a path.
 		out, err := c.r.Run(ctx, c.dir, "rev-list", "--left-right", "--count",
-			trunkRef+"...refs/heads/"+b)
+			trunkRef+"...refs/heads/"+b, "--")
 		if err != nil {
 			return nil, err
 		}

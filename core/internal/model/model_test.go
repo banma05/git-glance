@@ -196,3 +196,55 @@ func TestIsOld(t *testing.T) {
 		t.Fatal("default days")
 	}
 }
+
+// counterVersions lists the counter paths this git can run: always the
+// per-branch path, plus the single-call path on git 2.41+.
+func counterVersions(t *testing.T) []gitx.Version {
+	t.Helper()
+	versions := []gitx.Version{{Major: 2, Minor: 40}}
+	cur, err := gitx.DetectVersion(context.Background(), gitx.ExecRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.AtLeast(2, 41) {
+		versions = append(versions, gitx.Version{Major: 2, Minor: 41})
+	}
+	return versions
+}
+
+func TestCounterSameNamedTag(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Branch("v2", "main")
+	r.Git(r.Dir, "checkout", "-q", "v2")
+	r.Commit(r.Dir, "v2 work", map[string]string{"v2.txt": "v2\n"})
+	r.Git(r.Dir, "checkout", "-q", "main")
+	// The tag points at the fork point, so counting the tag instead of the
+	// branch would give ahead 0.
+	r.Git(r.Dir, "tag", "v2", "main")
+	r.Commit(r.Dir, "main work", map[string]string{"m.txt": "m\n"})
+	want := AheadBehind{Ahead: 1, Behind: 1}
+	for _, v := range counterVersions(t) {
+		got, err := NewCounter(gitx.ExecRunner{}, r.Dir, v).Counts(context.Background(), []string{"v2"}, "refs/heads/main")
+		if err != nil {
+			t.Fatalf("%v: %v", v, err)
+		}
+		if got["v2"] != want || len(got) != 1 {
+			t.Fatalf("%v: got %v, want v2=%v", v, got, want)
+		}
+	}
+}
+
+func TestCounterMissingName(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Git(r.Dir, "tag", "only-tag", "main")
+	for _, v := range counterVersions(t) {
+		for _, name := range []string{"nope", "only-tag"} {
+			_, err := NewCounter(gitx.ExecRunner{}, r.Dir, v).Counts(context.Background(), []string{"main", name}, "refs/heads/main")
+			if err == nil {
+				t.Fatalf("%v: no error for %q", v, name)
+			}
+		}
+	}
+}
