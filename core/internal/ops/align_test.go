@@ -409,3 +409,27 @@ func TestAlignOpLogFailure(t *testing.T) {
 		t.Fatalf("report %+v", rep)
 	}
 }
+
+func TestAlignSameNamedTag(t *testing.T) {
+	f := newFixture(t)
+	f.r.Branch("v1", "main")
+	f.r.Push(f.r.Dir, "-u", "origin", "v1")
+	wt := f.r.AddWorktree("v1", "v1")
+	f.r.Git(f.r.Dir, "tag", "v1", "main")
+	f.r.Git(f.other, "fetch", "origin")
+	f.pushOther("v1", "v1.txt")
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.r.Git(f.r.Dir, "rev-parse", "refs/heads/v1") != f.r.Git(f.r.Dir, "rev-parse", "refs/remotes/origin/v1") {
+		t.Fatalf("v1 not aligned: %+v", rep)
+	}
+	found := false
+	for _, u := range rep.Updated {
+		found = found || (u.Branch == "v1" && u.Folder == wt)
+	}
+	if !found {
+		t.Fatalf("v1 not in Updated: %+v", rep)
+	}
+}

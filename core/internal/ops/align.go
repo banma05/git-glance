@@ -149,9 +149,22 @@ func revParse(ctx context.Context, r gitx.Runner, dir, ref string) (string, erro
 	return strings.TrimSpace(string(out)), err
 }
 
-func headBranch(ctx context.Context, r gitx.Runner, dir string) (string, error) {
-	out, err := r.Run(ctx, dir, "symbolic-ref", "-q", "--short", "HEAD")
+// headRef returns the full ref name HEAD points at in dir ("HEAD" when the
+// folder is detached). Short names are ambiguous when a tag shares the name.
+func headRef(ctx context.Context, r gitx.Runner, dir string) (string, error) {
+	out, err := r.Run(ctx, dir, "rev-parse", "--symbolic-full-name", "HEAD")
 	return strings.TrimSpace(string(out)), err
+}
+
+// wrongHead explains why the folder is not on branchRef, or returns "".
+func wrongHead(head, branchRef string) string {
+	switch head {
+	case branchRef:
+		return ""
+	case "HEAD":
+		return "the folder is now detached, not on " + branchRef
+	}
+	return "HEAD of the folder is now " + head + ", not " + branchRef
 }
 
 // update moves one branch and verifies, before and after, that exactly the
@@ -169,12 +182,12 @@ func update(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot stri
 	if wt != nil {
 		dir, folder = wt.Path, wt.Path
 		cmd = []string{"merge", "--ff-only", "--no-overwrite-ignore", upRef}
-		head, err := headBranch(ctx, r, dir)
+		head, err := headRef(ctx, r, dir)
 		if err != nil {
 			return failErr(err)
 		}
-		if head != b.Name {
-			return fail("HEAD of the folder is now " + head + ", not " + b.Name)
+		if why := wrongHead(head, branchRef); why != "" {
+			return fail(why)
 		}
 	}
 	now0, err := revParse(ctx, r, repoRoot, branchRef)
@@ -199,8 +212,12 @@ func update(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot stri
 		return fail("branch is at " + after + " after the update, upstream is at " + want)
 	}
 	if wt != nil {
-		if head, err := headBranch(ctx, r, dir); err != nil || head != b.Name {
-			return fail("HEAD of the folder is not " + b.Name + " after the update")
+		head, err := headRef(ctx, r, dir)
+		if err != nil {
+			return failErr(err)
+		}
+		if why := wrongHead(head, branchRef); why != "" {
+			return fail(why + " after the update")
 		}
 	}
 	logErr := ""
