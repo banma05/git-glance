@@ -12,11 +12,12 @@ func TestAllowed(t *testing.T) {
 		{"fetch", "--all", "--prune"},
 		{"fetch", ".", "refs/remotes/origin/x:refs/heads/x"},
 		{"merge", "--ff-only", "origin/x"},
-		{"switch", "feature/a"},
+		{"switch", "--no-guess", "feature/a"},
 		{"worktree", "list", "--porcelain"},
 		{"worktree", "add", "--no-track", "-b", "x", "../p", "origin/main"},
 		{"worktree", "remove", "../p"},
 		{"symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"},
+		{"log", "--oneline", "-n", "3"},
 		{"patch-id", "--stable"},
 	}
 	for _, a := range ok {
@@ -62,6 +63,39 @@ func TestAllowed(t *testing.T) {
 		{"diff", "--output=x.patch", "a", "b"},
 		{"log", "--output", "x"},
 		{"show", "--output=x", "HEAD"},
+		{"switch", "feature/a"},
+		{"switch", "--no-guess", "-x"},
+		{"switch", "--no-guess", "a", "b"},
+		{"diff", "--outp=x", "a"},
+		{"diff", "--outpu", "x"},
+		{"worktree", "remove", "--forc", "../w"},
+		{"worktree", "remove", "-ff", "../w"},
+		{"worktree", "add", "-Bside", "../w3", "main"},
+		{"worktree", "add", "--forc", "../w3", "main"},
+		{"worktree", "add", "-ff", "../w3", "main"},
+		{"worktree", "add", "--no-track", "-b", "x", "../p"},
+		{"worktree", "add", "--no-track", "-b", "-x", "../p", "main"},
+		{"worktree", "remove", "-x"},
+		{"worktree", "list"},
+		{"merge", "--ff-only", "--no-ff", "-m", "m", "side"},
+		{"merge", "--ff-only", "--ff", "x"},
+		{"merge", "--ff-only", "--squash", "x"},
+		{"merge", "--ff-only", "-x"},
+		{"fetch", ".", "--upload-pack=touch PWNED; git-upload-pack"},
+		{"fetch", "--all", "--upload-pack=touch PWNED; git-upload-pack"},
+		{"fetch", "--all", "--prune", "--prune-tags"},
+		{"fetch", "--all", "-fp"},
+		{"fetch", "--all", "--forc"},
+		{"fetch", "--all"},
+		{"fetch", ".", "--stdin"},
+		{"fetch", "--all", "--stdin"},
+		{"fetch", ".", "refs/remotes/origin/x:refs/heads/x:y"},
+		{"fetch", ".", "refs/remotes/origin/x:"},
+		{"fetch", ".", ":refs/heads/x"},
+		{"fetch", ".", "refs/heads/x:refs/heads/y"},
+		{"fetch", ".", "refs/remotes/origin/x:refs/remotes/origin/y"},
+		{"fetch", ".", "-refs/remotes/origin/x:refs/heads/x"},
+		{"symbolic-ref", "-q", "--short", "-x"},
 		{"-c", "alias.st=push", "st"},
 		{"-C", "x", "status"},
 		{},
@@ -71,6 +105,26 @@ func TestAllowed(t *testing.T) {
 	for _, a := range bad {
 		if err := Allowed(a); !errors.Is(err, ErrNotAllowed) {
 			t.Errorf("Allowed(%q) = %v, want ErrNotAllowed", a, err)
+		}
+	}
+}
+
+func TestAllowedInput(t *testing.T) {
+	if err := allowedInput([]string{"patch-id", "--stable"}); err != nil {
+		t.Errorf("patch-id --stable rejected: %v", err)
+	}
+	bad := [][]string{
+		{"fetch", ".", "--stdin"},
+		{"fetch", "--all", "--stdin"},
+		{"patch-id"},
+		{"patch-id", "--stable", "x"},
+		{"log"},
+		{"push"},
+		nil,
+	}
+	for _, a := range bad {
+		if err := allowedInput(a); !errors.Is(err, ErrNotAllowed) {
+			t.Errorf("allowedInput(%q) = %v, want ErrNotAllowed", a, err)
 		}
 	}
 }

@@ -3,9 +3,27 @@ package gitx
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func initRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "repo")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	return dir
+}
 
 func TestRunRefusesWithoutSpawning(t *testing.T) {
 	r := ExecRunner{Git: "definitely-not-a-binary"}
@@ -13,34 +31,85 @@ func TestRunRefusesWithoutSpawning(t *testing.T) {
 	if !errors.Is(err, ErrNotAllowed) {
 		t.Fatalf("Run err = %v, want ErrNotAllowed", err)
 	}
-	_, err = r.RunInput(context.Background(), t.TempDir(), []byte("x"), "push")
-	if !errors.Is(err, ErrNotAllowed) {
-		t.Fatalf("RunInput err = %v, want ErrNotAllowed", err)
+	for _, a := range [][]string{{"push"}, {"fetch", ".", "--stdin"}, {"fetch", "--all", "--stdin"}, {"log"}} {
+		_, err = r.RunInput(context.Background(), t.TempDir(), []byte("+x:y"), a...)
+		if !errors.Is(err, ErrNotAllowed) {
+			t.Fatalf("RunInput(%q) err = %v, want ErrNotAllowed", a, err)
+		}
 	}
 }
 
 func TestGitEnv(t *testing.T) {
-	env := gitEnv(nil)
-	want := []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "SSH_ASKPASS_REQUIRE=never", "LC_ALL=C"}
-	for _, w := range want {
-		found := false
-		for _, e := range env {
-			if e == w {
-				found = true
+	base := []string{
+		"PATH=/bin", "HOME=/h", "GIT_CONFIG_GLOBAL=/g", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_DIR=/x", "GIT_WORK_TREE=/x", "GIT_INDEX_FILE=/x", "GIT_COMMON_DIR=/x",
+		"GIT_OBJECT_X=1", "GIT_ALTERNATE_OBJECT_Y=1", "GIT_NAMESPACE=x",
+		"GIT_EXEC_PATH=/x", "GIT_CONFIG_PARAMETERS='a=b'", "GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=a", "GIT_CONFIG_VALUE_0=b", "LC_ALL=de_DE",
+	}
+	env := gitEnv(base)
+	has := func(e string) bool {
+		for _, v := range env {
+			if v == e {
+				return true
 			}
 		}
-		if !found {
-			t.Errorf("gitEnv missing %q in %v", w, env)
+		return false
+	}
+	for _, w := range []string{"PATH=/bin", "HOME=/h", "GIT_CONFIG_GLOBAL=/g", "GIT_CONFIG_NOSYSTEM=1"} {
+		if !has(w) {
+			t.Errorf("base var %q lost: %v", w, env)
 		}
+	}
+	for _, w := range []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "SSH_ASKPASS_REQUIRE=never", "LC_ALL=C", "GIT_OPTIONAL_LOCKS=0"} {
+		if !has(w) {
+			t.Errorf("missing %q: %v", w, env)
+		}
+	}
+	for _, e := range env {
+		name := strings.SplitN(e, "=", 2)[0]
+		switch name {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_X",
+			"GIT_ALTERNATE_OBJECT_Y", "GIT_NAMESPACE", "GIT_EXEC_PATH", "GIT_CONFIG_PARAMETERS",
+			"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0":
+			t.Errorf("stripped var present: %q", e)
+		}
+	}
+	if has("LC_ALL=de_DE") {
+		t.Error("inherited LC_ALL not overridden")
+	}
+}
+
+func TestRunTimeoutKeepsCause(t *testing.T) {
+	dir := initRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := ExecRunner{}.Run(ctx, dir, "status")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestGitErrorCopiesArgs(t *testing.T) {
+	dir := initRepo(t)
+	args := []string{"rev-parse", "--verify", "refs/heads/nope"}
+	_, err := ExecRunner{}.Run(context.Background(), dir, args...)
+	args[0] = "mutated"
+	var ge *GitError
+	if !errors.As(err, &ge) || ge.Args[0] != "rev-parse" {
+		t.Fatalf("GitError.Args aliased caller slice: %v", err)
 	}
 }
 
 func TestRunGitError(t *testing.T) {
 	r := ExecRunner{}
-	_, err := r.Run(context.Background(), t.TempDir(), "rev-parse", "--verify", "refs/heads/nope")
+	_, err := r.Run(context.Background(), initRepo(t), "rev-parse", "--verify", "refs/heads/nope")
 	var ge *GitError
 	if !errors.As(err, &ge) || ge.ExitCode == 0 {
 		t.Fatalf("err = %v, want *GitError with non-zero exit", err)
+	}
+	if !strings.Contains(ge.Stderr, "nope") && !strings.Contains(ge.Stderr, "Needed a single revision") {
+		t.Errorf("unexpected stderr %q", ge.Stderr)
 	}
 	if !strings.Contains(ge.Error(), "rev-parse") {
 		t.Errorf("GitError text %q lacks args", ge.Error())
@@ -50,7 +119,7 @@ func TestRunGitError(t *testing.T) {
 func TestRunInput(t *testing.T) {
 	r := ExecRunner{}
 	diff := "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n"
-	out, err := r.RunInput(context.Background(), t.TempDir(), []byte(diff), "patch-id", "--stable")
+	out, err := r.RunInput(context.Background(), initRepo(t), []byte(diff), "patch-id", "--stable")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +128,17 @@ func TestRunInput(t *testing.T) {
 	}
 }
 
+type dirRunner struct {
+	Runner
+	dir string
+}
+
+func (d dirRunner) Run(ctx context.Context, _ string, args ...string) ([]byte, error) {
+	return d.Runner.Run(ctx, d.dir, args...)
+}
+
 func TestDetectVersion(t *testing.T) {
-	v, err := DetectVersion(context.Background(), ExecRunner{})
+	v, err := DetectVersion(context.Background(), dirRunner{ExecRunner{}, t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,12 +34,37 @@ func (e *GitError) Error() string {
 	return fmt.Sprintf("git %s: exit %d: %s", strings.Join(e.Args, " "), e.ExitCode, strings.TrimSpace(e.Stderr))
 }
 
+var strippedEnv = map[string]bool{
+	"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_INDEX_FILE": true, "GIT_COMMON_DIR": true,
+	"GIT_NAMESPACE": true,
+	"GIT_EXEC_PATH": true, "GIT_CONFIG_PARAMETERS": true, "GIT_CONFIG_COUNT": true,
+	// Set below, so inherited values must not survive.
+	"GIT_TERMINAL_PROMPT": true, "GCM_INTERACTIVE": true, "SSH_ASKPASS_REQUIRE": true,
+	"LC_ALL": true, "GIT_OPTIONAL_LOCKS": true,
+}
+
+func stripped(entry string) bool {
+	name, _, _ := strings.Cut(entry, "=")
+	name = strings.ToUpper(name)
+	return strippedEnv[name] || strings.HasPrefix(name, "GIT_OBJECT_") || strings.HasPrefix(name, "GIT_ALTERNATE_OBJECT_") ||
+		strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")
+}
+
+// gitEnv returns base without variables that could retarget git or override
+// the settings below, plus those settings.
 func gitEnv(base []string) []string {
-	return append(base[:len(base):len(base)],
+	env := make([]string, 0, len(base)+5)
+	for _, e := range base {
+		if !stripped(e) {
+			env = append(env, e)
+		}
+	}
+	return append(env,
 		"GIT_TERMINAL_PROMPT=0",
 		"GCM_INTERACTIVE=never",
 		"SSH_ASKPASS_REQUIRE=never",
 		"LC_ALL=C",
+		"GIT_OPTIONAL_LOCKS=0",
 	)
 }
 
@@ -50,6 +75,9 @@ func (r ExecRunner) Run(ctx context.Context, dir string, args ...string) ([]byte
 
 // RunInput is like Run but feeds input to the standard input of git.
 func (r ExecRunner) RunInput(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error) {
+	if err := allowedInput(args); err != nil {
+		return nil, err
+	}
 	return r.run(ctx, dir, input, args)
 }
 
@@ -70,6 +98,7 @@ func (r ExecRunner) run(ctx context.Context, dir string, input []byte, args []st
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = gitEnv(os.Environ())
 	if input != nil {
 		cmd.Stdin = bytes.NewReader(input)
@@ -78,9 +107,12 @@ func (r ExecRunner) run(ctx context.Context, dir string, input []byte, args []st
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return stdout.Bytes(), fmt.Errorf("git %s: %w", strings.Join(args, " "), cerr)
+		}
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			return stdout.Bytes(), &GitError{Args: args, ExitCode: ee.ExitCode(), Stderr: stderr.String()}
+			return stdout.Bytes(), &GitError{Args: append([]string(nil), args...), ExitCode: ee.ExitCode(), Stderr: stderr.String()}
 		}
 		return stdout.Bytes(), err
 	}
