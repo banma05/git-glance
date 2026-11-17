@@ -56,8 +56,8 @@ func TestOwnCommits(t *testing.T) {
 }
 
 func TestContainsEmptyOwn(t *testing.T) {
-	_, m, _, fork := containFixture(t, 1)
-	c, err := m.Contains(context.Background(), "main", "feature/a", fork, nil)
+	_, m, own, fork := containFixture(t, 0)
+	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,5 +204,56 @@ func TestUnpushed(t *testing.T) {
 	}
 	if strings.TrimSpace(r.Git(r.Dir, "rev-parse", "feature/a")) != own[0].Hash {
 		t.Fatal("fixture changed")
+	}
+}
+
+func TestContainsSubjectNotVouchedByMergedOwn(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Branch("feature/a", "main")
+	r.Branch("main-test", "main")
+	r.Git(r.Dir, "switch", "feature/a")
+	r.Commit(r.Dir, "fix", map[string]string{"a.txt": "a\n"})
+	r.Git(r.Dir, "switch", "main-test")
+	r.Git(r.Dir, "merge", "--no-ff", "-m", "merge a", "feature/a")
+	r.Git(r.Dir, "switch", "feature/a")
+	r.Commit(r.Dir, "fix", map[string]string{"b.txt": "b\n"})
+	m := &Matcher{R: gitx.ExecRunner{}, Dir: r.Dir}
+	own, fork, _, err := m.OwnCommits(context.Background(), "main", "feature/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := m.Contains(context.Background(), "main-test", "feature/a", fork, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State != "some" || c.Per[0].By != "" || c.Per[1].By != "ancestor" {
+		t.Fatalf("%+v", c)
+	}
+}
+
+func TestContainsRejectsStaleOwn(t *testing.T) {
+	r, m, own, fork := containFixture(t, 1)
+	r.Git(r.Dir, "commit", "--amend", "-m", "reworded")
+	if _, err := m.Contains(context.Background(), "main", "feature/a", fork, own); err == nil {
+		t.Fatal("want error for stale own")
+	}
+	if _, err := m.Contains(context.Background(), "main", "feature/a", fork, nil); err == nil {
+		t.Fatal("want error for empty own on a branch with commits")
+	}
+}
+
+func TestContainsCacheMissWhenTargetMoves(t *testing.T) {
+	r, m, own, fork := containFixture(t, 1)
+	ctx := context.Background()
+	c, err := m.Contains(ctx, "main-test", "feature/a", fork, own)
+	if err != nil || c.State != "none" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	r.Git(r.Dir, "switch", "main-test")
+	r.Git(r.Dir, "cherry-pick", own[0].Hash)
+	c, err = m.Contains(ctx, "main-test", "feature/a", fork, own)
+	if err != nil || c.State != "all" || c.Per[0].By != "ancestor" && c.Per[0].By != "patch" {
+		t.Fatalf("%+v %v", c, err)
 	}
 }
