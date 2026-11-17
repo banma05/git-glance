@@ -146,6 +146,9 @@ func checkFresh(branch, fork string, own []repo.CommitInfo) error {
 	if len(own) > 0 && own[0].Hash != branch {
 		return fmt.Errorf("own commits are stale: newest %s, branch tip %s", own[0].Hash, branch)
 	}
+	if fork == "" {
+		return fmt.Errorf("own commits are stale: empty fork hash")
+	}
 	if len(own) == 0 && fork != branch {
 		return fmt.Errorf("own commits are stale: none given but fork %s is not branch tip %s", fork, branch)
 	}
@@ -267,7 +270,7 @@ func (m *Matcher) stepSquash(ctx context.Context, target, branch, fork string, p
 	if err != nil || len(whole) != 1 {
 		return err
 	}
-	args := []string{"log", "-p", "--format=%H", "--no-ext-diff", "--no-color", "--no-textconv",
+	args := []string{"log", "-p", "--full-diff", "--format=%H", "--no-ext-diff", "--no-color", "--no-textconv",
 		"-n", strconv.Itoa(maxSquashCands), branch + ".." + target, "--"}
 	files := strings.Split(strings.Trim(names, "\x00"), "\x00")
 	if len(files) > maxPathspecFiles {

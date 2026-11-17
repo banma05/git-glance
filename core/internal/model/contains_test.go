@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -255,5 +256,78 @@ func TestContainsCacheMissWhenTargetMoves(t *testing.T) {
 	c, err = m.Contains(ctx, "main-test", "feature/a", fork, own)
 	if err != nil || c.State != "all" || c.Per[0].By != "ancestor" && c.Per[0].By != "patch" {
 		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+// squashSetup makes a branch of two commits off main (main may first receive
+// base files) and returns the matcher, own commits and fork.
+func squashSetup(t *testing.T, base map[string]string, first, second map[string]string, removeFirst string) (*testrepo.Repo, *Matcher, []repo.CommitInfo, string) {
+	t.Helper()
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	if base != nil {
+		r.Commit(r.Dir, "base files", base)
+	}
+	r.Branch("feature/a", "main")
+	r.Git(r.Dir, "switch", "feature/a")
+	if removeFirst != "" {
+		r.Git(r.Dir, "mv", removeFirst, "new.txt")
+	}
+	r.Commit(r.Dir, "first part", first)
+	r.Commit(r.Dir, "second part", second)
+	m := &Matcher{R: gitx.ExecRunner{}, Dir: r.Dir}
+	own, fork, _, err := m.OwnCommits(context.Background(), "main", "feature/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Git(r.Dir, "switch", "main")
+	return r, m, own, fork
+}
+
+func TestContainsSquashManyFiles(t *testing.T) {
+	first, second, all := map[string]string{}, map[string]string{}, map[string]string{}
+	for i := 0; i < 101; i++ {
+		name := fmt.Sprintf("dir/f%03d.txt", i)
+		all[name] = name + "\n"
+		if i < 51 {
+			first[name] = name + "\n"
+		} else {
+			second[name] = name + "\n"
+		}
+	}
+	r, m, own, fork := squashSetup(t, nil, first, second, "")
+	r.Commit(r.Dir, "everything at once", all)
+	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State != "all" || bys(c)[0] != "squash" || bys(c)[1] != "squash" {
+		t.Fatalf("%+v", c)
+	}
+}
+
+func TestContainsSquashRename(t *testing.T) {
+	base := map[string]string{"old.txt": "a long enough body\nsecond line\nthird line\nfourth line\n", "z.txt": "z\n"}
+	r, m, own, fork := squashSetup(t, base, map[string]string{"z.txt": "z1\n"}, map[string]string{"z.txt": "z2\n"}, "old.txt")
+	r.Git(r.Dir, "mv", "old.txt", "new.txt")
+	r.Commit(r.Dir, "rename and edit", map[string]string{"z.txt": "z2\n"})
+	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State != "all" || bys(c)[0] != "squash" {
+		t.Fatalf("%+v", c)
+	}
+}
+
+func TestContainsSquashRejectsExtraFile(t *testing.T) {
+	r, m, own, fork := squashSetup(t, nil, map[string]string{"a.txt": "a\n"}, map[string]string{"b.txt": "b\n"}, "")
+	r.Commit(r.Dir, "more than the branch", map[string]string{"a.txt": "a\n", "b.txt": "b\n", "extra.txt": "x\n"})
+	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State != "none" {
+		t.Fatalf("%+v", c)
 	}
 }
