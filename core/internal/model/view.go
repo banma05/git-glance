@@ -14,7 +14,8 @@ import (
 	"github.com/banma05/git-glance/core/internal/settings"
 )
 
-// Reasons a branch cannot be collapsed, in the order they are checked.
+// Reasons a branch's folder cannot be deleted from disk, in the order they
+// are checked.
 const (
 	blockNotInFolder   = "not-in-folder"
 	blockMainFolder    = "main-folder"
@@ -22,8 +23,10 @@ const (
 	blockDirty         = "dirty"
 	blockUnpushed      = "unpushed"
 	blockNotMerged     = "not-merged"
-	sourceUnknown      = "unknown"
 )
+
+// sourceUnknown is the assignment source of a branch without a trunk.
+const sourceUnknown = "unknown"
 
 // ReleaseSummary says which of the trunk and its release branches already
 // hold every own commit of a branch (In) and which do not (NotIn).
@@ -37,32 +40,32 @@ type ReleaseSummary struct {
 // set only when the branch's folder exists and has changes or new files.
 // Branches whose trunk is unknown have no Own, fork, Test or Release.
 type BranchView struct {
-	Name          string            `json:"name"`
-	Short         string            `json:"short"`
-	Topic         string            `json:"topic"`
-	Color         int               `json:"color"`
-	Trunk         string            `json:"trunk"`
-	TrunkSource   string            `json:"trunkSource"`
-	Folder        string            `json:"folder"`
-	MainFolder    bool              `json:"mainFolder"`
-	FolderMissing bool              `json:"folderMissing"`
-	Dirty         *repo.DirtyCounts `json:"dirty"`
-	HasUpstream   bool              `json:"hasUpstream"`
-	UpstreamGone  bool              `json:"upstreamGone"`
-	Ahead         int               `json:"ahead"`
-	Behind        int               `json:"behind"`
-	Unpushed      int               `json:"unpushed"`
-	BehindTrunk   int               `json:"behindTrunk"`
-	Own           []repo.CommitInfo `json:"own"`
-	ForkHash      string            `json:"forkHash"`
-	ForkTime      int64             `json:"forkTime"`
-	Merged        bool              `json:"merged"`
-	Test          *Containment      `json:"test"`
-	Release       *ReleaseSummary   `json:"release"`
-	CanCollapse   bool              `json:"canCollapse"`
-	CollapseBlock string            `json:"collapseBlock"`
-	Old           bool              `json:"old"`
-	LastCommit    int64             `json:"lastCommit"`
+	Name            string            `json:"name"`
+	Short           string            `json:"short"`
+	Topic           string            `json:"topic"`
+	Color           int               `json:"color"`
+	Trunk           string            `json:"trunk"`
+	TrunkSource     string            `json:"trunkSource"`
+	Folder          string            `json:"folder"`
+	MainFolder      bool              `json:"mainFolder"`
+	FolderMissing   bool              `json:"folderMissing"`
+	Dirty           *repo.DirtyCounts `json:"dirty"`
+	HasUpstream     bool              `json:"hasUpstream"`
+	UpstreamGone    bool              `json:"upstreamGone"`
+	Ahead           int               `json:"ahead"`
+	Behind          int               `json:"behind"`
+	Unpushed        int               `json:"unpushed"`
+	BehindTrunk     int               `json:"behindTrunk"`
+	Own             []repo.CommitInfo `json:"own"`
+	ForkHash        string            `json:"forkHash"`
+	ForkTime        int64             `json:"forkTime"`
+	Merged          bool              `json:"merged"`
+	Test            *Containment      `json:"test"`
+	Release         *ReleaseSummary   `json:"release"`
+	CanRemoveFolder bool              `json:"canRemoveFolder"`
+	RemoveBlock     string            `json:"removeBlock"`
+	Old             bool              `json:"old"`
+	LastCommit      int64             `json:"lastCommit"`
 }
 
 // TrunkView describes a trunk: the ref it is compared through, and how the
@@ -303,8 +306,8 @@ func (b *builder) branch(ref repo.Ref) (BranchView, error) {
 		return bv, err
 	}
 	bv.Unpushed = n
-	bv.CollapseBlock = collapseBlock(bv)
-	bv.CanCollapse = bv.CollapseBlock == ""
+	bv.RemoveBlock = removeBlock(bv)
+	bv.CanRemoveFolder = bv.RemoveBlock == ""
 	bv.Old = IsOld(bv.Folder != "", bv.Merged, bv.LastCommit, b.now, b.rs.OldDays)
 	return bv, nil
 }
@@ -382,9 +385,9 @@ func (s *ReleaseSummary) state() string {
 	return stateSome
 }
 
-// collapseBlock returns the first reason the branch's folder cannot be
-// collapsed, or "" when it can.
-func collapseBlock(bv BranchView) string {
+// removeBlock returns the first reason the branch's folder cannot be
+// deleted from disk, or "" when it can.
+func removeBlock(bv BranchView) string {
 	switch {
 	case bv.Folder == "":
 		return blockNotInFolder

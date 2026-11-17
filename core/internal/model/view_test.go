@@ -110,8 +110,8 @@ func TestBuildTwoTrunks(t *testing.T) {
 	if login.Short != "v1/login" || login.Topic != "login" {
 		t.Fatalf("login names: %q %q", login.Short, login.Topic)
 	}
-	if login.CollapseBlock != "dirty" || login.CanCollapse {
-		t.Fatalf("login collapse: %v %q", login.CanCollapse, login.CollapseBlock)
+	if login.RemoveBlock != "dirty" || login.CanRemoveFolder {
+		t.Fatalf("login remove folder: %v %q", login.CanRemoveFolder, login.RemoveBlock)
 	}
 	if login.Test == nil || login.Test.State != "all" {
 		t.Fatalf("login test: %+v", login.Test)
@@ -129,8 +129,8 @@ func TestBuildTwoTrunks(t *testing.T) {
 	}
 
 	done := v.Branches["alice/v1/done"]
-	if !done.Merged || !done.CanCollapse {
-		t.Fatalf("done: merged %v canCollapse %v (%q)", done.Merged, done.CanCollapse, done.CollapseBlock)
+	if !done.Merged || !done.CanRemoveFolder {
+		t.Fatalf("done: merged %v canRemoveFolder %v (%q)", done.Merged, done.CanRemoveFolder, done.RemoveBlock)
 	}
 	if done.Release == nil || done.Release.State != "all" || !reflect.DeepEqual(done.Release.In, []string{"main"}) {
 		t.Fatalf("done release: %+v", done.Release)
@@ -151,6 +151,18 @@ func TestBuildTwoTrunks(t *testing.T) {
 
 	if !listHas(v.Unknown, "alice/fresh") {
 		t.Fatalf("fresh not unknown: %v", v.Unknown)
+	}
+	// R4: an unknown branch has nothing to compare with.
+	unknown := v.Branches["alice/fresh"]
+	if unknown.Trunk != "" || unknown.TrunkSource != "unknown" || unknown.Merged ||
+		unknown.Test != nil || unknown.Release != nil ||
+		unknown.Own == nil || len(unknown.Own) != 0 || unknown.ForkHash != "" || unknown.BehindTrunk != 0 {
+		t.Fatalf("unknown branch: %+v", unknown)
+	}
+	for _, g := range v.Groups {
+		if listHas(g.Branches, "alice/fresh") {
+			t.Fatalf("unknown branch in group %s", g.Trunk.Name)
+		}
 	}
 
 	if len(v.Groups) != 2 || v.Groups[0].Trunk.Name != "main" || v.Groups[1].Trunk.Name != "v2" {
@@ -255,5 +267,118 @@ func TestBuildSameNamedTags(t *testing.T) {
 		if x.BehindTrunk != 1 || x.Merged || v.Groups[0].Trunk.LocalAhead != 0 || v.Groups[0].Trunk.LocalBehind != 0 {
 			t.Fatalf("%v: behind %d merged %v trunk %+v", ver, x.BehindTrunk, x.Merged, v.Groups[0].Trunk)
 		}
+	}
+}
+
+func TestBuildReleaseStates(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	checkout := func(branch string) { r.Git(r.Dir, "checkout", "-q", branch) }
+	commitOn := func(branch, file string) string {
+		r.Branch(branch, "main")
+		checkout(branch)
+		h := r.Commit(r.Dir, "work "+file, map[string]string{file: file + "\n"})
+		checkout("main")
+		return h
+	}
+	// feature/all reaches main and, through it, both release branches.
+	commitOn("feature/all", "all.txt")
+	r.Git(r.Dir, "merge", "--ff-only", "feature/all")
+	r.Branch("release/a", "main")
+	r.Branch("release/b", "main")
+	// feature/some is cherry-picked into release/a only; feature/none nowhere.
+	some := commitOn("feature/some", "some.txt")
+	commitOn("feature/none", "none.txt")
+	checkout("release/a")
+	r.Git(r.Dir, "cherry-pick", some)
+	checkout("main")
+	r.Push(r.Dir, "origin", "main", "release/a", "release/b")
+	now := r.Clock().Add(time.Hour).Unix()
+
+	rs := settings.RepoSettings{Trunks: []settings.TrunkConfig{
+		{Name: "main", Releases: []string{"release/a", "release/b"}},
+	}}
+	v := buildView(t, r.Dir, rs, now)
+	if got := v.Groups[0].Trunk.Releases; !reflect.DeepEqual(got, []string{"release/a", "release/b"}) {
+		t.Fatalf("trunk releases: %v", got)
+	}
+	cases := []struct {
+		branch, state string
+		in, notIn     []string
+	}{
+		{"feature/all", "all", []string{"main", "release/a", "release/b"}, []string{}},
+		{"feature/some", "some", []string{"release/a"}, []string{"main", "release/b"}},
+		{"feature/none", "none", []string{}, []string{"main", "release/a", "release/b"}},
+	}
+	for _, c := range cases {
+		bv := v.Branches[c.branch]
+		if bv.Trunk != "main" || bv.Test != nil || bv.Release == nil {
+			t.Fatalf("%s: trunk %q test %+v release %+v", c.branch, bv.Trunk, bv.Test, bv.Release)
+		}
+		got := *bv.Release
+		if got.State != c.state || !reflect.DeepEqual(got.In, c.in) || !reflect.DeepEqual(got.NotIn, c.notIn) {
+			t.Fatalf("%s: release %+v, want %s in %v notIn %v", c.branch, got, c.state, c.in, c.notIn)
+		}
+	}
+	if listHas(v.Groups[0].Branches, "release/a") || listHas(v.Unknown, "release/b") {
+		t.Fatal("release branches listed as feature branches")
+	}
+}
+
+func TestBuildMergedNoFF(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Branch("feature/merged", "main")
+	dir := r.AddWorktree("merged", "feature/merged")
+	r.Commit(dir, "first", map[string]string{"a.txt": "a\n"})
+	tip := r.Commit(dir, "second", map[string]string{"b.txt": "b\n"})
+	r.Push(dir, "origin", "feature/merged")
+	r.Commit(r.Dir, "main moves", map[string]string{"m.txt": "m\n"})
+	r.Git(r.Dir, "merge", "--no-ff", "-m", "merge feature/merged", "feature/merged")
+	r.Push(r.Dir, "origin", "main")
+	now := r.Clock().Add(time.Hour).Unix()
+
+	v := buildView(t, r.Dir, settings.RepoSettings{}, now)
+	bv := v.Branches["feature/merged"]
+	if bv.Trunk != "main" || !bv.Merged {
+		t.Fatalf("trunk %q merged %v", bv.Trunk, bv.Merged)
+	}
+	// Once merged, the fork point is the branch tip, so no own commits remain.
+	if bv.ForkHash != tip || bv.Own == nil || len(bv.Own) != 0 {
+		t.Fatalf("fork %s own %v, want fork %s", bv.ForkHash, bv.Own, tip)
+	}
+	if !bv.CanRemoveFolder || bv.RemoveBlock != "" || bv.Unpushed != 0 || bv.Dirty != nil {
+		t.Fatalf("remove folder %v %q unpushed %d dirty %+v", bv.CanRemoveFolder, bv.RemoveBlock, bv.Unpushed, bv.Dirty)
+	}
+	if bv.Old || !listHas(v.Groups[0].Branches, "feature/merged") {
+		t.Fatalf("old %v group %v", bv.Old, v.Groups[0].Branches)
+	}
+}
+
+func TestRemoveBlock(t *testing.T) {
+	dirty := &repo.DirtyCounts{Changed: 1, Files: []string{"a.txt"}}
+	cases := []struct {
+		name string
+		bv   BranchView
+		want string
+	}{
+		{"no folder", BranchView{Merged: true}, "not-in-folder"},
+		{"main folder", BranchView{Folder: "p", MainFolder: true, Merged: true}, "main-folder"},
+		{"main folder wins over dirty", BranchView{Folder: "p", MainFolder: true, Dirty: dirty}, "main-folder"},
+		{"folder missing", BranchView{Folder: "p", FolderMissing: true, Merged: true}, "folder-missing"},
+		{"missing wins over unpushed", BranchView{Folder: "p", FolderMissing: true, Unpushed: 2}, "folder-missing"},
+		{"dirty", BranchView{Folder: "p", Dirty: dirty, Merged: true}, "dirty"},
+		{"dirty wins over unpushed", BranchView{Folder: "p", Dirty: dirty, Unpushed: 1}, "dirty"},
+		{"unpushed", BranchView{Folder: "p", Unpushed: 1, Merged: true}, "unpushed"},
+		{"unpushed wins over not merged", BranchView{Folder: "p", Unpushed: 1}, "unpushed"},
+		{"not merged", BranchView{Folder: "p"}, "not-merged"},
+		{"allowed", BranchView{Folder: "p", Merged: true}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := removeBlock(c.bv); got != c.want {
+				t.Fatalf("got %q want %q", got, c.want)
+			}
+		})
 	}
 }
