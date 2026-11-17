@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -41,11 +42,29 @@ func hasControl(s string) bool {
 	return false
 }
 
+// checkRev refuses a revision before any git call is made.
+func checkRev(label, rev string) error {
+	if rev == "" || strings.HasPrefix(rev, "-") || hasControl(rev) {
+		return badParams("%s is not a valid revision", label)
+	}
+	return nil
+}
+
+// checkRevs checks several revisions given as label, value pairs.
+func checkRevs(pairs ...string) error {
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if err := checkRev(pairs[i], pairs[i+1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // resolveRev turns a caller-supplied revision into a commit hash. The caller's
 // text never reaches another git command.
 func (h *Handler) resolveRev(ctx context.Context, root, label, rev string) (string, error) {
-	if rev == "" || strings.HasPrefix(rev, "-") || hasControl(rev) {
-		return "", badParams("%s is not a valid revision", label)
+	if err := checkRev(label, rev); err != nil {
+		return "", err
 	}
 	out, err := h.r.Run(ctx, root, "rev-parse", "--verify", "--quiet", "--end-of-options", rev+"^{commit}")
 	var ge *gitx.GitError
@@ -119,6 +138,9 @@ func (h *Handler) compare(ctx context.Context, raw json.RawMessage) (any, error)
 	if err := decode(raw, &p); err != nil {
 		return nil, err
 	}
+	if err := checkRevs("a", p.A, "b", p.B); err != nil {
+		return nil, err
+	}
 	root, err := h.repoRoot(ctx, p.Repo)
 	if err != nil {
 		return nil, err
@@ -176,6 +198,9 @@ func (h *Handler) fileAt(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err := pathInTree(p.Path); err != nil {
 		return nil, err
 	}
+	if err := checkRevs("ref", p.Ref); err != nil {
+		return nil, err
+	}
 	root, err := h.repoRoot(ctx, p.Repo)
 	if err != nil {
 		return nil, err
@@ -185,27 +210,29 @@ func (h *Handler) fileAt(ctx context.Context, raw json.RawMessage) (any, error) 
 		return nil, err
 	}
 	args := append([]string{"show", noSignature}, diffOptions...)
-	out, err := h.r.Run(ctx, root, append(args, "--end-of-options", hash+":"+p.Path)...)
+	out, truncated, err := h.r.RunCapped(ctx, root, maxText, append(args, "--end-of-options", hash+":"+p.Path)...)
 	if err != nil {
 		return nil, err
 	}
-	if strings.IndexByte(string(out), 0) >= 0 {
+	if bytes.IndexByte(out, 0) >= 0 {
 		return FileText{Binary: true}, nil
 	}
-	return capText(out, FileText{}), nil
+	return capText(out, truncated), nil
 }
 
-func capText(out []byte, res FileText) FileText {
-	if len(out) > maxText {
-		cut := maxText
-		for cut > 0 && !utf8.RuneStart(out[cut]) {
-			cut-- // do not split a character
+// capText turns output that RunCapped already cut at maxText bytes into
+// text, dropping a character the cut split in two.
+func capText(out []byte, truncated bool) FileText {
+	if truncated {
+		i := len(out) - 1
+		for i > 0 && !utf8.RuneStart(out[i]) {
+			i--
 		}
-		out = out[:cut]
-		res.Truncated = true
+		if i >= 0 && i < len(out) && !utf8.FullRune(out[i:]) {
+			out = out[:i]
+		}
 	}
-	res.Text = string(out)
-	return res
+	return FileText{Text: string(out), Truncated: truncated}
 }
 
 func (h *Handler) fileDiff(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -215,6 +242,9 @@ func (h *Handler) fileDiff(ctx context.Context, raw json.RawMessage) (any, error
 	}
 	if p.Path == "" || hasControl(p.Path) {
 		return nil, badParams("path is not a valid repository path")
+	}
+	if err := checkRevs("a", p.A, "b", p.B); err != nil {
+		return nil, err
 	}
 	root, err := h.repoRoot(ctx, p.Repo)
 	if err != nil {
@@ -229,11 +259,11 @@ func (h *Handler) fileDiff(ctx context.Context, raw json.RawMessage) (any, error
 		return nil, err
 	}
 	args := append([]string{"diff"}, diffOptions...)
-	out, err := h.r.Run(ctx, root, append(args, a, b, "--", literalSpec+p.Path)...)
+	out, truncated, err := h.r.RunCapped(ctx, root, maxText, append(args, a, b, "--", literalSpec+p.Path)...)
 	if err != nil {
 		return nil, err
 	}
-	t := capText(out, FileText{})
+	t := capText(out, truncated)
 	return struct {
 		Diff      string `json:"diff"`
 		Truncated bool   `json:"truncated"`
@@ -256,6 +286,9 @@ func (h *Handler) trunkCommits(ctx context.Context, raw json.RawMessage) (any, e
 	}
 	if limit == 0 || limit > maxCommits {
 		limit = maxCommits
+	}
+	if err := checkRevs("newer", p.Newer, "older", p.Older); err != nil {
+		return nil, err
 	}
 	root, err := h.repoRoot(ctx, p.Repo)
 	if err != nil {

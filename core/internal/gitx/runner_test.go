@@ -202,3 +202,37 @@ func TestLocalMutationsIgnoreCancellation(t *testing.T) {
 		t.Fatalf("HEAD = %q, %v; want refs/heads/other", out, err)
 	}
 }
+
+func TestRunCappedRefusesMutations(t *testing.T) {
+	r := ExecRunner{Git: "definitely-not-a-binary"}
+	for _, a := range [][]string{{"push"}, {"fetch", "--all", "--prune", "--no-prune-tags"}, {"merge", "--ff-only", "--no-overwrite-ignore", "x"}, {"worktree", "remove", "x"}, {"symbolic-ref", "-q", "--short", "HEAD"}} {
+		_, _, err := r.RunCapped(context.Background(), t.TempDir(), 10, a...)
+		if !errors.Is(err, ErrNotAllowed) {
+			t.Fatalf("RunCapped(%q) err = %v, want ErrNotAllowed", a, err)
+		}
+	}
+}
+
+func TestRunCappedTruncates(t *testing.T) {
+	dir := initRepo(t)
+	big := strings.Repeat("0123456789", 10000)
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := ExecRunner{}
+	out, trunc, err := r.RunCapped(context.Background(), dir, 1000, "diff", "--no-index", "--no-color", "--", os.DevNull, "f.txt")
+	var ge *GitError
+	if errors.As(err, &ge) && ge.ExitCode == 1 {
+		err = nil // diff --no-index exits 1 when the files differ
+	}
+	if err != nil || !trunc || len(out) != 1000 {
+		t.Fatalf("out %d bytes, truncated %v, err %v", len(out), trunc, err)
+	}
+	out, trunc, err = r.RunCapped(context.Background(), dir, 1<<20, "version")
+	if err != nil || trunc || !strings.HasPrefix(string(out), "git version") {
+		t.Fatalf("small output: %q %v %v", out, trunc, err)
+	}
+	if _, _, err = r.RunCapped(context.Background(), dir, 10, "rev-parse", "--verify", "--quiet", "nope^{commit}"); !errors.As(err, &ge) {
+		t.Fatalf("want GitError, got %v", err)
+	}
+}

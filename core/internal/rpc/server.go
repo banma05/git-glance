@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	maxLine       = 1 << 20 // longest accepted request line
-	maxConcurrent = 16      // requests handled at the same time
+	maxLine         = 1 << 20 // longest accepted request line
+	maxConcurrent   = 16      // read requests handled at the same time
+	maxQueuedWrites = 1024    // writes waiting for the write worker
 )
 
 // Request is one call. Params is decoded by the method.
@@ -124,6 +125,8 @@ func NewHandler(r gitx.Runner, st settings.Store) (*Handler, error) {
 	return h, nil
 }
 
+func (h *Handler) isWrite(name string) bool { return h.methods[name].write }
+
 // SetCoreVersion sets the version string reported by the version method.
 func (h *Handler) SetCoreVersion(v string) { h.coreVersion = v }
 
@@ -178,7 +181,24 @@ func ServeLines(ctx context.Context, h *Handler, in io.Reader, out io.Writer) er
 		defer outMu.Unlock()
 		out.Write(append(b, '\n'))
 	}
-	defer wg.Wait()
+	// Writes run one at a time in arrival order on their own worker, which
+	// holds no read slot, so queued writes never stall reads.
+	writes := make(chan Request, maxQueuedWrites)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for req := range writes {
+			if ctx.Err() != nil {
+				send(Response{ID: req.ID, Error: &RPCError{Code: "internal", Message: "stopped before the request started"}})
+				continue
+			}
+			send(h.Handle(ctx, req))
+		}
+	}()
+	defer func() {
+		close(writes)
+		wg.Wait()
+	}()
 
 	for {
 		select {
@@ -201,6 +221,14 @@ func ServeLines(ctx context.Context, h *Handler, in io.Reader, out io.Writer) er
 			var req Request
 			if err := json.Unmarshal([]byte(it.text), &req); err != nil {
 				send(Response{Error: &RPCError{Code: "bad-params", Message: "request is not valid JSON"}})
+				continue
+			}
+			if h.isWrite(req.Method) {
+				select {
+				case writes <- req:
+				default:
+					send(Response{ID: req.ID, Error: &RPCError{Code: "internal", Message: "too many queued writes"}})
+				}
 				continue
 			}
 			select {

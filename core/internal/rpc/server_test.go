@@ -37,10 +37,15 @@ type client struct {
 // settings in a temp dir. The test repo's isolated git config is applied.
 func startServer(t *testing.T, repo *testrepo.Repo) *client {
 	t.Helper()
+	return startServerWith(t, repo, gitx.ExecRunner{})
+}
+
+func startServerWith(t *testing.T, repo *testrepo.Repo, runner gitx.Runner) *client {
+	t.Helper()
 	if repo != nil {
 		repo.ApplyEnv()
 	}
-	h, err := NewHandler(gitx.ExecRunner{}, settings.Store{Dir: t.TempDir()})
+	h, err := NewHandler(runner, settings.Store{Dir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

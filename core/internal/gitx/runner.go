@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -15,6 +16,9 @@ import (
 type Runner interface {
 	Run(ctx context.Context, dir string, args ...string) ([]byte, error)
 	RunInput(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error)
+	// RunCapped runs a read-only command and keeps at most limit bytes of
+	// stdout. Past that the process is killed and truncated is true.
+	RunCapped(ctx context.Context, dir string, limit int64, args ...string) (out []byte, truncated bool, err error)
 }
 
 // ExecRunner runs git as a child process (no shell) after checking Allowed.
@@ -137,4 +141,62 @@ func (r ExecRunner) run(ctx context.Context, dir string, input []byte, args []st
 		return stdout.Bytes(), err
 	}
 	return stdout.Bytes(), nil
+}
+
+// RunCapped is like Run for read-only commands only, but reads at most limit
+// bytes of stdout. When the output is longer, git is killed (safe: it only
+// reads, and GIT_OPTIONAL_LOCKS=0 is set) and truncated is true. Commands
+// that change anything are refused with ErrNotAllowed.
+func (r ExecRunner) RunCapped(ctx context.Context, dir string, limit int64, args ...string) ([]byte, bool, error) {
+	if err := Allowed(args); err != nil {
+		return nil, false, err
+	}
+	if localMutation(args) || !readOnly[args[0]] {
+		return nil, false, deny(args, "RunCapped takes read-only commands only")
+	}
+	bin := r.Git
+	if bin == "" {
+		bin = "git"
+	}
+	timeout := r.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = dir
+	cmd.WaitDelay = 5 * time.Second
+	cmd.Env = gitEnv(os.Environ())
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, false, err
+	}
+	out, readErr := io.ReadAll(io.LimitReader(pipe, limit+1))
+	truncated := int64(len(out)) > limit
+	if truncated {
+		out = out[:limit]
+		cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if truncated {
+		return out, true, nil
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return out, false, fmt.Errorf("git %s: %w", strings.Join(args, " "), cerr)
+	}
+	if readErr != nil {
+		return out, false, readErr
+	}
+	var ee *exec.ExitError
+	if errors.As(waitErr, &ee) {
+		return out, false, &GitError{Args: append([]string(nil), args...), ExitCode: ee.ExitCode(), Stderr: stderr.String()}
+	}
+	return out, false, waitErr
 }
