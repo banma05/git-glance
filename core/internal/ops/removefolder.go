@@ -191,14 +191,7 @@ func isBuildPath(p string) bool {
 func dropNested(paths []string) []string {
 	out := []string{}
 	for _, p := range paths {
-		nested := false
-		for _, q := range paths {
-			if q != p && strings.HasSuffix(q, "/") && strings.HasPrefix(p, q) {
-				nested = true
-				break
-			}
-		}
-		if !nested {
+		if !nestedIn(p, paths) {
 			out = append(out, p)
 		}
 	}
@@ -219,14 +212,39 @@ func planBackup(ctx context.Context, r gitx.Runner, path string) (backupPlan, er
 		}
 	}
 	plan := backupPlan{backup: []string{}, build: []string{}}
-	for _, p := range dropNested(listed) {
-		if isBuildPath(p) {
-			plan.build = append(plan.build, p)
-		} else {
-			plan.backup = append(plan.backup, p)
+	// A build-named directory is build output only when git lists it alone:
+	// listed files beneath it are ignored by file patterns and must be kept.
+	rest := []string{}
+	for _, p := range listed {
+		if isBuildPath(p) && !hasListedChild(p, listed) {
+			if !nestedIn(p, listed) {
+				plan.build = append(plan.build, p)
+			}
+			continue
+		}
+		rest = append(rest, p)
+	}
+	plan.backup = dropNested(rest)
+	return plan, nil
+}
+
+func hasListedChild(dir string, listed []string) bool {
+	for _, q := range listed {
+		if q != dir && strings.HasPrefix(q, dir) {
+			return true
 		}
 	}
-	return plan, nil
+	return false
+}
+
+// nestedIn reports whether p lies under another listed directory.
+func nestedIn(p string, listed []string) bool {
+	for _, q := range listed {
+		if q != p && strings.HasSuffix(q, "/") && strings.HasPrefix(p, q) {
+			return true
+		}
+	}
+	return false
 }
 
 // isLink reports whether an entry is a symlink or a junction: something whose

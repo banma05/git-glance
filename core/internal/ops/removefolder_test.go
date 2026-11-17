@@ -410,6 +410,33 @@ func TestRemoveFolderIgnoredDirListedWithItsFile(t *testing.T) {
 	}
 }
 
+func TestRemoveFolderBuildNamedDirWithIgnoredFiles(t *testing.T) {
+	f := newRemoveFixtureWith(t, map[string]string{"deploy/Dockerfile": "FROM x\n"})
+	f.write(t, "deploy/build/.env", "TOKEN=1\n")
+	f.write(t, "out/.env", "TOKEN=2\n")
+	res := f.remove(t, f.view(t), "alice/done")
+	if !res.OK || len(res.DeletedBuild) != 0 {
+		t.Fatalf("res = %+v", res)
+	}
+	if readFile(t, filepath.Join(res.BackupDir, "deploy", "build", ".env")) != "TOKEN=1\n" ||
+		readFile(t, filepath.Join(res.BackupDir, "out", ".env")) != "TOKEN=2\n" {
+		t.Fatal("a secret was not backed up")
+	}
+	if want := int64(len("TOKEN=1\n") + len("TOKEN=2\n")); res.BackupBytes != want {
+		t.Fatalf("BackupBytes = %d, want %d", res.BackupBytes, want)
+	}
+}
+
+func TestRemoveFolderIgnoredBuildDirListedAloneStaysBuild(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.write(t, "node_modules/.env", "T=1\n")
+	f.write(t, "node_modules/x.js", "x\n")
+	res := f.remove(t, f.view(t), "alice/done")
+	if !res.OK || len(res.DeletedBuild) != 1 || res.DeletedBuild[0] != "node_modules/" || res.BackupDir != "" {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
 func TestDropNestedPaths(t *testing.T) {
 	got := dropNested([]string{"a/", "a/b", "c/d/", "c/d/e/", "f"})
 	if strings.Join(got, ",") != "a/,c/d/,f" {
