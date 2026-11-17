@@ -19,6 +19,7 @@ func initRepo(t *testing.T) string {
 	}
 	cmd := exec.Command("git", "init", "-q")
 	cmd.Dir = dir
+	cmd.Env = gitEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v %s", err, out)
 	}

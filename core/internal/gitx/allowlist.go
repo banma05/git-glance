@@ -97,7 +97,7 @@ func allowedFetch(args []string) bool {
 		return false
 	}
 	spec := args[2]
-	if !plain(spec) || strings.HasPrefix(spec, "+") || strings.Count(spec, ":") != 1 {
+	if !plain(spec) || strings.HasPrefix(spec, "+") || strings.Count(spec, ":") != 1 || strings.Contains(spec, "*") {
 		return false
 	}
 	src, dst, _ := strings.Cut(spec, ":")
