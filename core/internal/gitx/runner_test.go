@@ -174,3 +174,31 @@ func TestParseVersion(t *testing.T) {
 		t.Error("want error for nonsense")
 	}
 }
+
+func TestLocalMutationsIgnoreCancellation(t *testing.T) {
+	dir := initRepo(t)
+	for _, args := range [][]string{
+		{"-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"},
+		{"branch", "other"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = gitEnv(os.Environ())
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := ExecRunner{}
+	if _, err := r.Run(ctx, dir, "rev-parse", "HEAD"); err == nil {
+		t.Fatal("read-only command with a cancelled context must fail")
+	}
+	if _, err := r.Run(ctx, dir, "switch", "--no-guess", "--no-overwrite-ignore", "other"); err != nil {
+		t.Fatalf("local mutating command must run to completion: %v", err)
+	}
+	out, err := r.Run(context.Background(), dir, "rev-parse", "--symbolic-full-name", "HEAD")
+	if err != nil || strings.TrimSpace(string(out)) != "refs/heads/other" {
+		t.Fatalf("HEAD = %q, %v; want refs/heads/other", out, err)
+	}
+}

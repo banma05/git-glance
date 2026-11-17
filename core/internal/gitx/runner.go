@@ -68,6 +68,20 @@ func gitEnv(base []string) []string {
 	)
 }
 
+const localMutationTimeout = 30 * time.Minute
+
+// localMutation reports whether args change the local repository only. Such
+// commands must not be interrupted half way. args has passed Allowed.
+func localMutation(args []string) bool {
+	switch args[0] {
+	case "merge", "switch", "worktree":
+		return !(args[0] == "worktree" && args[1] == "list")
+	case "fetch":
+		return args[1] == "."
+	}
+	return false
+}
+
 // Run executes git with args in dir and returns stdout.
 func (r ExecRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	return r.run(ctx, dir, nil, args)
@@ -92,6 +106,12 @@ func (r ExecRunner) run(ctx context.Context, dir string, input []byte, args []st
 	timeout := r.Timeout
 	if timeout <= 0 {
 		timeout = 60 * time.Second
+	}
+	if localMutation(args) {
+		// A killed git leaves stale lock files and half-updated folders, and
+		// a worktree add of a large repository can take minutes.
+		ctx = context.WithoutCancel(ctx)
+		timeout = max(timeout, localMutationTimeout)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
