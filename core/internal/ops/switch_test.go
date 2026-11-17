@@ -119,15 +119,31 @@ func TestSwitchRefusals(t *testing.T) {
 func TestSwitchIgnoredFileIsNotOverwritten(t *testing.T) {
 	f := newFixture(t)
 	f.r.Git(f.r.Dir, "switch", "-c", "feature/b")
-	f.r.Commit(f.r.Dir, "tracked file", map[string]string{"gen.txt": "tracked\n", ".gitignore": "gen.txt\n"})
+	f.r.Commit(f.r.Dir, "tracked file", map[string]string{"gen.txt": "tracked\n"})
 	f.r.Git(f.r.Dir, "switch", "main")
+	exclude := filepath.Join(f.r.Dir, ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exclude, []byte("gen.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(f.r.Dir, "gen.txt"), []byte("mine\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, _ := Switch(context.Background(), f.run, f.st, f.r.Dir, f.r.Dir, "feature/b", fixedNow)
-	data, err := os.ReadFile(filepath.Join(f.r.Dir, "gen.txt"))
-	if err != nil || strings.TrimSpace(string(data)) != "mine" {
-		t.Fatalf("ignored file was lost: %q %v (res %+v)", data, err, res)
+	res, err := Switch(context.Background(), f.run, f.st, f.r.Dir, f.r.Dir, "feature/b", fixedNow)
+	if err == nil && res.OK {
+		t.Fatalf("the switch must not succeed over an ignored file: %+v", res)
+	}
+	if got := f.head(f.r.Dir); got != "refs/heads/main" {
+		t.Fatalf("HEAD = %q", got)
+	}
+	data, rerr := os.ReadFile(filepath.Join(f.r.Dir, "gen.txt"))
+	if rerr != nil || strings.TrimSpace(string(data)) != "mine" {
+		t.Fatalf("ignored file was lost: %q %v", data, rerr)
+	}
+	if len(f.opNames(t)) != 0 {
+		t.Fatal("a failed switch must not be logged")
 	}
 }
 

@@ -85,3 +85,42 @@ func TestDefaultFolderPathSanitizes(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestCreateFolderNameCollisions(t *testing.T) {
+	f := newFixture(t)
+	f.r.Git(f.r.Dir, "switch", "-c", "alice/x")
+	f.r.Commit(f.r.Dir, "unpushed", map[string]string{"mine": "1\n"})
+	f.r.Git(f.r.Dir, "switch", "main")
+	f.r.Git(f.r.Dir, "pack-refs", "--all")
+	aliceBefore := f.rev("refs/heads/alice/x")
+	cases := []struct{ branch, reason string }{
+		{"Alice/x", "branch-exists"},
+		{"ALICE/X", "branch-exists"},
+		{"X", "branch-exists"},
+		{"origin/main", "bad-name"},
+		{"Origin/Main", "bad-name"},
+		{"origin/new-thing", "bad-name"},
+		{"origin", "bad-name"},
+	}
+	for _, c := range cases {
+		p := f.r.Root + "/wt-new"
+		res, err := CreateFolder(context.Background(), f.run, f.st, f.r.Dir, "main", "refs/heads/main", c.branch, p, fixedNow)
+		if err != nil || res.OK || res.Reason != c.reason {
+			t.Errorf("%s: res = %+v, err = %v, want %s", c.branch, res, err, c.reason)
+		}
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s: a folder was created", c.branch)
+		}
+		if got := f.r.Git(f.r.Dir, "for-each-ref", "--format=%(refname)", "refs/heads/"+c.branch); got != "" && c.branch != "X" && c.branch != "Alice/x" && c.branch != "ALICE/X" {
+			t.Errorf("%s: a branch exists afterwards: %s", c.branch, got)
+		}
+	}
+	if f.rev("refs/heads/alice/x") != aliceBefore {
+		t.Fatal("an existing branch moved")
+	}
+	p := f.r.Root + "/wt-origin-fix"
+	res, err := CreateFolder(context.Background(), f.run, f.st, f.r.Dir, "main", "refs/heads/main", "origin-fix/x", p, fixedNow)
+	if err != nil || !res.OK {
+		t.Fatalf("origin-fix/x: res = %+v, err = %v, want ok", res, err)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/banma05/git-glance/core/internal/gitx"
 	"github.com/banma05/git-glance/core/internal/model"
@@ -17,14 +18,20 @@ import (
 
 var folderNameCleaner = strings.NewReplacer(
 	":", "-", "*", "-", "?", "-", `"`, "-", "<", "-", ">", "-", "|", "-", `\`, "-",
-	" ", "-", "\t", "-", "\n", "-", "\r", "-",
 )
+
+func dashSpace(r rune) rune {
+	if unicode.IsSpace(r) {
+		return '-'
+	}
+	return r
+}
 
 // DefaultFolderPath is <parent of repoRoot>/<base of repoRoot>-wt-<topic of the
 // branch, made safe for a folder name>, with forward slashes on every system.
 func DefaultFolderPath(repoRoot, branch string) string {
 	root := filepath.ToSlash(filepath.Clean(repoRoot))
-	topic := folderNameCleaner.Replace(model.Topic(branch))
+	topic := strings.Map(dashSpace, folderNameCleaner.Replace(model.Topic(branch)))
 	return path.Join(path.Dir(root), path.Base(root)+"-wt-"+topic)
 }
 
@@ -43,6 +50,9 @@ func CreateFolder(ctx context.Context, r gitx.Runner, st settings.Store, repoRoo
 	snap, err := repo.Read(ctx, r, repoRoot)
 	if err != nil {
 		return failed(), err
+	}
+	if shadowsRemote(snap, branch) {
+		return refused("bad-name", "", nil), nil
 	}
 	if branchTaken(snap, branch) {
 		return refused("branch-exists", "", nil), nil
@@ -76,16 +86,33 @@ func validName(ctx context.Context, r gitx.Runner, repoRoot, branch string) bool
 	return err == nil && strings.TrimSpace(string(out)) == branch
 }
 
+// shadowsRemote is true when branch would collide with the namespace of a
+// remote-tracking branch: it equals one (origin/main) or starts with the same
+// first path segment (origin, origin/x). Such a branch makes names like
+// origin/main ambiguous for git. Case is ignored.
+func shadowsRemote(snap repo.Snapshot, branch string) bool {
+	first, _, _ := strings.Cut(branch, "/")
+	for _, b := range snap.Remote {
+		remote, _, _ := strings.Cut(b.Name, "/")
+		if strings.EqualFold(branch, b.Name) || strings.EqualFold(first, remote) {
+			return true
+		}
+	}
+	return false
+}
+
 // branchTaken is true when a local branch has that name, or when a remote
-// branch has it: that one belongs to somebody else.
+// branch has it: that one belongs to somebody else. Case is ignored, because
+// on case-insensitive systems git can silently move a packed branch whose name
+// differs only in case.
 func branchTaken(snap repo.Snapshot, branch string) bool {
 	for _, b := range snap.Local {
-		if b.Name == branch {
+		if strings.EqualFold(b.Name, branch) {
 			return true
 		}
 	}
 	for _, b := range snap.Remote {
-		if _, name, ok := strings.Cut(b.Name, "/"); ok && name == branch {
+		if _, name, ok := strings.Cut(b.Name, "/"); ok && strings.EqualFold(name, branch) {
 			return true
 		}
 	}
