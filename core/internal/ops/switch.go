@@ -15,7 +15,8 @@ import (
 
 // OpResult is the outcome of Switch and CreateFolder. When OK is false, Reason
 // says why nothing was done. Switch reasons: dirty (Files lists the changes),
-// folder-missing, checked-out-elsewhere (Path is that folder) and no-branch
+// folder-missing, detached (the folder is on a detached HEAD, leaving it could
+// orphan commits), checked-out-elsewhere (Path is that folder) and no-branch
 // (no local branch of that name). CreateFolder reasons: bad-name, branch-exists,
 // path-inside-folder (Path is the folder) and path-exists. LogError is empty
 // unless saving settings or the operation log failed after the git operation
@@ -135,7 +136,7 @@ func decideSwitch(snap repo.Snapshot, folder, branch string) (repo.Worktree, OpR
 		return *wt, refused("dirty", "", files), true, nil
 	}
 	if wt.Detached {
-		return *wt, failed(), true, fmt.Errorf("the folder is on a detached HEAD; switching could lose its commits")
+		return *wt, refused("detached", wt.Path, nil), true, nil
 	}
 	if wt.Branch == branch {
 		return *wt, OpResult{OK: true, Files: []string{}, Path: wt.Path}, true, nil

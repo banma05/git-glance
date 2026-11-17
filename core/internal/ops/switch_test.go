@@ -144,3 +144,25 @@ func TestSwitchLogErrorKeepsOK(t *testing.T) {
 		t.Fatalf("res = %+v, err = %v, want ok with a log error", res, err)
 	}
 }
+
+func TestSwitchDetached(t *testing.T) {
+	f := newFixture(t)
+	f.r.Branch("feature/d", "main")
+	f.r.Branch("feature/e", "main")
+	wt := f.r.AddWorktree("d", "feature/d")
+	f.r.Git(wt, "switch", "--detach")
+	at := f.r.Git(wt, "rev-parse", "HEAD")
+	res, err := Switch(context.Background(), f.run, f.st, f.r.Dir, wt, "feature/e", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || res.Reason != "detached" || res.Files == nil {
+		t.Fatalf("res = %+v, want detached", res)
+	}
+	if f.head(wt) != "HEAD" || f.r.Git(wt, "rev-parse", "HEAD") != at {
+		t.Fatal("the detached folder moved")
+	}
+	if len(f.opNames(t)) != 0 {
+		t.Fatal("a refused switch must not be logged")
+	}
+}
