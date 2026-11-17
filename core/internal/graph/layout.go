@@ -139,19 +139,36 @@ func sortItems(items []item) {
 }
 
 func assignLanes(items []item) ([]Row, int) {
+	// A branch keeps its lane until every row that belongs to it has been drawn:
+	// its own rows (or merge row) and its fork row, whichever comes last.
+	remaining := map[string]int{}
+	for _, it := range items {
+		if it.row.Branch != "" {
+			remaining[it.row.Branch]++
+		}
+		for _, n := range it.branches {
+			remaining[n]++
+		}
+	}
 	lane := map[string]int{}
 	used := map[int]bool{}
 	claim := func(name string) int {
-		if l, ok := lane[name]; ok {
-			return l
-		}
-		l := 1
-		for used[l] {
-			l++
+		l, ok := lane[name]
+		if !ok {
+			l = 1
+			for used[l] {
+				l++
+			}
+			lane[name] = l
 		}
 		used[l] = true
-		lane[name] = l
 		return l
+	}
+	done := func(name string) {
+		remaining[name]--
+		if remaining[name] == 0 {
+			delete(used, lane[name])
+		}
 	}
 	rows := make([]Row, 0, len(items))
 	maxLane := 0
@@ -161,16 +178,14 @@ func assignLanes(items []item) ([]Row, int) {
 		switch r.Kind {
 		case "commit", "more-own", "merge":
 			r.Lane = claim(r.Branch)
-			if r.Kind == "merge" {
-				delete(used, r.Lane)
-			}
+			done(r.Branch)
 		case "fork":
 			for _, n := range it.branches {
 				r.Ends = append(r.Ends, claim(n))
 			}
 			sort.Ints(r.Ends)
-			for _, l := range r.Ends {
-				delete(used, l)
+			for _, n := range it.branches {
+				done(n)
 			}
 		}
 		if r.Lane > maxLane {

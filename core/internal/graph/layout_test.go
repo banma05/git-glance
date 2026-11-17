@@ -60,3 +60,32 @@ func TestLayoutEmpty(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 }
+
+func TestLayoutForkNewerThanOwn(t *testing.T) {
+	tr := TrunkInput{Name: "main", HeadHash: "H", HeadTime: 100}
+	bs := []BranchInput{
+		{Name: "A", Own: []repo.CommitInfo{ci("a1", 70)}, ForkHash: "F1", ForkTime: 80},
+		{Name: "B", Own: []repo.CommitInfo{ci("b1", 75)}, ForkHash: "F2", ForkTime: 60},
+	}
+	s, err := Layout(tr, bs, func(string, string) (int, error) { return 0, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Expected rows: head, fork F1 (ends [1]), commit B lane 2 (A still holds lane 1),
+	// commit A lane 1, fork F2 (ends [2]); 3 lanes.
+	type w struct {
+		Kind   string
+		Lane   int
+		Branch string
+		Ends   []int
+	}
+	want := []w{{"head", 0, "", []int{}}, {"fork", 0, "", []int{1}}, {"commit", 2, "B", []int{}},
+		{"commit", 1, "A", []int{}}, {"fork", 0, "", []int{2}}}
+	var got []w
+	for _, r := range s.Rows {
+		got = append(got, w{r.Kind, r.Lane, r.Branch, r.Ends})
+	}
+	if !reflect.DeepEqual(got, want) || s.Lanes != 3 {
+		t.Fatalf("got %v lanes=%d want %v", got, s.Lanes, want)
+	}
+}
