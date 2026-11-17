@@ -25,6 +25,9 @@ const (
 	stateNone         = "none"
 	logFields         = "--format=%H%x00%s%x00%ct"
 	literalPathPrefix = ":(literal)"
+	// noSignature goes on every log/show: log.showSignature=true in the user's
+	// config would otherwise print signature lines into parsed output.
+	noSignature = "--no-show-signature"
 )
 
 // CommitMatch is one own commit and the step that found it in the target.
@@ -95,7 +98,7 @@ func (m *Matcher) OwnCommits(ctx context.Context, trunkRef, branchRef string) ([
 	if err != nil {
 		return nil, "", 0, err
 	}
-	out, err = m.run(ctx, "log", "-1", "--format=%ct", fork, "--")
+	out, err = m.run(ctx, "log", noSignature, "-1", "--format=%ct", fork, "--")
 	if err != nil {
 		return nil, "", 0, err
 	}
@@ -103,7 +106,7 @@ func (m *Matcher) OwnCommits(ctx context.Context, trunkRef, branchRef string) ([
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("fork time: %w", err)
 	}
-	out, err = m.run(ctx, "log", logFields, "-n", strconv.Itoa(maxOwnCommits), fork+".."+branchRef, "--")
+	out, err = m.run(ctx, "log", noSignature, logFields, "-n", strconv.Itoa(maxOwnCommits), fork+".."+branchRef, "--")
 	if err != nil {
 		return nil, "", 0, err
 	}
@@ -248,7 +251,7 @@ func (m *Matcher) stepPatch(ctx context.Context, target, branch, fork string, pe
 }
 
 func (m *Matcher) stepSubject(ctx context.Context, target, branch, _ string, per []CommitMatch) error {
-	out, err := m.run(ctx, "log", "--format=%s", branch+".."+target, "--")
+	out, err := m.run(ctx, "log", noSignature, "--format=%s", branch+".."+target, "--")
 	if err != nil {
 		return err
 	}
@@ -277,7 +280,7 @@ func (m *Matcher) stepSquash(ctx context.Context, target, branch, fork string, p
 	if err != nil || len(whole) != 1 {
 		return err
 	}
-	args := []string{"log", "-p", "--full-diff", "--format=%H", "--no-ext-diff", "--no-color", "--no-textconv",
+	args := []string{"log", noSignature, "-p", "--full-diff", "--format=%H", "--no-ext-diff", "--no-color", "--no-textconv",
 		"-n", strconv.Itoa(maxSquashCands), branch + ".." + target, "--"}
 	files := strings.Split(strings.Trim(names, "\x00"), "\x00")
 	if len(files) > maxPathspecFiles {
