@@ -123,6 +123,7 @@ func (r ExecRunner) run(ctx context.Context, dir string, input []byte, args []st
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	cmd.WaitDelay = 5 * time.Second
+	hideConsole(cmd)
 	cmd.Env = gitEnv(os.Environ())
 	if input != nil {
 		cmd.Stdin = bytes.NewReader(input)
@@ -168,6 +169,7 @@ func (r ExecRunner) RunCapped(ctx context.Context, dir string, limit int64, args
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	cmd.WaitDelay = 5 * time.Second
+	hideConsole(cmd)
 	cmd.Env = gitEnv(os.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
