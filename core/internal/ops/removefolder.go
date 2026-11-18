@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -347,37 +348,76 @@ func orphanedCommits(ctx context.Context, r gitx.Runner, repoRoot, folder string
 	return orphans, nil
 }
 
+// reflogStep parses a reflog subject of the form "<action> (<step>): ..."
+// ("rebase (pick): fix", "rebase -i (finish): returning to ...").
+var reflogStep = regexp.MustCompile(`^([^:()]+?) \(([^()]+)\)(?::|$)`)
+
+type reflogEntry struct {
+	hash, action, step string
+}
+
 // reflogCandidates reads `log -g --format=%H%x00%gs` (newest first) and
-// returns the unique hashes whose loss would matter (R55). Entries a rebase
-// wrote are its steps: each one is followed, in time order, by the next step
-// of the same run, and only the last entry of a run of rebase entries holds
-// the result. The earlier ones (the start, picks before a fixup) are exempt;
-// every other entry and the last of every rebase run stay candidates.
+// returns the unique hashes whose loss would matter (R57). Only a completed
+// rebase run is exempt: a "rebase… (start)" entry through the next "(finish)"
+// of the same action, with no other "(start)" or "(abort)" in between. Its
+// steps carry their content into the finished result, which stays a
+// candidate like every entry outside such runs: detached rebases (they write
+// no finish), aborted or quit runs, other actions (pull, custom
+// GIT_REFLOG_ACTION), and commits, amends or resets made inside a run.
 func reflogCandidates(out string) []string {
-	type entry struct {
-		hash   string
-		rebase bool
-	}
-	var entries []entry // newest first
+	var entries []reflogEntry // oldest first
 	for _, line := range strings.Split(out, "\n") {
 		hash, subject, _ := strings.Cut(strings.TrimRight(line, "\r"), "\x00")
-		if isHash(hash) {
-			entries = append(entries, entry{hash, strings.HasPrefix(subject, "rebase")})
-		}
-	}
-	var hashes []string
-	seen := map[string]bool{}
-	for i, e := range entries {
-		// entries[i-1] is the next entry in time.
-		if e.rebase && i > 0 && entries[i-1].rebase {
+		if !isHash(hash) {
 			continue
 		}
-		if !seen[e.hash] {
-			seen[e.hash] = true
-			hashes = append(hashes, e.hash)
+		e := reflogEntry{hash: hash}
+		if m := reflogStep.FindStringSubmatch(subject); m != nil {
+			e.action, e.step = m[1], m[2]
+		}
+		entries = append([]reflogEntry{e}, entries...)
+	}
+	exempt := completedRebaseSteps(entries)
+	var hashes []string
+	seen := map[string]bool{}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if h := entries[i].hash; !exempt[i] && !seen[h] {
+			seen[h] = true
+			hashes = append(hashes, h)
 		}
 	}
 	return hashes
+}
+
+// completedRebaseSteps marks, in entries (oldest first), the steps of every
+// completed rebase run except its finish.
+func completedRebaseSteps(entries []reflogEntry) map[int]bool {
+	exempt := map[int]bool{}
+	for i := 0; i < len(entries); i++ {
+		action := entries[i].action
+		if entries[i].step != "start" || (action != "rebase" && !strings.HasPrefix(action, "rebase -")) {
+			continue
+		}
+		end := -1
+		for j := i + 1; j < len(entries) && end < 0; j++ {
+			switch e := entries[j]; {
+			case e.step == "start" || e.step == "abort":
+				j = len(entries) // a new or abandoned invocation: not completed
+			case e.action == action && e.step == "finish":
+				end = j
+			}
+		}
+		if end < 0 {
+			continue
+		}
+		for k := i; k < end; k++ {
+			if entries[k].action == action {
+				exempt[k] = true
+			}
+		}
+		i = end
+	}
+	return exempt
 }
 
 // inProgressMarkers are what git keeps in a folder's own git directory while

@@ -964,24 +964,93 @@ func TestRemoveFolderNestedRepoAppearsDuringBackup(t *testing.T) {
 	}
 }
 
-// R55: rebase entries are exempt except the last of each run (in time
-// order); everything else counts. Input is newest first, as `log -g` prints.
+// R57: only the steps of a completed rebase run (start through the next
+// finish of the same action, nothing started or aborted between) are exempt;
+// the finish and everything else count. Input is newest first, as `log -g`
+// prints it.
 func TestReflogCandidates(t *testing.T) {
 	h := func(c string) string { return strings.Repeat(c, 40) }
 	out := strings.Join([]string{
 		h("a") + "\x00checkout: moving from x to main",
 		h("b") + "\x00rebase (finish): returning to refs/heads/main",
 		h("c") + "\x00rebase (fixup): b",
+		h("0") + "\x00commit (amend): during an edit stop",
 		h("d") + "\x00rebase (pick): b",
 		h("e") + "\x00rebase (start): checkout main",
+		h("6") + "\x00rebase (abort): returning to refs/heads/w",
+		h("5") + "\x00rebase (continue): resolved",
+		h("4") + "\x00rebase (start): checkout base",
 		h("f") + "\x00commit: work",
 		h("1") + "\x00rebase -i (pick): x",
 		h("2") + "\x00rebase -i (start): checkout y",
+		h("7") + "\x00pull (finish): returning to refs/heads/p",
+		h("8") + "\x00pull (pick): p",
+		h("9") + "\x00pull (start): checkout origin/p",
 		h("3") + "\x00",
 	}, "\n")
 	got := strings.Join(reflogCandidates(out), ",")
-	want := strings.Join([]string{h("a"), h("b"), h("f"), h("1"), h("3")}, ",")
+	// Exempt: e, d, c (the completed run); 0 is not a rebase step.
+	want := strings.Join([]string{h("a"), h("b"), h("0"), h("6"), h("5"), h("4"), h("f"), h("1"), h("2"), h("7"), h("8"), h("9"), h("3")}, ",")
 	if got != want {
 		t.Fatalf("candidates = %s\nwant %s", got, want)
+	}
+}
+
+// R57, the re-reviewer's repro: a detached rebase writes no "(finish)", so
+// its result is not part of a completed run even when the next command is
+// another rebase. The result, reachable only from the folder's HEAD reflog,
+// keeps the folder.
+func TestRemoveFolderRefusesDetachedRebaseFollowedByRebase(t *testing.T) {
+	f := newRemoveFixture(t)
+	co := func(b string) { f.r.Git(f.r.Dir, "checkout", "-q", b) }
+	f.r.Branch("work", "main")
+	f.r.Branch("other", "main")
+	co("work")
+	f.r.Commit(f.r.Dir, "work a", map[string]string{"wa.txt": "a\n"})
+	co("other")
+	f.r.Commit(f.r.Dir, "other o", map[string]string{"oo.txt": "o\n"})
+	co("main")
+	f.r.Commit(f.r.Dir, "main moves", map[string]string{"m.txt": "m\n"})
+	f.r.Git(f.wt, "checkout", "-q", "--detach", "work")
+	if err := f.gitIn(f.wt, nil, "rebase", "-q", "main"); err != nil {
+		t.Fatal(err)
+	}
+	result := f.r.Git(f.wt, "rev-parse", "HEAD")
+	if err := f.gitIn(f.wt, nil, "rebase", "-q", "main", "other"); err != nil {
+		t.Fatal(err)
+	}
+	f.r.Git(f.wt, "checkout", "-q", "alice/done")
+	res := f.remove(t, f.view(t), "alice/done")
+	if res.OK || res.Reason != "orphaned-commits" || !slices.Contains(res.Files, result[:12]) {
+		t.Fatalf("res = %+v, want orphaned-commits with %s", res, result[:12])
+	}
+}
+
+// An aborted rebase discards its run: the commit carrying a conflict
+// resolution stays a candidate.
+func TestRemoveFolderRefusesAbortedRebaseResolution(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.r.Commit(f.wt, "one", map[string]string{"f.txt": "1\n"})
+	f.r.Commit(f.wt, "two", map[string]string{"f.txt": "2\n"})
+	f.r.Push(f.wt, "origin", "alice/done")
+	f.r.Branch("base", "main")
+	f.r.Git(f.r.Dir, "merge", "-q", "--ff-only", "alice/done")
+	f.r.Push(f.r.Dir, "origin", "main")
+	f.r.Git(f.r.Dir, "checkout", "-q", "base")
+	f.r.Commit(f.r.Dir, "base x", map[string]string{"f.txt": "x\n"})
+	f.r.Git(f.r.Dir, "checkout", "-q", "main")
+	if err := f.gitIn(f.wt, nil, "rebase", "base"); err == nil {
+		t.Fatal("no conflict")
+	}
+	f.write(t, "f.txt", "resolved\n")
+	f.r.Git(f.wt, "add", "f.txt")
+	if err := f.gitIn(f.wt, []string{"GIT_EDITOR=true"}, "rebase", "--continue"); err == nil {
+		t.Fatal("no second conflict")
+	}
+	resolved := f.r.Git(f.wt, "rev-parse", "HEAD")
+	f.r.Git(f.wt, "rebase", "--abort")
+	res := f.remove(t, f.view(t), "alice/done")
+	if res.OK || res.Reason != "orphaned-commits" || !slices.Contains(res.Files, resolved[:12]) {
+		t.Fatalf("res = %+v, want orphaned-commits with %s", res, resolved[:12])
 	}
 }
