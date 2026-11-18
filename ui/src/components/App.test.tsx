@@ -88,6 +88,34 @@ describe('the repository list', () => {
     expect(screen.queryByText(/No repository yet/)).toBeNull();
   });
 
+  it('drops the alert of a folder once "+" added its repository, and keeps the others', async () => {
+    let tell: (p: unknown) => void = () => undefined;
+    let listed: string[] = [];
+    const { host } = fakeHost({
+      repos: () => listed,
+      discover: { repo: 'C:/w/project' },
+      addRepo: () => (listed = ['C:/w/project']),
+    });
+    host.onDiscovery = (cb) => (tell = cb as (p: unknown) => void);
+    const realCall = host.call.bind(host);
+    host.call = async <T,>(method: string, params?: object): Promise<T> => {
+      if (method === 'repos')
+        tell([
+          { folder: 'C:\\w\\project\\app', code: 'core-unavailable', message: 'x' },
+          { folder: '/w/other', code: 'core-unavailable', message: 'y' },
+        ]);
+      return realCall<T>(method, params);
+    };
+    render(<App host={host} />);
+    expect(await screen.findByText(/w\\project\\app/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Add repository' }));
+    fireEvent.input(screen.getByLabelText('Full path of the repository folder'), { target: { value: '/w/project/app' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(screen.queryByText(/w\\project\\app/)).toBeNull();
+    expect(screen.getByText(/\/w\/other/)).toBeTruthy();
+  });
+
   it('does not point to a disabled "+" when git is too old', async () => {
     const { host } = fakeHost({ repos: [], version: { core: 'x', git: '2.29', gitOK: false } });
     render(<App host={host} />);

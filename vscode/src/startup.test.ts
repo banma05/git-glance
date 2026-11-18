@@ -3,7 +3,7 @@ import { Discovery, registerFolders } from './startup';
 import type { DiscoveryOutcome } from './startup';
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -88,6 +88,18 @@ describe('Discovery', () => {
     work.resolve(fine);
     await vi.advanceTimersByTimeAsync(0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('logs the time it really held the list when a replaced run wakes it early', async () => {
+    const { d, work, lines } = started();
+    void d.beforeRepos('page', () => undefined);
+    const again = deferred();
+    d.run(() => again.promise); // the run the page waits on is replaced
+    await vi.advanceTimersByTimeAsync(3000);
+    work.resolve(fine); // the old run ends: the page wakes, the new run still runs
+    await vi.advanceTimersByTimeAsync(0);
+    const held = lines.filter((l) => l.startsWith('held the repository list'));
+    expect(held).toEqual(['held the repository list for 3000 ms; discovery is still running']);
   });
 
   it('logs how discovery ended: repositories, skipped folders, time', async () => {

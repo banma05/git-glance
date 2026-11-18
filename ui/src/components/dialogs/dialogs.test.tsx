@@ -202,14 +202,47 @@ describe('RemoveFolderConfirm', () => {
     fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
     const d = screen.getByRole('dialog');
     await waitFor(() => expect(d.textContent).toContain(en('dialog.remove.removedLinks', { list: 'build/dep' })));
-    expect(d.textContent).toContain(en('dialog.remove.linksRefused', { list: 'notes/link' }));
+    expect(d.textContent).toContain(en('dialog.remove.linksAfterLinks', { list: 'notes/link' }));
   });
 
   it('says the skipped links of a refusal were not touched', async () => {
     open({ removeFolder: { ...removeOk, ok: false, reason: 'locked', backupDir: '', deletedBuild: [], skippedLinks: ['notes/link'], detail: '', logError: '' } });
     fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
     await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain(en('dialog.remove.linksRefused', { list: 'notes/link' })));
-    expect(en('dialog.remove.linksRefused', { list: 'x' })).toMatch(/nothing was touched/);
+    expect(en('dialog.remove.linksRefused', { list: 'x' })).toMatch(/nothing in the folder was touched/);
+  });
+
+  // what a refusal says about the links depends on whether anything ran
+  const refusal = (reason: string) =>
+    open({
+      removeFolder: { ...removeOk, ok: false, reason, backupDir: '', deletedBuild: [], skippedLinks: ['notes/link'], removedLinks: ['build/dep'], detail: '', logError: '' },
+    });
+  const touched = /nothing in the folder was touched|文件夹里什么都没有动/;
+
+  it('after git started removing the folder, does not claim nothing was touched', async () => {
+    refusal('git-failed');
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    const d = screen.getByRole('dialog');
+    await waitFor(() => expect(d.textContent).toContain(en('dialog.remove.linksAfterGit', { list: 'notes/link' })));
+    expect(d.textContent).toContain(en('dialog.remove.removedLinks', { list: 'build/dep' }));
+    expect(d.textContent).not.toMatch(touched);
+  });
+
+  it('after removing links failed partway, says only the removed links are gone', async () => {
+    refusal('links-failed');
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    const d = screen.getByRole('dialog');
+    await waitFor(() => expect(d.textContent).toContain(en('dialog.remove.linksAfterLinks', { list: 'notes/link' })));
+    expect(d.textContent).toContain(en('dialog.remove.removedLinks', { list: 'build/dep' }));
+    expect(d.textContent).not.toMatch(touched);
+  });
+
+  it('for a reason it does not know, only says the links were not followed', async () => {
+    refusal('from-the-future');
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    const d = screen.getByRole('dialog');
+    await waitFor(() => expect(d.textContent).toContain(en('dialog.remove.linksNotFollowed', { list: 'notes/link' })));
+    expect(d.textContent).not.toMatch(touched);
   });
 
   it('sends one call on a double click', async () => {

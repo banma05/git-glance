@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { rpc } from '../../api';
 import { blockText, formatBytes } from '../../format';
 import type { Host } from '../../host/types';
-import type { T } from '../../i18n';
+import type { Key, T } from '../../i18n';
 import { errorText, reasonText } from '../../reasons';
 import type { Actions, AppState } from '../../state';
 import type { BackupsInfo, BranchView } from '../../types';
@@ -33,6 +33,22 @@ function whyNot(shown: Shown, repo: string, now: BranchView | null, t: T): strin
   if (!now.canRemoveFolder) return t('dialog.remove.blocked', { reason: blockText(now.removeBlock, t) });
   if (!shown.head || now.folder !== shown.folder || now.folderHead !== shown.head) return t('dialog.remove.reopen');
   return '';
+}
+
+// Refusals the core makes before it deletes or removes anything in the folder
+// (a backup may have been written; the folder is as it was).
+const BEFORE_ANYTHING = new Set([
+  'not-in-folder', 'main-folder', 'folder-missing', 'locked-worktree', 'dirty', 'unpushed', 'not-merged', 'error',
+  'changed', 'hidden-changes', 'orphaned-commits', 'nested-repo', 'locked', 'backup-failed', 'in-progress', 'folder-is-link',
+]);
+
+// linksKey says what the links the backup did not follow went through: on a
+// refusal only what is known to be true for that reason.
+function linksKey(ok: boolean, reason: string): Key {
+  if (ok) return 'dialog.remove.links';
+  if (reason === 'git-failed') return 'dialog.remove.linksAfterGit';
+  if (reason === 'links-failed') return 'dialog.remove.linksAfterLinks';
+  return BEFORE_ANYTHING.has(reason) ? 'dialog.remove.linksRefused' : 'dialog.remove.linksNotFollowed';
 }
 
 // RemoveFolderConfirm states what removing a folder does and calls removeFolder
@@ -103,7 +119,7 @@ export function RemoveFolderConfirm({ t, host, state, actions }: Props) {
               {r.deletedBuild.length > 0 && <p>{t('dialog.remove.build', { list: r.deletedBuild.join(', ') })}</p>}
               {(r.removedLinks ?? []).length > 0 && <p>{t('dialog.remove.removedLinks', { list: r.removedLinks.join(', ') })}</p>}
               {r.skippedLinks.length > 0 && (
-                <p>{t(r.ok ? 'dialog.remove.links' : 'dialog.remove.linksRefused', { list: r.skippedLinks.join(', ') })}</p>
+                <p>{t(linksKey(r.ok, r.reason), { list: r.skippedLinks.join(', ') })}</p>
               )}
               <ResultNotes t={t} detail={r.detail} logError={r.logError} />
             </>

@@ -116,6 +116,16 @@ const THEME_ORDER: Theme[] = ['auto', 'dark', 'light'];
 // The group keys the list folds: "trunk:<name>", "unknown" and "old".
 export const trunkKey = (name: string) => `trunk:${name}`;
 
+// inside reports whether folder is root or a folder in it. Separators and the
+// case are ignored: a drive letter or a path may come from the editor in
+// another spelling than from the core.
+export function inside(folder: string, root: string): boolean {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const f = norm(folder);
+  const r = norm(root);
+  return f === r || f.startsWith(r + '/');
+}
+
 function initial(host: Host): AppState {
   return {
     repos: [],
@@ -341,6 +351,8 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
             const repos = await rpc(host, 'addRepo', { path });
             patch({ repos });
             const added = repos.find((r) => r.replace(/[\\/]+$/, '') === path.replace(/[\\/]+$/, '')) ?? repos[repos.length - 1];
+            // an alert about a folder in the added repository is answered now
+            if (added) patch({ discoveryProblems: ref.current.discoveryProblems.filter((p) => !p.folder || !inside(p.folder, added)) });
             if (added) await open(added);
           } catch (e) {
             fail(e);

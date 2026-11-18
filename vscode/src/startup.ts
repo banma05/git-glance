@@ -49,6 +49,7 @@ export class Discovery {
   // problems of the last finished run. page names the page; notify tells it to
   // read again and is kept only when the page is answered before the run ends.
   async beforeRepos(page: unknown, notify: () => void): Promise<DiscoveryProblem[]> {
+    const started = Date.now();
     if (!this.finished) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const limit = new Promise<void>((resolve) => (timer = setTimeout(resolve, this.limitMs)));
@@ -56,7 +57,8 @@ export class Discovery {
       clearTimeout(timer);
     }
     if (this.finished) return this.problems;
-    this.log(`held the repository list for ${this.limitMs} ms; discovery is still running`);
+    // the limit, or a run that was replaced meanwhile, ended the wait
+    this.log(`held the repository list for ${Date.now() - started} ms; discovery is still running`);
     this.early.set(page, notify);
     return [];
   }
