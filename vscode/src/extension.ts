@@ -4,8 +4,7 @@ import { Generation, handlePageMessage } from './bridge';
 import { coreBinaryPath } from './binpath';
 import { CoreClient } from './core';
 import { GIT_SCHEME, GitContentProvider } from './gitfs';
-import { Discovery } from './startup';
-import type { DiscoveryOutcome, DiscoveryProblem } from './startup';
+import { Discovery, registerFolders } from './startup';
 import { renderHtml } from './webview';
 
 type Mode = 'sidebar' | 'wide';
@@ -52,7 +51,8 @@ export function activate(ctx: vscode.ExtensionContext) {
   const refreshPages = () => pages.forEach((p) => p.post({ type: 'refresh' }));
 
   const discovery = new Discovery(DISCOVERY_WAIT_MS, log);
-  const discover = () => discovery.run(() => registerWorkspaceRepos(core, log));
+  const folders = () => (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+  const discover = () => discovery.run(() => registerFolders(core, folders(), log));
   discover();
 
   // setup renders a page into webview and serves its messages; disposing the
@@ -141,25 +141,6 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   // Only the test host may reach the core client.
   return testing ? { CoreClient, core: () => core, traffic: () => traffic.slice(), discovered: () => discovery.done } : undefined;
-}
-
-// Each workspace folder that is inside a repository is added to the list the
-// UI shows. A folder that cannot be added is logged and reported to the pages,
-// never thrown.
-async function registerWorkspaceRepos(core: CoreClient, log: (l: string) => void): Promise<DiscoveryOutcome> {
-  const problems: DiscoveryProblem[] = [];
-  let repos = -1;
-  for (const folder of vscode.workspace.workspaceFolders ?? []) {
-    try {
-      const found = await core.call<{ repo: string }>('discover', { path: folder.uri.fsPath });
-      repos = (await core.call<string[]>('addRepo', { path: found.repo })).length;
-    } catch (e: any) {
-      const code = String(e?.code ?? 'error');
-      log(`skipping ${folder.uri.fsPath}: ${code}: ${e?.message ?? e}`);
-      problems.push({ folder: folder.uri.fsPath, code, message: String(e?.message ?? e) });
-    }
-  }
-  return { repos, problems };
 }
 
 // deactivate lets the core finish what it is writing before the host stops.

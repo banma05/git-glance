@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Discovery } from './startup';
+import { Discovery, registerFolders } from './startup';
 import type { DiscoveryOutcome } from './startup';
 
 beforeEach(() => {
@@ -137,5 +137,34 @@ describe('Discovery', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(d.done).toBe(true);
     expect(await d.beforeRepos('page', () => undefined)).toEqual([]);
+  });
+});
+
+describe('registerFolders', () => {
+  const err = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+  it('adds every folder that is in a repository and counts the list', async () => {
+    const call = vi.fn(async (method: string, params: any) => (method === 'discover' ? { repo: params.path + '-root' } : ['/a', '/b']));
+    const out = await registerFolders({ call } as any, ['/w/a', '/w/b'], () => undefined);
+    expect(call.mock.calls.map((c) => [c[0], c[1].path])).toEqual([
+      ['discover', '/w/a'],
+      ['addRepo', '/w/a-root'],
+      ['discover', '/w/b'],
+      ['addRepo', '/w/b-root'],
+    ]);
+    expect(out).toEqual({ repos: 2, problems: [] });
+  });
+
+  it('reports a folder that could not be added, but not one that is simply no repository', async () => {
+    const lines: string[] = [];
+    const call = vi.fn(async (method: string, params: any) => {
+      if (params.path === '/w/plain') throw err('not-repo', 'not a git repository');
+      if (method === 'discover') return { repo: params.path };
+      throw err('core-unavailable', 'it stopped right after starting');
+    });
+    const out = await registerFolders({ call } as any, ['/w/plain', '/w/repo'], (l) => lines.push(l));
+    expect(out.problems).toEqual([{ folder: '/w/repo', code: 'core-unavailable', message: 'it stopped right after starting' }]);
+    expect(lines.join('\n')).toContain('skipping /w/plain: not-repo');
+    expect(lines.join('\n')).toContain('skipping /w/repo: core-unavailable');
   });
 });

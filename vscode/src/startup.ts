@@ -71,3 +71,27 @@ export class Discovery {
     pages.forEach((notify) => notify());
   }
 }
+
+// registerFolders adds each folder that is inside a repository to the list the
+// pages show. A folder that is no repository is only logged; any other failure
+// is logged and reported, so the pages can say why. Never throws.
+export async function registerFolders(
+  core: { call<T>(method: string, params?: object): Promise<T> },
+  folders: string[],
+  log: (line: string) => void,
+): Promise<DiscoveryOutcome> {
+  const problems: DiscoveryProblem[] = [];
+  let repos = -1;
+  for (const folder of folders) {
+    try {
+      const found = await core.call<{ repo: string }>('discover', { path: folder });
+      repos = (await core.call<string[]>('addRepo', { path: found.repo })).length;
+    } catch (e: any) {
+      const code = String(e?.code ?? 'error');
+      const message = String(e?.message ?? e);
+      log(`skipping ${folder}: ${code}: ${message}`);
+      if (code !== 'not-repo') problems.push({ folder, code, message });
+    }
+  }
+  return { repos, problems };
+}
