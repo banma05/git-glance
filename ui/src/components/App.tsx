@@ -5,6 +5,7 @@ import type { T } from '../i18n';
 import { errorText } from '../reasons';
 import { useApp } from '../state';
 import { Dialogs } from './dialogs/Dialogs';
+import { NoticeLine } from './NoticeLine';
 import { DetailPanel } from './DetailPanel';
 import { GraphView } from './GraphView';
 import { ListView } from './ListView';
@@ -52,6 +53,7 @@ export function App({ host }: { host: Host }) {
       )}
     </div>
   ) : null;
+  const noticeLine = state.notice ? <NoticeLine t={t} notice={state.notice} onDismiss={actions.dismissNotice} /> : null;
   const selected = view && state.selected ? (view.branches[state.selected] ?? null) : null;
 
   if (host.mode === 'sidebar') {
@@ -60,6 +62,7 @@ export function App({ host }: { host: Host }) {
         <Sidebar t={t} host={host} state={state} actions={actions} />
         {fetchLine}
         {errorLine}
+        {noticeLine}
         {!state.loaded && <div class="muted pad">{t('app.loading')}</div>}
         {state.loaded && state.repos.length === 0 && <div class="muted pad">{t('repo.none')}</div>}
         <Dialogs t={t} host={host} state={state} actions={actions} />
@@ -81,6 +84,7 @@ export function App({ host }: { host: Host }) {
       />
       {fetchLine}
       {errorLine}
+      {noticeLine}
       {!state.loaded && <div class="muted pad">{t('app.loading')}</div>}
       {state.loaded && state.repos.length === 0 && <div class="muted pad">{t('repo.none')}</div>}
       {view && (

@@ -7,7 +7,6 @@ import { errorText } from '../../reasons';
 import type { Actions, AppState } from '../../state';
 import type { BackupsInfo, Theme } from '../../types';
 import { EDITORS } from '../Toolbar';
-import { useGuard } from './parts';
 
 type Role = 'trunk' | 'test' | 'release' | 'none';
 const ROLES: Role[] = ['trunk', 'test', 'release', 'none'];
@@ -17,7 +16,7 @@ interface Props {
   t: T;
   host: Host;
   state: AppState;
-  actions: Pick<Actions, 'refreshView' | 'setEditor' | 'setTheme'>;
+  actions: Pick<Actions, 'setRole' | 'setRepoSettings' | 'clearBackups' | 'setEditor' | 'setTheme'>;
 }
 
 type Note = { ok: boolean; text: string } | null;
@@ -25,7 +24,8 @@ type Note = { ok: boolean; text: string } | null;
 export function Settings({ t, host, state, actions }: Props) {
   const view = state.view;
   const repo = state.repo;
-  const guard = useGuard();
+  const busy = state.busy;
+  const outcome = state.settingsOutcome;
   const trunks = view ? view.groups.map((g) => g.trunk.name) : [];
 
   // branch roles
@@ -33,17 +33,15 @@ export function Settings({ t, host, state, actions }: Props) {
   const [role, setRole] = useState<Role>('test');
   const [trunk, setTrunk] = useState(trunks[0] ?? '');
   const [remote, setRemote] = useState<string[] | null>(null);
-  const [roleNote, setRoleNote] = useState<Note>(null);
+  const [searchNote, setSearchNote] = useState<Note>(null);
 
   // hidden prefix and old-branch days
   const [prefix, setPrefix] = useState(view?.settings.hidePrefix ?? '');
   const [days, setDays] = useState(String(view?.settings.oldDays ?? 30));
-  const [viewNote, setViewNote] = useState<Note>(null);
 
   // backups
   const [backups, setBackups] = useState<BackupsInfo | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [backupNote, setBackupNote] = useState<Note>(null);
 
   const loadBackups = () =>
     rpc(host, 'backups')
@@ -52,57 +50,40 @@ export function Settings({ t, host, state, actions }: Props) {
   useEffect(() => {
     void loadBackups();
   }, [host]);
+  // a finished clear closes the confirm and reads the size again
+  useEffect(() => {
+    if (outcome?.kind === 'clearBackups') {
+      setConfirming(false);
+      void loadBackups();
+    }
+  }, [outcome]);
 
   const searchRemote = () => {
     rpc(host, 'remoteBranches', { repo, query: branch.trim() })
       .then(setRemote)
-      .catch((e) => setRoleNote({ ok: false, text: errorText(e, t) }));
+      .catch((e) => setSearchNote({ ok: false, text: errorText(e, t) }));
   };
 
   const applyRole = () => {
     const name = branch.trim();
     if (!name) return;
-    const params = role === 'test' || role === 'release' ? { repo, branch: name, role, trunk } : { repo, branch: name, role };
-    guard.run(async () => {
-      try {
-        await rpc(host, 'setRole', params);
-        setRoleNote({ ok: true, text: t('dialog.settings.saved') });
-        actions.refreshView();
-      } catch (e) {
-        setRoleNote({ ok: false, text: errorText(e, t) });
-      }
-    });
+    actions.setRole(name, role, trunk);
   };
 
   const daysNumber = Number(days);
   const daysOk = days.trim() !== '' && Number.isInteger(daysNumber);
   const saveView = () => {
     if (!daysOk) return;
-    guard.run(async () => {
-      try {
-        await rpc(host, 'setRepoSettings', { repo, hidePrefix: prefix, oldDays: daysNumber });
-        setViewNote({ ok: true, text: t('dialog.settings.saved') });
-        actions.refreshView();
-      } catch (e) {
-        setViewNote({ ok: false, text: errorText(e, t) });
-      }
-    });
-  };
-
-  const clearBackups = () => {
-    guard.run(async () => {
-      try {
-        await rpc(host, 'clearBackups');
-        setBackupNote({ ok: true, text: t('dialog.settings.cleared') });
-      } catch (e) {
-        setBackupNote({ ok: false, text: errorText(e, t) });
-      }
-      setConfirming(false);
-      await loadBackups();
-    });
+    actions.setRepoSettings(prefix, daysNumber);
   };
 
   const noteView = (n: Note) => (n ? <p class={n.ok ? 'ok' : 'warn'}>{n.text}</p> : null);
+  const noteFor = (...kinds: string[]): Note =>
+    outcome && kinds.includes(outcome.kind)
+      ? outcome.error
+        ? { ok: false, text: errorText(outcome.error, t) }
+        : { ok: true, text: outcome.kind === 'clearBackups' ? t('dialog.settings.cleared') : t('dialog.settings.saved') }
+      : null;
   const choices = [...(view ? Object.keys(view.branches) : []), ...(remote ?? [])];
   return (
     <div class="settings">
@@ -139,10 +120,11 @@ export function Settings({ t, host, state, actions }: Props) {
             </select>
           </label>
         )}
-        <button class="btn" disabled={guard.busy || !branch.trim()} onClick={applyRole}>
+        <button class="btn" disabled={busy || !branch.trim()} onClick={applyRole}>
           {t('dialog.settings.apply')}
         </button>
-        {noteView(roleNote)}
+        {noteView(searchNote)}
+        {noteView(noteFor('setRole'))}
       </div>
 
       <h4>{t('dialog.settings.view')}</h4>
@@ -155,10 +137,10 @@ export function Settings({ t, host, state, actions }: Props) {
           {t('dialog.settings.oldDays')}
           <input type="number" min="1" max="3650" value={days} onInput={(e) => setDays((e.target as HTMLInputElement).value)} />
         </label>
-        <button class="btn" disabled={guard.busy || !daysOk} onClick={saveView}>
+        <button class="btn" disabled={busy || !daysOk} onClick={saveView}>
           {t('dialog.settings.save')}
         </button>
-        {noteView(viewNote)}
+        {noteView(noteFor('repoSettings'))}
         {!window.acquireVsCodeApi && (
           <label class="field">
             {t('toolbar.openWith')}
@@ -184,19 +166,19 @@ export function Settings({ t, host, state, actions }: Props) {
       {confirming ? (
         <div class="confirm" role="alertdialog">
           <p class="warn">{t('dialog.settings.clearWarn')}</p>
-          <button class="btn danger" disabled={guard.busy} onClick={clearBackups}>
+          <button class="btn danger" disabled={busy} onClick={actions.clearBackups}>
             {t('dialog.settings.clearYes')}
           </button>{' '}
-          <button class="btn" disabled={guard.busy} onClick={() => setConfirming(false)}>
+          <button class="btn" disabled={busy} onClick={() => setConfirming(false)}>
             {t('app.cancel')}
           </button>
         </div>
       ) : (
-        <button class="btn" disabled={guard.busy} onClick={() => setConfirming(true)}>
+        <button class="btn" disabled={busy} onClick={() => setConfirming(true)}>
           {t('dialog.settings.clearBackups')}
         </button>
       )}
-      {noteView(backupNote)}
+      {noteView(noteFor('clearBackups'))}
     </div>
   );
 }

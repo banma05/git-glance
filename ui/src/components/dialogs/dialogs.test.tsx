@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { useEffect, useMemo, useRef } from 'preact/hooks';
 import { Dialogs } from './Dialogs';
 import { RepoTabs } from '../RepoTabs';
+import { NoticeLine } from '../NoticeLine';
 import { makeT } from '../../i18n';
 import { mockView } from '../../host/mock';
 import { HostError } from '../../host/types';
@@ -70,7 +71,12 @@ function Harness({ host, open, select }: { host: Host; open: DialogName; select?
     if (open === 'align') actions.align();
     else actions.openDialog(open);
   }, [state.view]);
-  return <Dialogs host={host} t={t} state={state} actions={actions} />;
+  return (
+    <>
+      {state.notice && <NoticeLine t={t} notice={state.notice} onDismiss={actions.dismissNotice} />}
+      <Dialogs host={host} t={t} state={state} actions={actions} />
+    </>
+  );
 }
 
 const en = makeT('en');
@@ -413,5 +419,94 @@ describe('repository tabs "+"', () => {
     fireEvent.click(screen.getByRole('button', { name: en('repo.addSubmit') }));
     await screen.findByText(new RegExp(en('code.not-repo')));
     expect(onAdd).not.toHaveBeenCalled();
+  });
+});
+
+describe('results after the dialog closed (page notice)', () => {
+  const closeNow = () => fireEvent.keyDown(document, { key: 'Escape' });
+  const notice = () => screen.getByTestId('notice').textContent ?? '';
+
+  it('shows a failed remove that ended after the dialog was closed', async () => {
+    let fail: (e: unknown) => void = () => undefined;
+    const h = fakeHost({ removeFolder: () => new Promise((_ok, bad) => (fail = bad)) });
+    render(<Harness host={h.host} open="remove" select="alice/fix/typo" />);
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    await waitFor(() => expect(h.count('removeFolder')).toBe(1));
+    closeNow();
+    await act(async () => fail(new HostError('git-failed', 'boom')));
+    await waitFor(() => expect(screen.getByTestId('notice')).toBeTruthy());
+    expect(notice()).toContain(en('notice.op.remove'));
+    expect(notice()).toContain('alice/fix/typo');
+    expect(notice()).toContain(en('code.git-failed'));
+  });
+
+  it('shows the reason of a refusal that arrived after the dialog was closed', async () => {
+    let done: (v: unknown) => void = () => undefined;
+    const h = fakeHost({ removeFolder: () => new Promise((r) => (done = r)) });
+    render(<Harness host={h.host} open="remove" select="alice/fix/typo" />);
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    await waitFor(() => expect(h.count('removeFolder')).toBe(1));
+    closeNow();
+    await act(async () => done({ ...removeOk, ok: false, reason: 'locked' }));
+    await waitFor(() => expect(screen.getByTestId('notice')).toBeTruthy());
+    expect(notice()).toContain(en('remove.reason.locked'));
+  });
+
+  it('shows a success with its log error after the dialog was closed', async () => {
+    let done: (v: unknown) => void = () => undefined;
+    const h = fakeHost({ removeFolder: () => new Promise((r) => (done = r)) });
+    render(<Harness host={h.host} open="remove" select="alice/fix/typo" />);
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    await waitFor(() => expect(h.count('removeFolder')).toBe(1));
+    closeNow();
+    await act(async () => done(removeOk));
+    await waitFor(() => expect(screen.getByTestId('notice')).toBeTruthy());
+    expect(notice()).toContain('disk is full');
+  });
+
+  it('shows a failed clearBackups after Settings was closed', async () => {
+    let fail: (e: unknown) => void = () => undefined;
+    const h = fakeHost({ clearBackups: () => new Promise((_ok, bad) => (fail = bad)) });
+    render(<Harness host={h.host} open="settings" />);
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.settings.clearBackups') }));
+    fireEvent.click(screen.getByRole('button', { name: en('dialog.settings.clearYes') }));
+    await waitFor(() => expect(h.count('clearBackups')).toBe(1));
+    closeNow();
+    await act(async () => fail(new HostError('internal', 'x')));
+    await waitFor(() => expect(screen.getByTestId('notice')).toBeTruthy());
+    expect(notice()).toContain(en('notice.op.clearBackups'));
+    expect(notice()).toContain(en('code.internal'));
+  });
+
+  it('shows a failed setRole after Settings was closed', async () => {
+    let fail: (e: unknown) => void = () => undefined;
+    const h = fakeHost({ setRole: () => new Promise((_ok, bad) => (fail = bad)) });
+    render(<Harness host={h.host} open="settings" />);
+    fireEvent.input(await screen.findByLabelText(en('dialog.settings.branch')), { target: { value: 'release/2.0' } });
+    fireEvent.click(screen.getByRole('button', { name: en('dialog.settings.apply') }));
+    await waitFor(() => expect(h.count('setRole')).toBe(1));
+    closeNow();
+    await act(async () => fail(new HostError('bad-params', 'nope')));
+    await waitFor(() => expect(screen.getByTestId('notice')).toBeTruthy());
+    expect(notice()).toContain(en('notice.op.setRole'));
+    expect(notice()).toContain('release/2.0');
+    expect(notice()).toContain(en('code.bad-params'));
+  });
+
+  it('shows the result in the dialog, and no page notice, while the dialog is open', async () => {
+    const h = fakeHost({ removeFolder: removeOk, createFolder: new HostError('internal', 'x') });
+    render(<Harness host={h.host} open="remove" select="alice/fix/typo" />);
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain('/cfg/backups/typo-1'));
+    expect(screen.queryByTestId('notice')).toBeNull();
+  });
+
+  it('shows a failed setRole in Settings, and no page notice, while it is open', async () => {
+    const h = fakeHost({ setRole: new HostError('bad-params', 'nope') });
+    render(<Harness host={h.host} open="settings" />);
+    fireEvent.input(await screen.findByLabelText(en('dialog.settings.branch')), { target: { value: 'x/y' } });
+    fireEvent.click(screen.getByRole('button', { name: en('dialog.settings.apply') }));
+    await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain(en('code.bad-params')));
+    expect(screen.queryByTestId('notice')).toBeNull();
   });
 });

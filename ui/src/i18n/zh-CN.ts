@@ -232,4 +232,12 @@ export const zh = {
   'oplog.op.switch': '切换分支',
   'oplog.op.remove-folder': '删除文件夹',
   'oplog.result.ok': '成功',
+  'notice.op.create': '新建文件夹',
+  'notice.op.remove': '删除文件夹',
+  'notice.op.setRole': '设置分支角色',
+  'notice.op.repoSettings': '仓库设置',
+  'notice.op.clearBackups': '清空备份',
+  'notice.ok': '{label}：已完成',
+  'notice.failed': '{label}：没有完成：{reason}',
+  'notice.dismiss': '知道了',
 } as const;

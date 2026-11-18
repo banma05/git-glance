@@ -16,6 +16,26 @@ export interface WriteOutcome<R> {
   error: unknown;
 }
 
+export type WriteKind = 'create' | 'remove' | 'setRole' | 'repoSettings' | 'clearBackups';
+
+// Notice is a write's result shown on the page when the dialog it was started
+// from is no longer open: which write, on what, and how it ended.
+export interface Notice {
+  kind: WriteKind;
+  target: string; // branch or repository; may be ""
+  error: unknown; // the failed call; null when the core answered
+  ok: boolean;
+  reason: string; // the core's refusal reason when !ok and there is no error
+  logError: string;
+}
+
+// SettingsOutcome is the last settings write, shown inside the settings dialog.
+export interface SettingsOutcome {
+  kind: WriteKind;
+  target: string;
+  error: unknown; // null when the write worked
+}
+
 export interface AppState {
   repos: string[];
   repo: string;
@@ -33,6 +53,8 @@ export interface AppState {
   busy: boolean; // a write is running
   createOutcome: WriteOutcome<OpResult> | null;
   removeOutcome: WriteOutcome<RemoveFolderResult> | null;
+  settingsOutcome: SettingsOutcome | null;
+  notice: Notice | null;
   switchResult: { branch: string; result: OpResult } | null; // the last switch, shown in the detail area
   global: Global | null;
   theme: ThemeKind;
@@ -54,6 +76,10 @@ export interface Actions {
   refreshView(): void; // read the view again (after a change made outside the actions)
   createFolder(trunk: string, branch: string, path: string): void;
   removeFolder(branch: string): void;
+  setRole(branch: string, role: string, trunk: string): void;
+  setRepoSettings(hidePrefix: string, oldDays: number): void;
+  clearBackups(): void;
+  dismissNotice(): void;
   align(): void;
   moveTrunk(name: string, index: number): void;
   cycleTheme(): void;
@@ -85,6 +111,8 @@ function initial(host: Host): AppState {
     busy: false,
     createOutcome: null,
     removeOutcome: null,
+    settingsOutcome: null,
+    notice: null,
     switchResult: null,
     global: null,
     theme: host.theme(),
@@ -115,6 +143,11 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     // to another repository the failure is not theirs to see.
     const failFor = (repo: string, e: unknown) => {
       if (current(repo)) fail(e);
+    };
+    // noteIfClosed puts a write's result on the page when its dialog was closed
+    // meanwhile; while the dialog is open it shows the result itself.
+    const noteIfClosed = (dialog: DialogName, notice: Notice) => {
+      if (ref.current.dialog !== dialog) patch({ notice });
     };
     const reasonOf = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
 
@@ -232,11 +265,72 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       toggleGroup: (key) => patch({ collapsed: { ...ref.current.collapsed, [key]: !ref.current.collapsed[key] } }),
       openDialog: (dialog) => {
         // a write that is still running keeps its slot; otherwise the dialog starts clean
-        patch(ref.current.busy ? { dialog } : { dialog, createOutcome: null, removeOutcome: null });
+        patch(ref.current.busy ? { dialog } : { dialog, createOutcome: null, removeOutcome: null, settingsOutcome: null });
       },
       refreshView: () => {
         const repo = ref.current.repo;
         if (repo) loadView(repo).catch((e) => failFor(repo, e));
+      },
+      dismissNotice: () => patch({ notice: null }),
+      setRole: (branch, role, trunk) => {
+        const repo = ref.current.repo;
+        if (!repo || ref.current.busy) return;
+        patch({ busy: true, settingsOutcome: null });
+        void (async () => {
+          let error: unknown = null;
+          try {
+            const params = role === 'test' || role === 'release' ? { repo, branch, role, trunk } : { repo, branch, role };
+            await rpc(host, 'setRole', params);
+          } catch (e) {
+            error = e;
+          }
+          patch({ settingsOutcome: { kind: 'setRole', target: branch, error } });
+          noteIfClosed('settings', { kind: 'setRole', target: branch, error, ok: !error, reason: '', logError: '' });
+          try {
+            if (!error) await loadView(repo);
+          } catch (e) {
+            failFor(repo, e);
+          } finally {
+            patch({ busy: false });
+          }
+        })();
+      },
+      setRepoSettings: (hidePrefix, oldDays) => {
+        const repo = ref.current.repo;
+        if (!repo || ref.current.busy) return;
+        patch({ busy: true, settingsOutcome: null });
+        void (async () => {
+          let error: unknown = null;
+          try {
+            await rpc(host, 'setRepoSettings', { repo, hidePrefix, oldDays });
+          } catch (e) {
+            error = e;
+          }
+          patch({ settingsOutcome: { kind: 'repoSettings', target: repo, error } });
+          noteIfClosed('settings', { kind: 'repoSettings', target: repo, error, ok: !error, reason: '', logError: '' });
+          try {
+            if (!error) await loadView(repo);
+          } catch (e) {
+            failFor(repo, e);
+          } finally {
+            patch({ busy: false });
+          }
+        })();
+      },
+      clearBackups: () => {
+        if (ref.current.busy) return;
+        patch({ busy: true, settingsOutcome: null });
+        void (async () => {
+          let error: unknown = null;
+          try {
+            await rpc(host, 'clearBackups');
+          } catch (e) {
+            error = e;
+          }
+          patch({ settingsOutcome: { kind: 'clearBackups', target: '', error } });
+          noteIfClosed('settings', { kind: 'clearBackups', target: '', error, ok: !error, reason: '', logError: '' });
+          patch({ busy: false });
+        })();
       },
       createFolder: (trunk, branch, path) => {
         const repo = ref.current.repo;
@@ -249,9 +343,11 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
               result = await rpc(host, 'createFolder', { repo, trunk, branch, path });
             } catch (error) {
               if (current(repo)) patch({ createOutcome: { branch, result: null, error } });
+              noteIfClosed('create', { kind: 'create', target: branch, error, ok: false, reason: '', logError: '' });
               return;
             }
             if (current(repo)) patch({ createOutcome: { branch, result, error: null } });
+            noteIfClosed('create', { kind: 'create', target: branch, error: null, ok: result.ok, reason: result.reason, logError: result.logError });
             if (result.ok) await loadView(repo);
           } catch (e) {
             failFor(repo, e);
@@ -271,9 +367,11 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
               result = await rpc(host, 'removeFolder', { repo, branch });
             } catch (error) {
               if (current(repo)) patch({ removeOutcome: { branch, result: null, error } });
+              noteIfClosed('remove', { kind: 'remove', target: branch, error, ok: false, reason: '', logError: '' });
               return;
             }
             if (current(repo)) patch({ removeOutcome: { branch, result, error: null } });
+            noteIfClosed('remove', { kind: 'remove', target: branch, error: null, ok: result.ok, reason: result.reason, logError: result.logError });
             // the folder may be gone even when the answer is a refusal after a partial run
             await loadView(repo);
           } catch (e) {

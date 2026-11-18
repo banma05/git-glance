@@ -235,4 +235,12 @@ export const en: Record<Key, string> = {
   'oplog.op.switch': 'Switch branch',
   'oplog.op.remove-folder': 'Remove folder',
   'oplog.result.ok': 'Done',
+  'notice.op.create': 'New folder',
+  'notice.op.remove': 'Remove folder',
+  'notice.op.setRole': 'Set branch role',
+  'notice.op.repoSettings': 'Repository settings',
+  'notice.op.clearBackups': 'Clear backups',
+  'notice.ok': '{label}: done',
+  'notice.failed': '{label}: not done: {reason}',
+  'notice.dismiss': 'Dismiss',
 };
