@@ -68,17 +68,20 @@ interface Props {
   onSelect(branch: string): void;
   onCommit(branch: string, hash: string): void;
   onTrunk(p: TrunkPick): void;
-  inline?: ComponentChildren; // details shown right under the clicked row (the narrow layout)
+  inline?: ComponentChildren; // details shown right under the row the selection is about (the narrow layout)
 }
 
 // GraphView draws one block per trunk, one line per row. A row is one button:
 // the lanes as a small SVG, then a name and at most one chip. The details of
-// whatever was clicked live in the detail area (or under the row, see `inline`).
+// whatever was clicked live in the detail area, or with `inline` right under the
+// row they are about: the ringed node, or the opened list of hidden trunk
+// commits that holds the picked one. Nothing remembers a row by its position,
+// so a new view never puts the details under the wrong row.
 export function GraphView({ t, host, repo, view, theme, selected, pick = null, onSelect, onCommit, onTrunk, inline }: Props) {
   const fetched = useRef<Record<string, Fetched>>({});
   const [, redraw] = useState(0);
   const [hover, setHover] = useState('');
-  const [anchor, setAnchor] = useState(''); // the row the user clicked last
+  let placed = false; // the inline details go under one row only
   const put = (key: string, value: Fetched | undefined) => {
     if (value) fetched.current[key] = value;
     else delete fetched.current[key];
@@ -123,7 +126,6 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
           const color = b ? branchColor(theme, b) : '';
           const first = !seen.has(r.branch);
           if (r.branch) seen.add(r.branch);
-          const rowKey = `${section.trunk}:${i}`;
           const top = b ? topChip(chips(b, t)) : null;
           const branchTip = b ? (top ? `${b.name} · ${top.text}` : b.name) : r.branch;
           const trunkTip = t('graph.trunkTip', { hash: r.hash.slice(0, 7) });
@@ -136,6 +138,8 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
           const on = isTrunkPick || isCommitPick || isBranchPick;
           const ring = on ? ' g-ring' : '';
           const hl = hover && r.branch && hover === r.branch ? ' g-hl' : '';
+          const faded = hover && r.branch && hover !== r.branch ? ' g-faded' : '';
+          let anchored = false; // the inline details go right after this row (and its opened list)
 
           const hit = (tip: string) => (
             <circle class="g-hit" cx={r.kind === 'head' || r.kind === 'fork' ? LANE_X : x} cy={cy} r={HIT_R}>
@@ -201,6 +205,7 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
             expanded = anchors ? state?.status === 'ok' : undefined;
             click = () => anchors && toggle(key, anchors.newer, anchors.older);
             text = <span class="g-name">{t('graph.moreTrunk', { n: r.count })}</span>;
+            anchored = pick?.kind === 'trunk' && state?.status === 'ok' && state.commits.some((c) => c.hash === pick.hash);
             if (anchors && state) {
               expansion = (
                 <Expanded
@@ -212,10 +217,7 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
                   hover={hover}
                   colorOf={colorOf}
                   picked={pick?.kind === 'trunk' ? pick.hash : ''}
-                  onPick={(c) => {
-                    setAnchor(rowKey);
-                    onTrunk({ trunk: section.trunk, hash: c.hash, time: c.time, subject: c.subject });
-                  }}
+                  onPick={(c) => onTrunk({ trunk: section.trunk, hash: c.hash, time: c.time, subject: c.subject })}
                   onRetry={() => toggle(key, anchors.newer, anchors.older)}
                 />
               );
@@ -229,6 +231,8 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
               </>
             );
             if (first) {
+              // the tip: the branch's details, with this commit in them
+              click = () => onCommit(r.branch, r.hash);
               text = (
                 <>
                   <span class="g-name">{b?.short ?? r.branch}</span>
@@ -244,19 +248,18 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
           }
 
           const mine = r.kind === 'head' || r.kind === 'fork' ? '' : r.branch;
+          anchored = (anchored || on) && !placed;
+          if (anchored) placed = true;
           return (
             <>
               <button
-                class={`g-row${on ? ' selected' : ''}`}
+                class={`g-row${on ? ' selected' : ''}${faded}`}
                 data-kind={r.kind}
                 style={{ height: `${h}px` }}
                 title={tip || undefined}
                 aria-label={label || undefined}
                 aria-expanded={expanded}
-                onClick={() => {
-                  if (r.kind !== 'more') setAnchor(rowKey);
-                  click();
-                }}
+                onClick={click}
                 onMouseEnter={() => setHover(mine)}
                 onMouseLeave={() => setHover('')}
                 onFocus={() => setHover(mine)}
@@ -268,7 +271,7 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
                 <span class={textClass}>{text}</span>
               </button>
               {expansion}
-              {inline && anchor === rowKey && <div class="g-inline">{inline}</div>}
+              {inline && anchored && <div class="g-inline">{inline}</div>}
             </>
           );
         });

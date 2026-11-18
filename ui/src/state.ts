@@ -182,9 +182,20 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     };
     const reasonOf = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
 
+    // stale is what of the selection a new view no longer has: a branch that is
+    // gone, a commit no longer among its own, a trunk that is gone.
+    const stale = (view: View): Partial<AppState> => {
+      const { selected, pick } = ref.current;
+      const out: Partial<AppState> = {};
+      if (selected && !view.branches[selected]) Object.assign(out, { selected: '', switchResult: null, assignResult: null });
+      if (pick?.kind === 'commit' && !view.branches[pick.branch]?.own.some((c) => c.hash === pick.hash)) out.pick = null;
+      if (pick?.kind === 'trunk' && !view.sections.some((s) => s.trunk === pick.trunk)) out.pick = null;
+      return out;
+    };
+
     const loadView = async (repo: string) => {
       const view = await rpc(host, 'view', { repo });
-      if (current(repo)) patch({ view, fetchError: view.fetchError, error: null });
+      if (current(repo)) patch({ view, fetchError: view.fetchError, error: null, ...stale(view) });
       return view;
     };
 
@@ -199,7 +210,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         const view = await rpc(host, 'view', { repo });
         if (!current(repo)) return;
         const failed = f.ok ? view.fetchError : f.error || view.fetchError || 'unknown';
-        patch({ view, fetching: false, fetchError: failed, error: null });
+        patch({ view, fetching: false, fetchError: failed, error: null, ...stale(view) });
       } catch (e) {
         if (!current(repo)) return;
         if (noteGit(e)) {
@@ -305,7 +316,8 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       refresh: () => {
         if (ref.current.repo && !ref.current.fetching) void refresh(ref.current.repo);
       },
-      setMode: (mode) => patch({ mode }),
+      // a picked commit belongs to the graph it was clicked in; the branch stays selected
+      setMode: (mode) => patch(mode === ref.current.mode ? {} : { mode, pick: null }),
       select: (selected) =>
         patch({ selected: ref.current.selected === selected && !ref.current.pick ? '' : selected, pick: null, switchResult: null, assignResult: null }),
       selectCommit: (branch, hash) => {

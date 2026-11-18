@@ -277,6 +277,48 @@ describe('App failures and repo switching', () => {
     expect(screen.getByTestId('notice').textContent).toContain('Align with remote - a: done');
   });
 
+  it('drops a trunk commit pick when the mode changes', async () => {
+    const { host } = scriptedHost((method, repo) => (method === 'view' ? mockView(repo) : okFetch));
+    const { container } = render(<App host={host} />);
+    await screen.findByText('feature/login');
+    fireEvent.click(screen.getByRole('button', { name: 'Graph' }));
+    fireEvent.click(container.querySelector('.g-row[data-kind="head"]')!);
+    expect(await screen.findByText('Commit on the trunk')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'List' }));
+    expect(screen.queryByText('Commit on the trunk')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Graph' }));
+    expect(screen.queryByText('Commit on the trunk')).toBeNull();
+    expect(container.querySelector('.g-ring')).toBeNull();
+  });
+
+  it('drops a selection whose branch is gone from a view read again', async () => {
+    let refresh: () => void = () => undefined;
+    let gone = false;
+    const { host } = scriptedHost((method, repo) => {
+      if (method !== 'view') return okFetch;
+      const v = mockView(repo);
+      if (gone) {
+        delete v.branches['carol/feature/search'];
+        v.groups[0].branches = v.groups[0].branches.filter((b) => b !== 'carol/feature/search');
+      }
+      return v;
+    });
+    host.onRefresh = (cb) => (refresh = cb);
+    render(<App host={host} />);
+    fireEvent.click(await screen.findByText('feature/search'));
+    expect(await screen.findByRole('button', { name: 'Switch here' })).toBeTruthy();
+    gone = true;
+    await act(async () => refresh());
+    await waitFor(() => expect(screen.queryByText('feature/search')).toBeNull());
+    expect(screen.queryByRole('button', { name: 'Switch here' })).toBeNull();
+    expect(screen.getByText('Click a row to see details')).toBeTruthy();
+    // the selection went with the branch: a later view that has it again does not bring it back
+    gone = false;
+    await act(async () => refresh());
+    await screen.findByText('feature/search');
+    expect(screen.queryByRole('button', { name: 'Switch here' })).toBeNull();
+  });
+
   it('makes no further calls once the opening sequence has settled', async () => {
     const { host, calls } = scriptedHost((method, repo) => (method === 'view' ? mockView(repo) : okFetch));
     render(<App host={host} />);

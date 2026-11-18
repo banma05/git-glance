@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { GraphView } from './GraphView';
@@ -165,10 +167,11 @@ describe('GraphView colors', () => {
 });
 
 describe('GraphView clicks', () => {
-  it('selects a branch when its named row is clicked', () => {
-    const { container, onSelect } = setup();
+  it('picks the tip commit when the named row of a branch is clicked (branch details plus that commit)', () => {
+    const { container, onSelect, onCommit } = setup();
     fireEvent.click(rows(container)[3]);
-    expect(onSelect).toHaveBeenCalledWith('B');
+    expect(onCommit).toHaveBeenCalledWith('B', 'b1');
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it('selects a commit when a later row of a branch is clicked', () => {
@@ -194,14 +197,14 @@ describe('GraphView clicks', () => {
   });
 
   it('makes the dot hit area at least 16px wide and selects through it', () => {
-    const { container, onSelect } = setup();
+    const { container, onCommit } = setup();
     const hit = rows(container)[3].querySelector<SVGCircleElement>('.g-hit')!;
     expect(Number(hit.getAttribute('r')) * 2).toBeGreaterThanOrEqual(16);
     fireEvent.click(hit);
-    expect(onSelect).toHaveBeenCalledWith('B');
+    expect(onCommit).toHaveBeenCalledWith('B', 'b1');
     const dotClick = setup();
     fireEvent.click(rows(dotClick.container)[3].querySelector('.g-dot')!);
-    expect(dotClick.onSelect).toHaveBeenCalledWith('B');
+    expect(dotClick.onCommit).toHaveBeenCalledWith('B', 'b1');
   });
 
   it('makes every row a focusable button, so Enter and Space work', () => {
@@ -214,12 +217,72 @@ describe('GraphView clicks', () => {
     expect(document.activeElement).toBe(rows(container)[3]);
   });
 
-  it('shows the details under the clicked row when inline is given', () => {
-    const { container } = setup({ inline: <div class="probe">details</div> });
-    expect(container.querySelector('.probe')).toBeNull();
-    fireEvent.click(rows(container)[3]);
+  it('shows the inline details under the row the selection is about', () => {
+    const inline = <div class="probe">details</div>;
+    const under = (c: Element) => c.querySelector('.probe')!.parentElement!.previousElementSibling;
+    let r = setup({ selected: 'B', inline });
+    expect(under(r.container)).toBe(rows(r.container)[3]);
+    cleanup();
+    r = setup({ selected: 'A', pick: { kind: 'commit', branch: 'A', hash: 'a1' }, inline });
+    expect(under(r.container)).toBe(rows(r.container)[2]);
+    cleanup();
+    r = setup({ pick: { kind: 'trunk', trunk: 'main', hash: 'F1', time: 1, subject: '' }, inline });
+    expect(under(r.container)).toBe(rows(r.container)[7]);
+    cleanup();
+    r = setup({ inline });
+    expect(r.container.querySelector('.probe')).toBeNull();
+  });
+
+  it('keeps the inline details with the branch when a new view moves its row', () => {
+    const inline = <div class="probe">details</div>;
+    const { container, rerender } = setup({ selected: 'B', inline });
+    const moved: Section = { ...layoutSection, rows: [layoutSection.rows[0], layoutSection.rows[3], ...layoutSection.rows.slice(1, 3), ...layoutSection.rows.slice(4)] };
+    rerender(
+      <GraphView
+        t={makeT('en')}
+        host={fakeHost(async () => commits).host}
+        repo="/w/repo"
+        view={layoutView(moved)}
+        theme="dark"
+        selected="B"
+        pick={null}
+        onSelect={() => undefined}
+        onCommit={() => undefined}
+        onTrunk={() => undefined}
+        inline={inline}
+      />,
+    );
     const probe = container.querySelector('.probe')!;
-    expect(probe.parentElement!.previousElementSibling).toBe(rows(container)[3]);
+    expect(probe.parentElement!.previousElementSibling).toBe(rows(container)[1]);
+    expect(container.querySelectorAll('.probe')).toHaveLength(1);
+  });
+
+  it('shows the details of a hidden trunk commit under the opened list', async () => {
+    const inline = <div class="probe">details</div>;
+    const { container, rerender } = setup({ inline });
+    fireEvent.click(rows(container)[6]);
+    await screen.findByText('Other one');
+    rerender(
+      <GraphView
+        t={makeT('en')}
+        host={fakeHost(async () => commits).host}
+        repo="/w/repo"
+        view={layoutView(layoutSection)}
+        theme="dark"
+        selected=""
+        pick={{ kind: 'trunk', trunk: 'main', hash: 'x2', time: 1, subject: 'Other two' }}
+        onSelect={() => undefined}
+        onCommit={() => undefined}
+        onTrunk={() => undefined}
+        inline={inline}
+      />,
+    );
+    const probe = container.querySelector('.probe')!;
+    const before = probe.parentElement!.previousElementSibling as HTMLElement;
+    expect(before.className).toContain('g-expanded'); // right after the opened list
+    const picked = screen.getByText('Other two').closest('button')!;
+    expect(picked.compareDocumentPosition(probe) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('.probe')).toHaveLength(1);
   });
 });
 
@@ -242,6 +305,26 @@ describe('GraphView hover and selection', () => {
     fireEvent.mouseLeave(rows(container)[3]);
     expect(container.querySelector('.g-hl')).toBeNull();
     expect(container.querySelector('.g-dim')).toBeNull();
+  });
+
+  it('fades the dots, hooks and names of the other branches while one is hovered', () => {
+    const { container } = setup();
+    fireEvent.mouseEnter(rows(container)[3]);
+    const r = rows(container);
+    for (const i of [1, 2, 4, 5, 8]) expect(r[i].className, `row ${i}`).toContain('g-faded');
+    for (const i of [0, 3, 6, 7, 9, 10]) expect(r[i].className, `row ${i}`).not.toContain('g-faded');
+    fireEvent.mouseLeave(r[3]);
+    expect(container.querySelector('.g-faded')).toBeNull();
+  });
+
+  it('keeps the ring of the selected node visible under hover (CSS)', () => {
+    const css = readFileSync(resolve(__dirname, '../app.css'), 'utf8');
+    const hover = css.indexOf('.g-row:hover .g-dot');
+    const ring = css.indexOf('.g-row:hover .g-dot.g-ring');
+    expect(hover).toBeGreaterThanOrEqual(0);
+    expect(ring).toBeGreaterThan(hover);
+    expect(css.slice(ring, css.indexOf('}', ring))).toMatch(/stroke:\s*var\(--tone-info\)/);
+    expect(css).toMatch(/\.g-dot\.g-ring\.g-hl/);
   });
 
   it('puts the branch name and its top chip in the tooltip of the dot and of the trunk dot', () => {
