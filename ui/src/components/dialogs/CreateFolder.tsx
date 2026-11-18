@@ -11,14 +11,17 @@ interface Props {
   host: Host;
   state: AppState;
   actions: Pick<Actions, 'createFolder'>;
+  existing?: boolean; // a folder for the branch selected when the dialog opened, not a new branch
 }
 
-export function CreateFolder({ t, host, state, actions }: Props) {
+// CreateFolder makes a requirement folder: a new branch from a trunk, or with
+// `existing` a folder for an existing local branch that has none.
+export function CreateFolder({ t, host, state, actions, existing = false }: Props) {
   const view = state.view;
   const trunks = view ? view.groups.map((g) => g.trunk.name) : [];
   const selectedTrunk = view && state.selected ? (view.branches[state.selected]?.trunk ?? '') : '';
   const [trunk, setTrunk] = useState(trunks.includes(selectedTrunk) ? selectedTrunk : (trunks[0] ?? ''));
-  const [branch, setBranch] = useState('');
+  const [branch, setBranch] = useState(() => (existing ? state.selected : ''));
   const [path, setPath] = useState('');
   const edited = useRef(false); // the user typed in the path: stop replacing it
   const seq = useRef(0);
@@ -36,29 +39,35 @@ export function CreateFolder({ t, host, state, actions }: Props) {
       });
   }, [name, state.repo, host]);
 
-  const out = state.createOutcome;
-  const ready = !!trunk && !!name && !!path.trim();
+  const out = existing && state.createOutcome?.branch !== name ? null : state.createOutcome;
+  const ready = (existing || !!trunk) && !!name && !!path.trim();
   return (
     <form
       class="form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready && !state.busy && !state.gitProblem) actions.createFolder(trunk, name, path.trim());
+        if (ready && !state.busy && !state.gitProblem) actions.createFolder(trunk, name, path.trim(), existing);
       }}
     >
-      {trunks.length === 0 && <p class="muted">{t('dialog.create.noTrunk')}</p>}
-      <label class="field">
-        {t('dialog.create.trunk')}
-        <select value={trunk} onChange={(e) => setTrunk((e.target as HTMLSelectElement).value)}>
-          {trunks.map((n) => (
-            <option value={n}>{n}</option>
-          ))}
-        </select>
-      </label>
-      <label class="field">
-        {t('dialog.create.branch')}
-        <input type="text" value={branch} onInput={(e) => setBranch((e.target as HTMLInputElement).value)} />
-      </label>
+      {existing ? (
+        <p>{t('dialog.createExisting.branch', { branch: name })}</p>
+      ) : (
+        <>
+          {trunks.length === 0 && <p class="muted">{t('dialog.create.noTrunk')}</p>}
+          <label class="field">
+            {t('dialog.create.trunk')}
+            <select value={trunk} onChange={(e) => setTrunk((e.target as HTMLSelectElement).value)}>
+              {trunks.map((n) => (
+                <option value={n}>{n}</option>
+              ))}
+            </select>
+          </label>
+          <label class="field">
+            {t('dialog.create.branch')}
+            <input type="text" value={branch} onInput={(e) => setBranch((e.target as HTMLInputElement).value)} />
+          </label>
+        </>
+      )}
       <label class="field">
         {t('dialog.create.path')}
         <input

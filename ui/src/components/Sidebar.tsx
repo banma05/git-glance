@@ -6,7 +6,7 @@ import { trunkKey } from '../state';
 import type { Actions, AppState } from '../state';
 import type { BranchView } from '../types';
 import { DetailPanel } from './DetailPanel';
-import { Details } from './Details';
+import { Details, assignOf } from './Details';
 import { GraphView } from './GraphView';
 import { branchColor } from './ListView';
 
@@ -34,7 +34,7 @@ function Fish({ t, b, state, actions }: Omit<Props, 'host'> & { b: BranchView })
           {sub && <span class="row-sub muted">{sub}</span>}
         </span>
       </button>
-      {open && <DetailPanel t={t} branch={b} state={state} actions={actions} />}
+      {open && state.view && <DetailPanel t={t} branch={b} state={state} actions={actions} assign={assignOf(state.view, b)} />}
     </div>
   );
 }

@@ -6,7 +6,8 @@ import { baseName } from './reasons';
 import type { AlignReport, Global, OpResult, RemoveFolderResult, Theme, View } from './types';
 
 export type ViewMode = 'list' | 'graph';
-export type DialogName = 'align' | 'create' | 'compare' | 'oplog' | 'settings' | 'remove';
+// create: a new branch from a trunk; createExisting: a folder for the selected local branch.
+export type DialogName = 'align' | 'create' | 'createExisting' | 'compare' | 'oplog' | 'settings' | 'remove';
 
 // WriteOutcome is what a create or remove write ended with: the core's answer,
 // or the error of the call. It lives in the state so that a dialog closed while
@@ -67,6 +68,7 @@ export interface AppState {
   settingsOutcome: SettingsOutcome | null;
   notice: Notice | null;
   switchResult: { branch: string; result: OpResult } | null; // the last switch, shown in the detail area
+  assignResult: { branch: string; error: unknown } | null; // the last failed "belongs to trunk", shown in the detail area
   global: Global | null;
   theme: ThemeKind;
   gitProblem: GitProblem | null; // set: every button that changes something is disabled
@@ -88,7 +90,8 @@ export interface Actions {
   openDialog(name: DialogName): void;
   closeDialog(): void;
   refreshView(): void; // read the view again (after a change made outside the actions)
-  createFolder(trunk: string, branch: string, path: string): void;
+  createFolder(trunk: string, branch: string, path: string, existing?: boolean): void; // existing: a folder for a local branch; trunk is unused
+  assign(branch: string, trunk: string): void; // trunk "" goes back to deciding by the commits
   removeFolder(branch: string, folder: string, head: string): void; // folder and head as the confirm dialog showed them
   setRole(branch: string, role: string, trunk: string): void;
   setRepoSettings(hidePrefix: string, oldDays: number): void;
@@ -129,6 +132,7 @@ function initial(host: Host): AppState {
     settingsOutcome: null,
     notice: null,
     switchResult: null,
+    assignResult: null,
     global: null,
     theme: host.theme(),
     gitProblem: null,
@@ -302,7 +306,8 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         if (ref.current.repo && !ref.current.fetching) void refresh(ref.current.repo);
       },
       setMode: (mode) => patch({ mode }),
-      select: (selected) => patch({ selected: ref.current.selected === selected && !ref.current.pick ? '' : selected, pick: null, switchResult: null }),
+      select: (selected) =>
+        patch({ selected: ref.current.selected === selected && !ref.current.pick ? '' : selected, pick: null, switchResult: null, assignResult: null }),
       selectCommit: (branch, hash) => {
         const p = ref.current.pick;
         const same = p?.kind === 'commit' && p.branch === branch && p.hash === hash;
@@ -410,7 +415,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
           patch({ busy: false });
         })();
       },
-      createFolder: (trunk, branch, path) => {
+      createFolder: (trunk, branch, path, existing = false) => {
         const repo = ref.current.repo;
         if (!repo || !canWrite()) return;
         patch({ busy: true, createOutcome: null });
@@ -418,7 +423,8 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
           try {
             let result: OpResult;
             try {
-              result = await rpc(host, 'createFolder', { repo, trunk, branch, path });
+              const params = existing ? { repo, branch, path, existing: true } : { repo, trunk, branch, path };
+              result = await rpc(host, 'createFolder', params);
             } catch (error) {
               noteGit(error);
               if (current(repo)) patch({ createOutcome: { branch, result: null, error } });
@@ -454,6 +460,27 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
             noteIfClosed('remove', { kind: 'remove', target: branch, error: null, ok: result.ok, reason: result.reason, logError: result.logError });
             // the folder may be gone even when the answer is a refusal after a partial run
             await loadView(repo);
+          } catch (e) {
+            failFor(repo, e);
+          } finally {
+            patch({ busy: false });
+          }
+        })();
+      },
+      assign: (branch, trunk) => {
+        const repo = ref.current.repo;
+        if (!repo || !canWrite()) return;
+        patch({ busy: true, assignResult: null });
+        void (async () => {
+          let error: unknown = null;
+          try {
+            await rpc(host, 'assign', { repo, branch, trunk });
+          } catch (e) {
+            error = e;
+            if (!noteGit(e) && current(repo)) patch({ assignResult: { branch, error: e } });
+          }
+          try {
+            if (!error) await loadView(repo);
           } catch (e) {
             failFor(repo, e);
           } finally {

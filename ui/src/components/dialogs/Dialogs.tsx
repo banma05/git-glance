@@ -12,6 +12,7 @@ import { Settings } from './Settings';
 const TITLES: Record<DialogName, Key> = {
   align: 'toolbar.align',
   create: 'toolbar.createFolder',
+  createExisting: 'dialog.createExisting.title',
   compare: 'toolbar.compare',
   oplog: 'toolbar.oplog',
   settings: 'toolbar.settings',
@@ -44,6 +45,7 @@ export function Dialogs({ t, host, state, actions }: Props) {
   let body = null;
   if (name === 'align') body = state.alignReport ? <AlignReport t={t} report={state.alignReport} /> : null;
   else if (name === 'create') body = <CreateFolder t={t} host={host} state={state} actions={actions} />;
+  else if (name === 'createExisting') body = <CreateFolder t={t} host={host} state={state} actions={actions} existing />;
   else if (name === 'remove') body = <RemoveFolderConfirm t={t} host={host} state={state} actions={actions} />;
   else if (name === 'compare') body = <Compare t={t} host={host} state={state} />;
   else if (name === 'settings') body = <Settings t={t} host={host} state={state} actions={actions} />;

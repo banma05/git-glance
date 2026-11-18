@@ -54,6 +54,42 @@ describe('DetailPanel', () => {
     expect(screen.getByRole('button', { name: '和…对比' })).toBeTruthy();
   });
 
+  it('opens the folder dialog for this existing branch', () => {
+    const a = actions();
+    renderPanel(branchOf('x', [], { folder: '' }), idle, en, a);
+    fireEvent.click(screen.getByRole('button', { name: en('detail.create') }));
+    expect(a.openDialog).toHaveBeenCalledWith('createExisting');
+  });
+
+  it('assigns the branch to a trunk only on apply, and can go back to automatic', () => {
+    const a = actions();
+    const trunks = { trunks: ['main', 'v2'], current: '' };
+    render(<DetailPanel t={en} branch={branchOf('x', [], { trunk: '', trunkSource: 'unknown' })} state={idle} actions={a} assign={trunks} />);
+    const pick = screen.getByLabelText(en('detail.assign')) as HTMLSelectElement;
+    expect([...pick.options].map((o) => o.value)).toEqual(['', 'main', 'v2']);
+    expect(pick.value).toBe('');
+    const apply = screen.getByRole('button', { name: en('detail.assignApply') }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true); // nothing changed yet
+    fireEvent.change(pick, { target: { value: 'v2' } });
+    expect(a.assign).not.toHaveBeenCalled();
+    fireEvent.click(apply);
+    expect(a.assign).toHaveBeenCalledWith('x', 'v2');
+    cleanup();
+    const b = actions();
+    render(<DetailPanel t={en} branch={branchOf('x', [])} state={idle} actions={b} assign={{ trunks: ['main', 'v2'], current: 'main' }} />);
+    fireEvent.change(screen.getByLabelText(en('detail.assign')), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: en('detail.assignApply') }));
+    expect(b.assign).toHaveBeenCalledWith('x', '');
+  });
+
+  it('cannot assign while a change runs or when the core refuses changes', () => {
+    const a = actions();
+    const props = { t: en, branch: branchOf('x', []), actions: a, assign: { trunks: ['main', 'v2'], current: '' } };
+    render(<DetailPanel {...props} state={{ busy: false, switchResult: null, gitProblem: { kind: 'old', version: '2.29' } }} />);
+    fireEvent.change(screen.getByLabelText(en('detail.assign')), { target: { value: 'v2' } });
+    expect((screen.getByRole('button', { name: en('detail.assignApply') }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('has an open button and no switch button when the branch has a folder', () => {
     const a = actions();
     renderPanel(branchOf('x', [], { folder: '/w/wt-x' }), idle, zh, a);

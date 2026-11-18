@@ -411,6 +411,62 @@ describe('CreateFolder', () => {
   });
 });
 
+describe('New folder for an existing branch', () => {
+  it('prefills the folder, then creates it for that branch with existing: true', async () => {
+    const h = fakeHost({ createFolder: { ok: true, reason: '', files: [], path: '/w/x', detail: '', logError: '' } });
+    render(<Harness host={h.host} open="createExisting" select="carol/feature/search" />);
+    const d = await screen.findByRole('dialog');
+    expect(d.textContent).toContain('carol/feature/search');
+    const path = screen.getByLabelText(en('dialog.create.path')) as HTMLInputElement;
+    await waitFor(() => expect(path.value).toBe('/demo/repo-carol-feature-search'));
+    expect(h.calls.find((c) => c.method === 'defaultFolder')?.params).toEqual({ repo: REPO, branch: 'carol/feature/search' });
+    expect(screen.queryByLabelText(en('dialog.create.trunk'))).toBeNull();
+    expect(h.count('createFolder')).toBe(0);
+    fireEvent.click(screen.getByRole('button', { name: en('dialog.create.submit') }));
+    await waitFor(() => expect(h.count('createFolder')).toBe(1));
+    expect(h.calls.find((c) => c.method === 'createFolder')?.params).toEqual({
+      repo: REPO,
+      branch: 'carol/feature/search',
+      path: '/demo/repo-carol-feature-search',
+      existing: true,
+    });
+    await waitFor(() => expect(d.textContent).toContain(en('dialog.create.done')));
+  });
+
+  it('shows where the branch is checked out when the core refuses', async () => {
+    const h = fakeHost({
+      createFolder: { ok: false, reason: 'checked-out-elsewhere', files: [], path: '/w/other', detail: '', logError: '' },
+    });
+    render(<Harness host={h.host} open="createExisting" select="carol/feature/search" />);
+    const path = (await screen.findByLabelText(en('dialog.create.path'))) as HTMLInputElement;
+    await waitFor(() => expect(path.value).not.toBe(''));
+    fireEvent.click(screen.getByRole('button', { name: en('dialog.create.submit') }));
+    const d = screen.getByRole('dialog');
+    await waitFor(() => expect(d.textContent).toContain(en('create.reason.checked-out-elsewhere')));
+    expect(d.textContent).toContain('/w/other');
+  });
+});
+
+describe('Assign to a trunk', () => {
+  it('calls assign with the branch and trunk, then reads the view again', async () => {
+    const h = fakeHost({ assign: () => mockView(REPO).settings });
+    function Assign() {
+      const { state, actions } = useApp(h.host);
+      const done = useRef(false);
+      useEffect(() => {
+        if (done.current || !state.view) return;
+        done.current = true;
+        actions.assign('frank/spike/cache', 'develop');
+      }, [state.view]);
+      return <span>{state.busy ? 'busy' : 'idle'}</span>;
+    }
+    render(<Assign />);
+    await waitFor(() => expect(h.count('assign')).toBe(1));
+    expect(h.calls.find((c) => c.method === 'assign')?.params).toEqual({ repo: REPO, branch: 'frank/spike/cache', trunk: 'develop' });
+    await waitFor(() => expect(h.count('view')).toBeGreaterThanOrEqual(3));
+  });
+});
+
 describe('AlignReport', () => {
   it('lists updated and skipped branches with reasons, files and the log error', async () => {
     const h = fakeHost({
@@ -480,7 +536,7 @@ describe('OpLog', () => {
 });
 
 describe('dialogs in general', () => {
-  const NAMES: DialogName[] = ['align', 'create', 'remove', 'compare', 'settings', 'oplog'];
+  const NAMES: DialogName[] = ['align', 'create', 'createExisting', 'remove', 'compare', 'settings', 'oplog'];
   for (const locale of ['zh-cn', 'en']) {
     for (const name of NAMES) {
       it(`${name} has no push, pull, sync, merge or rebase button in ${locale}`, async () => {

@@ -1,15 +1,17 @@
+import { useEffect, useState } from 'preact/hooks';
 import { blockText, chips, dateTime } from '../format';
 import type { T } from '../i18n';
-import { reasonText } from '../reasons';
+import { errorText, reasonText } from '../reasons';
 import type { Actions, AppState, Picked } from '../state';
 import type { BranchView, OpResult } from '../types';
 
 interface Props {
   t: T;
   branch: BranchView | null;
-  state: Pick<AppState, 'busy' | 'switchResult'> & Partial<Pick<AppState, 'gitProblem'>>;
+  state: Pick<AppState, 'busy' | 'switchResult'> & Partial<Pick<AppState, 'gitProblem' | 'assignResult'>>;
   pick?: Picked | null; // a commit of this branch picked in the graph
-  actions: Pick<Actions, 'switchTo' | 'openFolder' | 'copy' | 'openDialog'>;
+  actions: Pick<Actions, 'switchTo' | 'openFolder' | 'copy' | 'openDialog' | 'assign'>;
+  assign?: { trunks: string[]; current: string }; // the trunks, and the one this branch was put under by hand ("" none)
 }
 
 const SOURCE_KEYS = { created: 'detail.source.created', manual: 'detail.source.manual' } as const;
@@ -55,10 +57,44 @@ function SwitchResult({ t, result }: { t: T; result: OpResult }) {
   );
 }
 
+interface AssignProps {
+  t: T;
+  branch: string;
+  trunks: string[];
+  current: string;
+  locked: boolean;
+  error: unknown;
+  onApply(trunk: string): void;
+}
+
+// AssignTrunk puts a branch under a trunk by hand, or back to being decided by
+// its commits. Nothing is saved until Apply.
+function AssignTrunk({ t, branch, trunks, current, locked, error, onApply }: AssignProps) {
+  const [pick, setPick] = useState(current);
+  useEffect(() => setPick(current), [current, branch]);
+  return (
+    <div class="assign">
+      <label class="field">
+        {t('detail.assign')}
+        <select value={pick} onChange={(e) => setPick((e.target as HTMLSelectElement).value)}>
+          <option value="">{t('detail.assignAuto')}</option>
+          {trunks.map((n) => (
+            <option value={n}>{n}</option>
+          ))}
+        </select>
+      </label>
+      <button class="btn" disabled={locked || pick === current} onClick={() => onApply(pick)}>
+        {t('detail.assignApply')}
+      </button>
+      {error ? <span class="warn">{t('detail.assignFailed', { reason: errorText(error, t) })}</span> : null}
+    </div>
+  );
+}
+
 // DetailPanel is everything about the selected branch and what can be done with
 // it. It never pushes, pulls or merges; removing a folder only opens the
 // confirm dialog.
-export function DetailPanel({ t, branch, state, actions, pick = null }: Props) {
+export function DetailPanel({ t, branch, state, actions, pick = null, assign }: Props) {
   if (!branch) return <div class="detail placeholder">{t('detail.none')}</div>;
   const b = branch;
   const result = state.switchResult && state.switchResult.branch === b.name ? state.switchResult.result : null;
@@ -169,6 +205,17 @@ export function DetailPanel({ t, branch, state, actions, pick = null }: Props) {
         )}
       </dl>
 
+      {assign && assign.trunks.length > 0 && (
+        <AssignTrunk
+          t={t}
+          branch={b.name}
+          trunks={assign.trunks}
+          current={assign.current}
+          locked={locked}
+          error={state.assignResult?.branch === b.name ? state.assignResult.error : null}
+          onApply={(trunk) => actions.assign(b.name, trunk)}
+        />
+      )}
       <div class="detail-actions">
         {b.folder ? (
           <button class="btn" onClick={() => actions.openFolder(b.folder)}>
@@ -179,7 +226,7 @@ export function DetailPanel({ t, branch, state, actions, pick = null }: Props) {
             <button class="btn" disabled={locked} onClick={() => actions.switchTo(b.name)}>
               {t('detail.switch')}
             </button>
-            <button class="btn" disabled={locked} onClick={() => actions.openDialog('create')}>
+            <button class="btn" disabled={locked} onClick={() => actions.openDialog('createExisting')}>
               {t('detail.create')}
             </button>
           </>

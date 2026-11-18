@@ -385,6 +385,7 @@ export function mockHost(): Host {
         return (await delay({ repo: String(p.path ?? '') })) as T;
       case 'setRole':
       case 'setRepoSettings':
+      case 'assign':
         return (await delay(mockView(String(p.repo ?? repo)).settings)) as T;
       case 'switch':
         return (await delay({ ok: true, reason: '', files: [], path: '', detail: '', logError: '' })) as T;

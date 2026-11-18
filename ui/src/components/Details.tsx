@@ -56,10 +56,16 @@ export function TrunkCommitDetail({ t, view, pick }: { t: T; view: View; pick: E
   );
 }
 
+// assignOf is what the "belongs to trunk" control of a branch needs.
+export function assignOf(view: View, branch: { name: string } | null): { trunks: string[]; current: string } | undefined {
+  if (!branch) return undefined;
+  return { trunks: view.groups.map((g) => g.trunk.name), current: view.settings.manualTrunk[branch.name] ?? '' };
+}
+
 // Details shows what the selection is about: a trunk commit, or a branch
 // (with the picked commit when there is one).
 export function Details({ t, view, state, actions }: Props) {
   if (state.pick?.kind === 'trunk') return <TrunkCommitDetail t={t} view={view} pick={state.pick} />;
   const branch = state.selected ? (view.branches[state.selected] ?? null) : null;
-  return <DetailPanel t={t} branch={branch} state={state} actions={actions} pick={state.pick} />;
+  return <DetailPanel t={t} branch={branch} state={state} actions={actions} pick={state.pick} assign={assignOf(view, branch)} />;
 }
