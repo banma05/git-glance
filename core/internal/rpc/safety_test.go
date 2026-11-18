@@ -339,3 +339,26 @@ func TestWritesNeedGit230(t *testing.T) {
 		}
 	}
 }
+
+// The handler keeps a cache per repository: viewing an unchanged repository
+// again runs no per-branch git command.
+func TestRepeatedViewUsesTheCache(t *testing.T) {
+	r := testrepo.New(t)
+	for _, b := range []string{"feature/a", "feature/b", "feature/c"} {
+		r.Branch(b, "main")
+		r.Git(r.Dir, "checkout", "-q", b)
+		r.Commit(r.Dir, b, map[string]string{strings.ReplaceAll(b, "/", "-") + ".txt": "x\n"})
+		r.Git(r.Dir, "checkout", "-q", "main")
+	}
+	rec := newRecRunner()
+	c := startServerWith(t, r, rec)
+	c.ok("view", map[string]any{"repo": r.Dir}, nil)
+	rec.reset()
+	c.ok("view", map[string]any{"repo": r.Dir}, nil)
+	for _, call := range rec.snapshot() {
+		switch call[0] {
+		case "merge-base", "cherry", "log", "diff", "patch-id", "rev-list":
+			t.Fatalf("the second view ran %q", call)
+		}
+	}
+}

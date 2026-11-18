@@ -435,15 +435,15 @@ func TestBuildBrokenFolder(t *testing.T) {
 	}
 }
 
-// failBranchRunner fails the merge-base of one branch, as a broken object
-// would.
+// failBranchRunner fails the merge-base of the branch whose tip is bad, as a
+// broken object would.
 type failBranchRunner struct {
 	gitx.ExecRunner
 	bad string
 }
 
 func (f failBranchRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	if args[0] == "merge-base" && listHas(args, "refs/heads/"+f.bad) {
+	if args[0] == "merge-base" && listHas(args, f.bad) {
 		return nil, &gitx.GitError{Args: args, ExitCode: 128, Stderr: "fatal: bad object\n"}
 	}
 	return f.ExecRunner.Run(ctx, dir, args...)
@@ -458,7 +458,10 @@ func TestBuildKeepsOtherBranchesWhenOneFails(t *testing.T) {
 		r.Branch(b, "main")
 		r.Push(r.Dir, "-u", "origin", b)
 	}
-	r.AddWorktree("bad", "feature/bad")
+	wt := r.AddWorktree("bad", "feature/bad")
+	r.Commit(wt, "bad work", map[string]string{"bad.txt": "b\n"})
+	r.Push(wt, "origin", "feature/bad")
+	badTip := r.Git(r.Dir, "rev-parse", "feature/bad")
 	ctx := context.Background()
 	ver, err := gitx.DetectVersion(ctx, gitx.ExecRunner{})
 	if err != nil {
@@ -469,7 +472,7 @@ func TestBuildKeepsOtherBranchesWhenOneFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs := settings.RepoSettings{Trunks: []settings.TrunkConfig{{Name: "main"}}}
-	v, err := Build(ctx, failBranchRunner{bad: "feature/bad"}, ver, snap, rs, r.Clock().Unix())
+	v, err := Build(ctx, failBranchRunner{bad: badTip}, ver, snap, rs, r.Clock().Unix())
 	if err != nil {
 		t.Fatalf("one failing branch failed the view: %v", err)
 	}

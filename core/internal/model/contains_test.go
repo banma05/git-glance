@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -58,7 +59,7 @@ func TestOwnCommits(t *testing.T) {
 
 func TestContainsEmptyOwn(t *testing.T) {
 	_, m, own, fork := containFixture(t, 0)
-	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestContainsAncestor(t *testing.T) {
 	r, m, own, fork := containFixture(t, 2)
 	r.Git(r.Dir, "switch", "main")
 	r.Git(r.Dir, "merge", "--no-ff", "-m", "merge feature/a", "feature/a")
-	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestContainsPatch(t *testing.T) {
 	r, m, own, fork := containFixture(t, 1)
 	r.Git(r.Dir, "switch", "main-test")
 	r.Git(r.Dir, "cherry-pick", own[0].Hash)
-	c, err := m.Contains(context.Background(), "main-test", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main-test", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +106,7 @@ func TestContainsSubject(t *testing.T) {
 	r, m, own, fork := containFixture(t, 1)
 	r.Git(r.Dir, "switch", "main-test")
 	r.Commit(r.Dir, "  "+own[0].Subject+" ", map[string]string{"other.txt": "different\n"})
-	c, err := m.Contains(context.Background(), "main-test", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main-test", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +119,7 @@ func TestContainsSubjectIgnoresBranchItself(t *testing.T) {
 	// A target that does not contain the commit must not match on the
 	// branch's own subjects.
 	_, m, own, fork := containFixture(t, 1)
-	c, err := m.Contains(context.Background(), "main-test", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main-test", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +134,7 @@ func TestContainsSquash(t *testing.T) {
 	r.Commit(r.Dir, "squashed work", map[string]string{
 		"a.txt": "content a.txt\n", "b.txt": "content b.txt\n", "c.txt": "content c.txt\n",
 	})
-	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +152,7 @@ func TestContainsSquashNeedsExactContent(t *testing.T) {
 	r, m, own, fork := containFixture(t, 2)
 	r.Git(r.Dir, "switch", "main")
 	r.Commit(r.Dir, "almost", map[string]string{"a.txt": "content a.txt\n", "b.txt": "changed\n"})
-	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,7 @@ func TestContainsSome(t *testing.T) {
 	r, m, own, fork := containFixture(t, 2)
 	r.Git(r.Dir, "switch", "main-test")
 	r.Git(r.Dir, "cherry-pick", own[1].Hash)
-	c, err := m.Contains(context.Background(), "main-test", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main-test", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +175,7 @@ func TestContainsSome(t *testing.T) {
 	if c.Per[0].By != "" || c.Per[1].By != "patch" {
 		t.Fatalf("%v", bys(c))
 	}
-	again, err := m.Contains(context.Background(), "main-test", "feature/a", fork, own)
+	again, err := m.containsRefs(context.Background(), "main-test", "feature/a", fork, own)
 	if err != nil || again.State != "some" {
 		t.Fatalf("cached: %+v %v", again, err)
 	}
@@ -182,7 +183,7 @@ func TestContainsSome(t *testing.T) {
 
 func TestContainsNone(t *testing.T) {
 	_, m, own, fork := containFixture(t, 2)
-	c, err := m.Contains(context.Background(), "main-test", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main-test", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +225,7 @@ func TestContainsSubjectNotVouchedByMergedOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := m.Contains(context.Background(), "main-test", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main-test", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,10 +237,10 @@ func TestContainsSubjectNotVouchedByMergedOwn(t *testing.T) {
 func TestContainsRejectsStaleOwn(t *testing.T) {
 	r, m, own, fork := containFixture(t, 1)
 	r.Git(r.Dir, "commit", "--amend", "-m", "reworded")
-	if _, err := m.Contains(context.Background(), "main", "feature/a", fork, own); err == nil {
+	if _, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own); err == nil {
 		t.Fatal("want error for stale own")
 	}
-	if _, err := m.Contains(context.Background(), "main", "feature/a", fork, nil); err == nil {
+	if _, err := m.containsRefs(context.Background(), "main", "feature/a", fork, nil); err == nil {
 		t.Fatal("want error for empty own on a branch with commits")
 	}
 }
@@ -247,13 +248,13 @@ func TestContainsRejectsStaleOwn(t *testing.T) {
 func TestContainsCacheMissWhenTargetMoves(t *testing.T) {
 	r, m, own, fork := containFixture(t, 1)
 	ctx := context.Background()
-	c, err := m.Contains(ctx, "main-test", "feature/a", fork, own)
+	c, err := m.containsRefs(ctx, "main-test", "feature/a", fork, own)
 	if err != nil || c.State != "none" {
 		t.Fatalf("%+v %v", c, err)
 	}
 	r.Git(r.Dir, "switch", "main-test")
 	r.Git(r.Dir, "cherry-pick", own[0].Hash)
-	c, err = m.Contains(ctx, "main-test", "feature/a", fork, own)
+	c, err = m.containsRefs(ctx, "main-test", "feature/a", fork, own)
 	if err != nil || c.State != "all" || c.Per[0].By != "ancestor" && c.Per[0].By != "patch" {
 		t.Fatalf("%+v %v", c, err)
 	}
@@ -297,7 +298,7 @@ func TestContainsSquashManyFiles(t *testing.T) {
 	}
 	r, m, own, fork := squashSetup(t, nil, first, second, "")
 	r.Commit(r.Dir, "everything at once", all)
-	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +312,7 @@ func TestContainsSquashRename(t *testing.T) {
 	r, m, own, fork := squashSetup(t, base, map[string]string{"z.txt": "z1\n"}, map[string]string{"z.txt": "z2\n"}, "old.txt")
 	r.Git(r.Dir, "mv", "old.txt", "new.txt")
 	r.Commit(r.Dir, "rename and edit", map[string]string{"z.txt": "z2\n"})
-	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +324,7 @@ func TestContainsSquashRename(t *testing.T) {
 func TestContainsSquashRejectsExtraFile(t *testing.T) {
 	r, m, own, fork := squashSetup(t, nil, map[string]string{"a.txt": "a\n"}, map[string]string{"b.txt": "b\n"}, "")
 	r.Commit(r.Dir, "more than the branch", map[string]string{"a.txt": "a\n", "b.txt": "b\n", "extra.txt": "x\n"})
-	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +352,7 @@ func containsOnMain(t *testing.T, m *Matcher) Containment {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,5 +382,83 @@ func TestContainsSubjectNotVouchedTwiceAfterPatch(t *testing.T) {
 	c := containsOnMain(t, m)
 	if c.State != "some" || c.Matched != 1 || c.Per[1].By != "patch" || c.Per[0].By != "" {
 		t.Fatalf("%+v", c)
+	}
+}
+
+// containsRefs is Contains for ref names: it resolves both to commit hashes
+// first, as callers outside a build do.
+func (m *Matcher) containsRefs(ctx context.Context, targetRef, branchRef, fork string, own []repo.CommitInfo) (Containment, error) {
+	resolve := func(ref string) (string, error) {
+		out, err := m.run(ctx, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+		return strings.TrimSpace(out), err
+	}
+	target, err := resolve(targetRef)
+	if err != nil {
+		return Containment{}, err
+	}
+	branch, err := resolve(branchRef)
+	if err != nil {
+		return Containment{}, err
+	}
+	return m.Contains(ctx, target, branch, fork, own)
+}
+
+// An unmerged branch whose files no trunk commit touches is settled with few
+// git processes: one walk of the trunk side serves the ancestor and subject
+// steps, and the squash step stops when no trunk commit touches its files.
+func TestContainsUnmergedIsCheap(t *testing.T) {
+	r, _, own, fork := containFixture(t, 2)
+	r.Git(r.Dir, "switch", "main")
+	r.Commit(r.Dir, "unrelated", map[string]string{"z.txt": "z\n"})
+	run := &countingRunner{}
+	m := &Matcher{R: run, Dir: r.Dir}
+	target, branch := r.Git(r.Dir, "rev-parse", "main"), r.Git(r.Dir, "rev-parse", "feature/a")
+	c, err := m.Contains(context.Background(), target, branch, fork, own)
+	if err != nil || c.State != "none" {
+		t.Fatalf("%+v, %v", c, err)
+	}
+	if n := run.n.Load(); n > 4 {
+		t.Fatalf("%d git processes:%s", n, run.breakdown())
+	}
+}
+
+// With more own commits than are listed, fork..branch is not known in full:
+// the steps then read the target side separately (rev-list for ancestry,
+// branch..target for subjects).
+func TestContainsWithOwnCutShort(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	var s strings.Builder
+	for i := 0; i < maxOwnCommits+5; i++ {
+		from := ""
+		if i == 0 {
+			from = "from refs/heads/main^0\n"
+		}
+		body := fmt.Sprintf("%d\n", i)
+		fmt.Fprintf(&s, "commit refs/heads/feature/a\ncommitter T <t@example.com> %d +0000\ndata 4\nc%03d\n%sM 644 inline f%d.txt\ndata %d\n%s\n",
+			1767300000+i*60, i, from, i, len(body), body)
+	}
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir, cmd.Env, cmd.Stdin = r.Dir, r.Env(), strings.NewReader(s.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fast-import: %v %s", err, out)
+	}
+	newest := fmt.Sprintf("c%03d", maxOwnCommits+4)
+	r.Commit(r.Dir, newest, map[string]string{"other.txt": "o\n"})
+	run := &countingRunner{}
+	m := &Matcher{R: run, Dir: r.Dir}
+	own, fork, _, err := m.OwnCommits(context.Background(), "main", "feature/a")
+	if err != nil || len(own) != maxOwnCommits {
+		t.Fatalf("own %d, %v", len(own), err)
+	}
+	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State != "some" || c.Matched != 1 || c.Per[0].By != "subject" || c.Per[0].Subject != newest {
+		t.Fatalf("%+v", c.Per[0])
+	}
+	if !strings.Contains(run.breakdown(), "rev-list=") {
+		t.Fatalf("the separate ancestor walk did not run:%s", run.breakdown())
 	}
 }

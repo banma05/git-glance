@@ -179,7 +179,9 @@ func (h *Handler) removeRepo(_ context.Context, raw json.RawMessage) (any, error
 	}
 	kept := []string{}
 	for _, r := range g.Repos {
-		if !sameFolder(r, p.Repo) {
+		if sameFolder(r, p.Repo) {
+			h.dropViewCache(r)
+		} else {
 			kept = append(kept, r)
 		}
 	}
@@ -224,7 +226,7 @@ func (h *Handler) buildView(ctx context.Context, root string) (model.View, error
 	if err != nil {
 		return model.View{}, err
 	}
-	v, err := model.Build(ctx, h.r, h.gitVersion, snap, rs, h.now().Unix())
+	v, err := model.BuildCached(ctx, h.r, h.gitVersion, snap, rs, h.now().Unix(), h.viewCache(root))
 	if err != nil {
 		return model.View{}, err
 	}

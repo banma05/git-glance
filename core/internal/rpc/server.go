@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/banma05/git-glance/core/internal/gitx"
+	"github.com/banma05/git-glance/core/internal/model"
 	"github.com/banma05/git-glance/core/internal/repo"
 	"github.com/banma05/git-glance/core/internal/settings"
 )
@@ -112,6 +113,9 @@ type Handler struct {
 	fetchMu sync.Mutex
 	fetched map[string]fetchState // by repo root
 
+	cacheMu sync.Mutex
+	caches  map[string]*model.Cache // view caches by repo root, at most maxCaches
+
 	lookPath    func(name string) (string, error)
 	startEditor func(exe, path string) error
 	methods     map[string]method
@@ -126,6 +130,7 @@ func NewHandler(r gitx.Runner, st settings.Store) (*Handler, error) {
 	h := &Handler{
 		r: r, st: st, coreVersion: "dev", now: time.Now,
 		fetched:     map[string]fetchState{},
+		caches:      map[string]*model.Cache{},
 		lookPath:    lookPathOutsideCwd,
 		startEditor: launchEditor,
 	}
@@ -137,6 +142,35 @@ func NewHandler(r gitx.Runner, st settings.Store) (*Handler, error) {
 }
 
 func (h *Handler) isWrite(name string) bool { return h.methods[name].write }
+
+// maxCaches bounds the view caches kept, one per repository.
+const maxCaches = 32
+
+// viewCache returns the view cache of a repository, creating it if needed.
+// Past maxCaches another repository's cache is dropped.
+func (h *Handler) viewCache(root string) *model.Cache {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	if c, ok := h.caches[root]; ok {
+		return c
+	}
+	if len(h.caches) >= maxCaches {
+		for k := range h.caches {
+			delete(h.caches, k)
+			break
+		}
+	}
+	c := model.NewCache()
+	h.caches[root] = c
+	return c
+}
+
+// dropViewCache forgets the view cache of a repository.
+func (h *Handler) dropViewCache(root string) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	delete(h.caches, root)
+}
 
 // gitUsable reports whether git was found and is at least 2.30, the oldest
 // version whose flags every write relies on.

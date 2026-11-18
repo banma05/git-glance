@@ -2,11 +2,8 @@ package model
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
-	"strconv"
-	"strings"
 
 	"github.com/banma05/git-glance/core/internal/gitx"
 	"github.com/banma05/git-glance/core/internal/graph"
@@ -114,30 +111,44 @@ type View struct {
 }
 
 type builder struct {
-	ctx     context.Context
-	r       gitx.Runner
-	dir     string
-	snap    repo.Snapshot
-	rs      settings.RepoSettings
-	now     int64
-	trunks  []Trunk
-	counts  map[string]map[string]AheadBehind // trunk name -> branch -> counts
-	folders map[string]repo.Worktree
-	m       *Matcher
+	ctx      context.Context
+	snap     repo.Snapshot
+	rs       settings.RepoSettings
+	now      int64
+	trunks   []Trunk
+	counts   map[string]map[string]AheadBehind // trunk name -> branch -> counts
+	folders  map[string]repo.Worktree
+	facts    gitFacts
+	workers  int
+	unpushed map[string]int // answered in one go; the others are asked per branch
 }
 
-// Build assembles the view of snap. Every git call uses full ref names, so a
-// tag that shares a branch's name cannot shadow it.
+// Build assembles the view of snap without keeping anything for the next
+// build. See BuildCached.
 func Build(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.Snapshot, rs settings.RepoSettings, now int64) (View, error) {
+	return BuildCached(ctx, r, v, snap, rs, now, nil)
+}
+
+// BuildCached assembles the view of snap, keeping in c (which may be nil)
+// what the next build of the same repository can reuse. Git is asked about
+// the snapshot's commit hashes, never about short names, so a tag that
+// shares a branch's name cannot shadow it and a ref that moves meanwhile
+// cannot mix into the view. Branches are worked on by a few goroutines; the
+// view does not depend on their order.
+func BuildCached(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.Snapshot, rs settings.RepoSettings, now int64, c *Cache) (View, error) {
+	return build(ctx, NewCounter(r, snap.Repo, v), newHashFacts(r, snap, c), buildWorkers, snap, rs, now)
+}
+
+func build(ctx context.Context, counter Counter, facts gitFacts, workers int, snap repo.Snapshot, rs settings.RepoSettings, now int64) (View, error) {
 	rs = normalizeSettings(rs)
 	b := &builder{
-		ctx: ctx, r: r, dir: snap.Repo, snap: snap, rs: rs, now: now,
+		ctx: ctx, snap: snap, rs: rs, now: now,
 		trunks:  uniqueTrunks(ResolveTrunks(snap, rs)),
 		folders: foldersByBranch(snap.Worktrees),
-		m:       &Matcher{R: r, Dir: snap.Repo},
+		facts:   facts, workers: workers,
 	}
 	features := featureRefs(snap.Local, rs, b.trunks)
-	if err := b.count(NewCounter(r, snap.Repo, v), features); err != nil {
+	if err := b.count(counter, features); err != nil {
 		return View{}, err
 	}
 	view := View{
@@ -145,9 +156,16 @@ func Build(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.Snapsho
 		Groups: []Group{}, Unknown: []string{}, Old: []string{},
 		Branches: map[string]BranchView{}, Sections: []graph.Section{},
 	}
-	for _, ref := range features {
-		bv, err := b.branch(ref)
-		if err != nil {
+	b.unpushed = facts.unpushedAll(ctx, features)
+	views := make([]BranchView, len(features))
+	errs := forEach(len(features), workers, func(i int) error {
+		var err error
+		views[i], err = b.branch(features[i])
+		return err
+	})
+	for i, ref := range features {
+		bv := views[i]
+		if err := errs[i]; err != nil {
 			if ctx.Err() != nil {
 				return View{}, fmt.Errorf("branch %s: %w", ref.Name, err)
 			}
@@ -158,13 +176,11 @@ func Build(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.Snapsho
 	}
 	colorBranches(view.Branches)
 	b.group(&view, features)
-	for i, g := range view.Groups {
-		s, err := b.section(b.trunks[i], g.Branches, view.Branches)
-		if err != nil {
-			return View{}, fmt.Errorf("graph of %s: %w", g.Trunk.Name, err)
-		}
-		view.Sections = append(view.Sections, s)
+	sections, err := b.sections(view)
+	if err != nil {
+		return View{}, err
 	}
+	view.Sections = sections
 	return view, nil
 }
 
@@ -327,15 +343,17 @@ func (b *builder) branch(ref repo.Ref) (BranchView, error) {
 	bv := b.baseView(ref)
 	a := b.assign(ref.Name)
 	bv.Trunk, bv.TrunkSource = a.Trunk, a.Source
-	branchRef := headRef(ref.Name)
 	if t, ok := b.trunk(a.Trunk); ok {
-		if err := b.compare(&bv, t, branchRef); err != nil {
+		if err := b.compare(&bv, t, ref); err != nil {
 			return bv, err
 		}
 	}
-	n, err := b.m.Unpushed(b.ctx, branchRef)
-	if err != nil {
-		return bv, err
+	n, ok := b.unpushed[ref.Name]
+	if !ok {
+		var err error
+		if n, err = b.facts.unpushed(b.ctx, ref); err != nil {
+			return bv, err
+		}
 	}
 	bv.Unpushed = n
 	bv.RemoveBlock = removeBlock(bv)
@@ -363,19 +381,19 @@ func (b *builder) placeFolder(bv *BranchView) {
 
 // compare fills the fields that need the branch's trunk. A branch that shares
 // no history with its trunk is moved back to unknown.
-func (b *builder) compare(bv *BranchView, t Trunk, branchRef string) error {
-	own, fork, forkTime, err := b.m.OwnCommits(b.ctx, fullRef(t.Target), branchRef)
-	if errors.Is(err, errNoForkPoint) {
-		bv.Trunk, bv.TrunkSource = "", sourceUnknown
-		return nil
-	}
+func (b *builder) compare(bv *BranchView, t Trunk, ref repo.Ref) error {
+	o, err := b.facts.ownCommits(b.ctx, t.Target, ref)
 	if err != nil {
 		return err
 	}
-	bv.Own, bv.ForkHash, bv.ForkTime = own, fork, forkTime
+	if o.noFork {
+		bv.Trunk, bv.TrunkSource = "", sourceUnknown
+		return nil
+	}
+	bv.Own, bv.ForkHash, bv.ForkTime = o.own, o.fork, o.forkTime
 	bv.BehindTrunk = b.counts[t.Name][bv.Name].Behind
 	in := func(target Target) (Containment, error) {
-		return b.m.Contains(b.ctx, fullRef(target), branchRef, fork, own)
+		return b.facts.contains(b.ctx, target, ref, o)
 	}
 	onTrunk, err := in(t.Target)
 	if err != nil {
@@ -513,7 +531,7 @@ func (b *builder) trunkView(t Trunk) TrunkView {
 	return tv
 }
 
-func (b *builder) section(t Trunk, names []string, branches map[string]BranchView) (graph.Section, error) {
+func section(t Trunk, names []string, branches map[string]BranchView, between graph.Between) (graph.Section, error) {
 	in := make([]graph.BranchInput, 0, len(names))
 	for _, n := range names {
 		bv := branches[n]
@@ -522,22 +540,57 @@ func (b *builder) section(t Trunk, names []string, branches map[string]BranchVie
 			Merged: bv.Merged, LastCommit: bv.LastCommit,
 		})
 	}
-	return graph.Layout(graph.TrunkInput{Name: t.Name, HeadHash: t.Hash, HeadTime: t.Time}, in, b.between)
+	return graph.Layout(graph.TrunkInput{Name: t.Name, HeadHash: t.Hash, HeadTime: t.Time}, in, between)
 }
 
-// between counts trunk commits strictly between two anchors:
-// rev-list --count <older>..<newer>, minus the newer anchor itself.
-func (b *builder) between(newer, older string) (int, error) {
-	out, err := b.r.Run(b.ctx, b.dir, "rev-list", "--count", older+".."+newer, "--")
-	if err != nil {
-		return 0, err
+type anchorPair struct{ newer, older string }
+
+// sections lays out the graph of every group. Which trunk counts a layout
+// asks for does not depend on the answers, so a first pass only collects the
+// pairs, the workers count them, and a second pass lays out with the counts.
+func (b *builder) sections(view View) ([]graph.Section, error) {
+	var pairs []anchorPair
+	group := map[anchorPair]int{} // first group that needs the pair
+	for i, g := range view.Groups {
+		collect := func(newer, older string) (int, error) {
+			p := anchorPair{newer, older}
+			if _, ok := group[p]; !ok {
+				group[p] = i
+				pairs = append(pairs, p)
+			}
+			return 0, nil
+		}
+		if _, err := section(b.trunks[i], g.Branches, view.Branches, collect); err != nil {
+			return nil, fmt.Errorf("graph of %s: %w", g.Trunk.Name, err)
+		}
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil {
-		return 0, fmt.Errorf("unexpected count %q", out)
+	counts := make([]int, len(pairs))
+	errs := forEach(len(pairs), b.workers, func(i int) error {
+		var err error
+		counts[i], err = b.facts.between(b.ctx, pairs[i].newer, pairs[i].older)
+		return err
+	})
+	known := map[anchorPair]int{}
+	for i, p := range pairs {
+		if errs[i] != nil {
+			return nil, fmt.Errorf("graph of %s: %w", view.Groups[group[p]].Trunk.Name, errs[i])
+		}
+		known[p] = counts[i]
 	}
-	if n--; n < 0 {
-		n = 0
+	lookup := func(newer, older string) (int, error) {
+		n, ok := known[anchorPair{newer, older}]
+		if !ok {
+			return 0, fmt.Errorf("no count between %s and %s", older, newer)
+		}
+		return n, nil
 	}
-	return n, nil
+	out := make([]graph.Section, 0, len(view.Groups))
+	for i, g := range view.Groups {
+		s, err := section(b.trunks[i], g.Branches, view.Branches, lookup)
+		if err != nil {
+			return nil, fmt.Errorf("graph of %s: %w", g.Trunk.Name, err)
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }

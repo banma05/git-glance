@@ -84,7 +84,7 @@ func TestBuildIgnoresShowSignature(t *testing.T) {
 		if !hasArg(args, "--no-show-signature") {
 			t.Errorf("missing --no-show-signature: git %s", strings.Join(args, " "))
 		}
-		for _, shape := range []string{"--format=%ct", logFields, "--format=%s", "-p"} {
+		for _, shape := range []string{"--format=%ct", logFields, hashAndSubject, "-p"} {
 			if hasArg(args, shape) {
 				seen[shape] = true
 			}

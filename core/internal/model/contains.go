@@ -24,6 +24,7 @@ const (
 	stateSome         = "some"
 	stateNone         = "none"
 	logFields         = "--format=%H%x00%s%x00%ct"
+	hashAndSubject    = "--format=%H%x00%s"
 	literalPathPrefix = ":(literal)"
 	// noSignature goes on every log/show: log.showSignature=true in the user's
 	// config would otherwise print signature lines into parsed output.
@@ -60,11 +61,6 @@ func (m *Matcher) run(ctx context.Context, args ...string) (string, error) {
 	return string(out), err
 }
 
-func (m *Matcher) resolve(ctx context.Context, ref string) (string, error) {
-	out, err := m.run(ctx, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
-	return strings.TrimSpace(out), err
-}
-
 func parseCommits(out string) ([]repo.CommitInfo, error) {
 	commits := []repo.CommitInfo{}
 	for _, line := range strings.Split(out, "\n") {
@@ -84,9 +80,10 @@ func parseCommits(out string) ([]repo.CommitInfo, error) {
 // errNoForkPoint means the branch shares no history with the trunk.
 var errNoForkPoint = errors.New("no merge base")
 
-// OwnCommits lists the commits of branchRef that are not in trunkRef, newest
-// first and at most 200, with the fork point and its commit time. Unrelated
-// histories give an error wrapping errNoForkPoint.
+// OwnCommits lists the commits of branchRef that are not in trunkRef (full
+// ref names or commit hashes), newest first and at most 200, with the fork
+// point and its commit time. Unrelated histories give an error wrapping
+// errNoForkPoint.
 func (m *Matcher) OwnCommits(ctx context.Context, trunkRef, branchRef string) ([]repo.CommitInfo, string, int64, error) {
 	out, err := m.run(ctx, "merge-base", trunkRef, branchRef)
 	fork := strings.TrimSpace(out)
@@ -114,19 +111,13 @@ func (m *Matcher) OwnCommits(ctx context.Context, trunkRef, branchRef string) ([
 	return commits, fork, forkTime, err
 }
 
-type step func(ctx context.Context, target, branch, fork string, per []CommitMatch) error
-
-// Contains finds, step by step, which own commits are already in targetRef.
-// own and forkHash must come from OwnCommits for the current branch tip;
-// stale input is an error.
-func (m *Matcher) Contains(ctx context.Context, targetRef, branchRef, forkHash string, own []repo.CommitInfo) (Containment, error) {
-	target, err := m.resolve(ctx, targetRef)
-	if err != nil {
-		return Containment{}, err
-	}
-	branch, err := m.resolve(ctx, branchRef)
-	if err != nil {
-		return Containment{}, err
+// Contains finds, step by step, which own commits are already in target.
+// target and branch are commit hashes, so no ref can move under the steps;
+// own and forkHash must come from OwnCommits for that branch tip, stale input
+// is an error.
+func (m *Matcher) Contains(ctx context.Context, target, branch, forkHash string, own []repo.CommitInfo) (Containment, error) {
+	if !isHash(target) || !isHash(branch) {
+		return Containment{}, fmt.Errorf("containment needs commit hashes, got %q and %q", target, branch)
 	}
 	if err := checkFresh(branch, forkHash, own); err != nil {
 		return Containment{}, err
@@ -135,19 +126,19 @@ func (m *Matcher) Contains(ctx context.Context, targetRef, branchRef, forkHash s
 	if c, ok := m.cached(key); ok {
 		return c, nil
 	}
-	per := make([]CommitMatch, len(own))
+	run := &containsRun{m: m, ctx: ctx, target: target, branch: branch, fork: forkHash, own: own, per: make([]CommitMatch, len(own))}
 	for i, c := range own {
-		per[i] = CommitMatch{CommitInfo: c}
+		run.per[i] = CommitMatch{CommitInfo: c}
 	}
-	for _, s := range []step{m.stepAncestor, m.stepPatch, m.stepSubject, m.stepSquash} {
-		if len(unmatched(per)) == 0 {
+	for _, step := range []func() error{run.stepAncestor, run.stepPatch, run.stepSubject, run.stepSquash} {
+		if len(unmatched(run.per)) == 0 {
 			break
 		}
-		if err := s(ctx, target, branch, forkHash, per); err != nil {
+		if err := step(); err != nil {
 			return Containment{}, err
 		}
 	}
-	result := summarize(per)
+	result := summarize(run.per)
 	m.store(key, result)
 	return result, nil
 }
@@ -213,25 +204,92 @@ func (m *Matcher) store(key string, c Containment) {
 	m.cache[key] = c
 }
 
-func (m *Matcher) stepAncestor(ctx context.Context, target, _, fork string, per []CommitMatch) error {
-	out, err := m.run(ctx, "rev-list", fork+".."+target, "--")
+// containsRun is one Contains call: the inputs, the matches so far and the
+// target's side of the fork, read once.
+type containsRun struct {
+	m                    *Matcher
+	ctx                  context.Context
+	target, branch, fork string
+	own                  []repo.CommitInfo
+	per                  []CommitMatch
+	side                 *targetSide
+}
+
+// targetSide is fork..target with each commit's subject.
+type targetSide struct {
+	hashes   map[string]bool
+	subjects []string // of branch..target only
+}
+
+// targetSide reads fork..target once, when own is complete (shorter than
+// maxOwnCommits): own is then all of fork..branch, so branch..target is
+// fork..target without the own commits, and one walk serves the ancestor and
+// the subject step. It returns nil when own was cut short.
+func (c *containsRun) targetSide() (*targetSide, error) {
+	if c.side != nil || len(c.own) >= maxOwnCommits {
+		return c.side, nil
+	}
+	commits, err := c.hashesAndSubjects(c.fork + ".." + c.target)
+	if err != nil {
+		return nil, err
+	}
+	own := map[string]bool{}
+	for _, o := range c.own {
+		own[o.Hash] = true
+	}
+	sd := &targetSide{hashes: map[string]bool{}}
+	for _, hs := range commits {
+		sd.hashes[hs[0]] = true
+		if !own[hs[0]] {
+			sd.subjects = append(sd.subjects, hs[1])
+		}
+	}
+	c.side = sd
+	return sd, nil
+}
+
+// hashesAndSubjects lists the commits of a range as (hash, subject) pairs.
+func (c *containsRun) hashesAndSubjects(rng string) ([][2]string, error) {
+	out, err := c.m.run(c.ctx, "log", noSignature, hashAndSubject, rng, "--")
+	if err != nil {
+		return nil, err
+	}
+	var commits [][2]string
+	for _, line := range strings.Split(out, "\n") {
+		if hash, subject, ok := strings.Cut(strings.TrimRight(line, "\r"), "\x00"); ok {
+			commits = append(commits, [2]string{hash, subject})
+		}
+	}
+	return commits, nil
+}
+
+func (c *containsRun) stepAncestor() error {
+	sd, err := c.targetSide()
 	if err != nil {
 		return err
 	}
 	inTarget := map[string]bool{}
-	for _, h := range strings.Fields(out) {
-		inTarget[h] = true
+	if sd != nil {
+		inTarget = sd.hashes
+	} else {
+		out, err := c.m.run(c.ctx, "rev-list", c.fork+".."+c.target, "--")
+		if err != nil {
+			return err
+		}
+		for _, h := range strings.Fields(out) {
+			inTarget[h] = true
+		}
 	}
-	for _, i := range unmatched(per) {
-		if inTarget[per[i].Hash] {
-			per[i].By = byAncestor
+	for _, i := range unmatched(c.per) {
+		if inTarget[c.per[i].Hash] {
+			c.per[i].By = byAncestor
 		}
 	}
 	return nil
 }
 
-func (m *Matcher) stepPatch(ctx context.Context, target, branch, fork string, per []CommitMatch) error {
-	out, err := m.run(ctx, "cherry", target, branch, fork)
+func (c *containsRun) stepPatch() error {
+	out, err := c.m.run(c.ctx, "cherry", c.target, c.branch, c.fork)
 	if err != nil {
 		return err
 	}
@@ -242,57 +300,73 @@ func (m *Matcher) stepPatch(ctx context.Context, target, branch, fork string, pe
 			equivalent[strings.TrimSpace(line[2:])] = true
 		}
 	}
-	for _, i := range unmatched(per) {
-		if equivalent[per[i].Hash] {
-			per[i].By = byPatch
+	for _, i := range unmatched(c.per) {
+		if equivalent[c.per[i].Hash] {
+			c.per[i].By = byPatch
 		}
 	}
 	return nil
 }
 
-func (m *Matcher) stepSubject(ctx context.Context, target, branch, _ string, per []CommitMatch) error {
-	out, err := m.run(ctx, "log", noSignature, "--format=%s", branch+".."+target, "--")
+// targetSubjects returns the subjects of branch..target.
+func (c *containsRun) targetSubjects() ([]string, error) {
+	sd, err := c.targetSide()
+	if err != nil {
+		return nil, err
+	}
+	if sd != nil {
+		return sd.subjects, nil
+	}
+	commits, err := c.hashesAndSubjects(c.branch + ".." + c.target)
+	if err != nil {
+		return nil, err
+	}
+	subjects := make([]string, 0, len(commits))
+	for _, hs := range commits {
+		subjects = append(subjects, hs[1])
+	}
+	return subjects, nil
+}
+
+func (c *containsRun) stepSubject() error {
+	subjects, err := c.targetSubjects()
 	if err != nil {
 		return err
 	}
 	// Each target commit vouches for at most one own commit.
 	left := map[string]int{}
-	for _, line := range strings.Split(out, "\n") {
+	for _, line := range subjects {
 		if s := strings.TrimSpace(line); s != "" {
 			left[s]++
 		}
 	}
 	// A target commit that matched an own commit by its patch has vouched
 	// already (a reworded pick only makes this stricter).
-	for _, p := range per {
+	for _, p := range c.per {
 		if s := strings.TrimSpace(p.Subject); p.By == byPatch && left[s] > 0 {
 			left[s]--
 		}
 	}
-	for _, i := range unmatched(per) {
-		if s := strings.TrimSpace(per[i].Subject); s != "" && left[s] > 0 {
-			per[i].By = bySubject
+	for _, i := range unmatched(c.per) {
+		if s := strings.TrimSpace(c.per[i].Subject); s != "" && left[s] > 0 {
+			c.per[i].By = bySubject
 			left[s]--
 		}
 	}
 	return nil
 }
 
-func (m *Matcher) stepSquash(ctx context.Context, target, branch, fork string, per []CommitMatch) error {
-	names, err := m.run(ctx, "diff", "--name-only", "-z", "--no-ext-diff", "--no-color", "--no-textconv", fork, branch, "--")
-	if err != nil {
-		return err
-	}
-	diff, err := m.run(ctx, "diff", "--no-ext-diff", "--no-color", "--no-textconv", fork, branch, "--")
-	if err != nil || strings.TrimSpace(diff) == "" {
-		return err
-	}
-	whole, err := m.patchIDs(ctx, diff)
-	if err != nil || len(whole) != 1 {
-		return err
+// stepSquash looks for one target commit whose whole patch equals the
+// branch's whole change. The candidates (target commits touching the
+// branch's files) are listed first: usually there are none, and then the
+// branch's own diff is not needed.
+func (c *containsRun) stepSquash() error {
+	names, err := c.m.run(c.ctx, "diff", "--name-only", "-z", "--no-ext-diff", "--no-color", "--no-textconv", c.fork, c.branch, "--")
+	if err != nil || strings.Trim(names, "\x00") == "" {
+		return err // no change at all: nothing a squash could hold
 	}
 	args := []string{"log", noSignature, "-p", "--full-diff", "--format=%H", "--no-ext-diff", "--no-color", "--no-textconv",
-		"-n", strconv.Itoa(maxSquashCands), branch + ".." + target, "--"}
+		"-n", strconv.Itoa(maxSquashCands), c.branch + ".." + c.target, "--"}
 	files := strings.Split(strings.Trim(names, "\x00"), "\x00")
 	if len(files) > maxPathspecFiles {
 		files = files[:maxPathspecFiles]
@@ -300,18 +374,26 @@ func (m *Matcher) stepSquash(ctx context.Context, target, branch, fork string, p
 	for _, f := range files {
 		args = append(args, literalPathPrefix+f)
 	}
-	patches, err := m.run(ctx, args...)
+	patches, err := c.m.run(c.ctx, args...)
 	if err != nil || strings.TrimSpace(patches) == "" {
 		return err
 	}
-	ids, err := m.patchIDs(ctx, patches)
+	diff, err := c.m.run(c.ctx, "diff", "--no-ext-diff", "--no-color", "--no-textconv", c.fork, c.branch, "--")
+	if err != nil || strings.TrimSpace(diff) == "" {
+		return err
+	}
+	whole, err := c.m.patchIDs(c.ctx, diff)
+	if err != nil || len(whole) != 1 {
+		return err
+	}
+	ids, err := c.m.patchIDs(c.ctx, patches)
 	if err != nil {
 		return err
 	}
 	for _, id := range ids {
 		if id == whole[0] {
-			for _, i := range unmatched(per) {
-				per[i].By = bySquash
+			for _, i := range unmatched(c.per) {
+				c.per[i].By = bySquash
 			}
 			return nil
 		}
