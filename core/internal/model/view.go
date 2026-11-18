@@ -20,6 +20,7 @@ const (
 	blockNotInFolder   = "not-in-folder"
 	blockMainFolder    = "main-folder"
 	blockFolderMissing = "folder-missing"
+	blockFolderLocked  = "locked-worktree"
 	blockDirty         = "dirty"
 	blockUnpushed      = "unpushed"
 	blockNotMerged     = "not-merged"
@@ -38,7 +39,10 @@ type ReleaseSummary struct {
 
 // BranchView is everything the panel shows about one feature branch. Dirty is
 // set only when the branch's folder exists and has changes or new files.
-// Branches whose trunk is unknown have no Own, fork, Test or Release.
+// FolderHead is the commit the folder's HEAD was at ("" without a usable
+// folder); a request to delete the folder quotes it back. FolderLocked is set
+// by `git worktree lock`. Branches whose trunk is unknown have no Own, fork,
+// Test or Release.
 type BranchView struct {
 	Name            string            `json:"name"`
 	Short           string            `json:"short"`
@@ -47,8 +51,10 @@ type BranchView struct {
 	Trunk           string            `json:"trunk"`
 	TrunkSource     string            `json:"trunkSource"`
 	Folder          string            `json:"folder"`
+	FolderHead      string            `json:"folderHead"`
 	MainFolder      bool              `json:"mainFolder"`
 	FolderMissing   bool              `json:"folderMissing"`
+	FolderLocked    bool              `json:"folderLocked"`
 	Dirty           *repo.DirtyCounts `json:"dirty"`
 	HasUpstream     bool              `json:"hasUpstream"`
 	UpstreamGone    bool              `json:"upstreamGone"`
@@ -317,7 +323,10 @@ func (b *builder) placeFolder(bv *BranchView) {
 	if !ok {
 		return
 	}
-	bv.Folder, bv.MainFolder, bv.FolderMissing = w.Path, w.Main, w.Missing
+	bv.Folder, bv.MainFolder, bv.FolderMissing, bv.FolderLocked = w.Path, w.Main, w.Missing, w.Locked
+	if !w.Missing {
+		bv.FolderHead = w.Head
+	}
 	if !w.Missing && w.Dirty.Changed+w.Dirty.Untracked > 0 {
 		d := w.Dirty
 		d.Files = append([]string{}, w.Dirty.Files...)
@@ -395,6 +404,8 @@ func removeBlock(bv BranchView) string {
 		return blockMainFolder
 	case bv.FolderMissing:
 		return blockFolderMissing
+	case bv.FolderLocked:
+		return blockFolderLocked
 	case bv.Dirty != nil:
 		return blockDirty
 	case bv.Unpushed > 0:

@@ -80,6 +80,19 @@ func (h *Handler) repoRoot(ctx context.Context, path string) (string, error) {
 	return repo.Discover(ctx, h.r, path)
 }
 
+// isFullHash reports whether s is a full SHA-1 or SHA-256 object name.
+func isFullHash(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // plainName checks a branch name or similar that ends up in a git argument.
 func plainName(label, s string) error {
 	if s == "" || strings.HasPrefix(s, "-") || hasControl(s) || len(s) > 1024 {
@@ -331,13 +344,22 @@ func (h *Handler) createFolder(ctx context.Context, raw json.RawMessage) (any, e
 	return res, nil
 }
 
+// removeFolder deletes a branch's folder. folder and head are the folder and
+// its HEAD hash as the caller showed them; the core refuses with reason
+// changed when either is no longer true.
 func (h *Handler) removeFolder(ctx context.Context, raw json.RawMessage) (any, error) {
-	var p struct{ Repo, Branch string }
+	var p struct{ Repo, Branch, Folder, Head string }
 	if err := decode(raw, &p); err != nil {
 		return nil, err
 	}
 	if err := plainName("branch", p.Branch); err != nil {
 		return nil, err
+	}
+	if p.Folder == "" || !filepath.IsAbs(p.Folder) || hasControl(p.Folder) {
+		return nil, badParams("folder must be the absolute path of the branch's folder")
+	}
+	if !isFullHash(p.Head) {
+		return nil, badParams("head must be the full hash of the folder's HEAD")
 	}
 	root, err := h.repoRoot(ctx, p.Repo)
 	if err != nil {
@@ -351,7 +373,7 @@ func (h *Handler) removeFolder(ctx context.Context, raw json.RawMessage) (any, e
 	if _, ok := v.Branches[p.Branch]; !ok {
 		return nil, badParams("%s is not a branch of this repository view", p.Branch)
 	}
-	res, err := ops.RemoveFolder(ctx, h.r, h.st, v, p.Branch, h.now)
+	res, err := ops.RemoveFolder(ctx, h.r, h.st, v, p.Branch, filepath.ToSlash(p.Folder), p.Head, h.now)
 	if err != nil {
 		return nil, err
 	}

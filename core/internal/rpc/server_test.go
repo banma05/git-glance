@@ -584,18 +584,47 @@ func TestCreateAndRemoveFolder(t *testing.T) {
 	if code := c.errCode("createFolder", map[string]any{"repo": r.Dir, "trunk": "nope", "branch": "feature/x"}); code != "bad-params" {
 		t.Fatalf("unknown trunk gave %s", code)
 	}
+	var v struct {
+		Branches map[string]struct {
+			Folder     string `json:"folder"`
+			FolderHead string `json:"folderHead"`
+		} `json:"branches"`
+	}
+	c.ok("view", map[string]any{"repo": r.Dir}, &v)
+	shown := v.Branches["feature/login"]
+	if shown.Folder != dir || len(shown.FolderHead) != 40 {
+		t.Fatalf("view shows %+v", shown)
+	}
+	base := map[string]any{"repo": r.Dir, "branch": "feature/login", "folder": shown.Folder, "head": shown.FolderHead}
+	for _, drop := range []string{"folder", "head"} {
+		p := map[string]any{}
+		for k, val := range base {
+			if k != drop {
+				p[k] = val
+			}
+		}
+		if code := c.errCode("removeFolder", p); code != "bad-params" {
+			t.Fatalf("removeFolder without %s gave %s", drop, code)
+		}
+	}
 	var rm struct {
 		OK     bool   `json:"ok"`
 		Reason string `json:"reason"`
 	}
-	c.ok("removeFolder", map[string]any{"repo": r.Dir, "branch": "feature/login"}, &rm)
+	stale := map[string]any{"repo": r.Dir, "branch": "feature/login", "folder": shown.Folder, "head": strings.Repeat("1", 40)}
+	c.ok("removeFolder", stale, &rm)
+	if rm.OK || rm.Reason != "changed" {
+		t.Fatalf("removeFolder with another head: %+v", rm)
+	}
+	c.ok("removeFolder", base, &rm)
 	if !rm.OK {
 		t.Fatalf("removeFolder %+v", rm)
 	}
 	if _, err := os.Stat(dir); err == nil {
 		t.Fatal("folder still exists")
 	}
-	if code := c.errCode("removeFolder", map[string]any{"repo": r.Dir, "branch": "no-such"}); code != "bad-params" {
+	noSuch := map[string]any{"repo": r.Dir, "branch": "no-such", "folder": shown.Folder, "head": shown.FolderHead}
+	if code := c.errCode("removeFolder", noSuch); code != "bad-params" {
 		t.Fatalf("unknown branch gave %s", code)
 	}
 	var df struct {

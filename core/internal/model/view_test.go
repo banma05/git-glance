@@ -355,6 +355,35 @@ func TestBuildMergedNoFF(t *testing.T) {
 	}
 }
 
+// The view carries the folder's HEAD hash, which a removal must quote back,
+// and marks a folder locked with `git worktree lock`.
+func TestBuildFolderHeadAndLock(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Branch("feature/done", "main")
+	r.Push(r.Dir, "-u", "origin", "feature/done")
+	wt := r.AddWorktree("done", "feature/done")
+	rs := settings.RepoSettings{Trunks: []settings.TrunkConfig{{Name: "main"}}}
+	bv := buildView(t, r.Dir, rs, r.Clock().Unix()).Branches["feature/done"]
+	if bv.FolderHead != r.Git(wt, "rev-parse", "HEAD") || bv.FolderLocked || !bv.CanRemoveFolder {
+		t.Fatalf("branch = %+v", bv)
+	}
+	r.Git(r.Dir, "worktree", "lock", wt)
+	bv = buildView(t, r.Dir, rs, r.Clock().Unix()).Branches["feature/done"]
+	if !bv.FolderLocked || bv.CanRemoveFolder || bv.RemoveBlock != "locked-worktree" {
+		t.Fatalf("locked branch = %+v", bv)
+	}
+	data, err := json.Marshal(bv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"folderHead":"`, `"folderLocked":true`} {
+		if !strings.Contains(string(data), key) {
+			t.Fatalf("%s missing in %s", key, data)
+		}
+	}
+}
+
 func TestRemoveBlock(t *testing.T) {
 	dirty := &repo.DirtyCounts{Changed: 1, Files: []string{"a.txt"}}
 	cases := []struct {
@@ -367,6 +396,8 @@ func TestRemoveBlock(t *testing.T) {
 		{"main folder wins over dirty", BranchView{Folder: "p", MainFolder: true, Dirty: dirty}, "main-folder"},
 		{"folder missing", BranchView{Folder: "p", FolderMissing: true, Merged: true}, "folder-missing"},
 		{"missing wins over unpushed", BranchView{Folder: "p", FolderMissing: true, Unpushed: 2}, "folder-missing"},
+		{"locked folder", BranchView{Folder: "p", FolderLocked: true, Merged: true}, "locked-worktree"},
+		{"locked wins over dirty", BranchView{Folder: "p", FolderLocked: true, Dirty: dirty}, "locked-worktree"},
 		{"dirty", BranchView{Folder: "p", Dirty: dirty, Merged: true}, "dirty"},
 		{"dirty wins over unpushed", BranchView{Folder: "p", Dirty: dirty, Unpushed: 1}, "dirty"},
 		{"unpushed", BranchView{Folder: "p", Unpushed: 1, Merged: true}, "unpushed"},

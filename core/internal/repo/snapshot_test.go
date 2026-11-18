@@ -126,6 +126,26 @@ func TestReadDetachedWorktree(t *testing.T) {
 	}
 }
 
+func TestReadLockedWorktree(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Branch("feature/l", "main")
+	r.Branch("feature/m", "main")
+	wl := r.AddWorktree("l", "feature/l")
+	r.AddWorktree("m", "feature/m")
+	r.Git(r.Dir, "worktree", "lock", "--reason", "on a stick", wl)
+	s, err := Read(context.Background(), gitx.ExecRunner{}, r.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := findWorktree(t, s, "/wt-l"); !w.Locked {
+		t.Errorf("locked worktree = %+v", w)
+	}
+	if w := findWorktree(t, s, "/wt-m"); w.Locked {
+		t.Errorf("unlocked worktree = %+v", w)
+	}
+}
+
 func TestReadMissingWorktree(t *testing.T) {
 	r := testrepo.New(t)
 	r.ApplyEnv()

@@ -44,6 +44,8 @@ func parseWorktrees(out string) []Worktree {
 			cur.Branch = strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
 		case line == "detached":
 			cur.Detached = true
+		case line == "locked" || strings.HasPrefix(line, "locked "):
+			cur.Locked = true
 		}
 	}
 	return list

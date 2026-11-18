@@ -37,7 +37,8 @@ type DirtyCounts struct {
 	Files     []string `json:"files"` // first 50 paths
 }
 
-// Worktree is one checked-out folder of the repository.
+// Worktree is one checked-out folder of the repository. Locked is set by
+// `git worktree lock`; git then refuses to remove the folder.
 type Worktree struct {
 	Path     string      `json:"path"`
 	Branch   string      `json:"branch"`
@@ -45,6 +46,7 @@ type Worktree struct {
 	Main     bool        `json:"main"`
 	Detached bool        `json:"detached"`
 	Missing  bool        `json:"missing"`
+	Locked   bool        `json:"locked"`
 	Dirty    DirtyCounts `json:"dirty"`
 }
 

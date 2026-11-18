@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,7 +77,15 @@ func (f *removeFixture) view(t *testing.T) model.View {
 
 func (f *removeFixture) remove(t *testing.T, v model.View, branch string) RemoveFolderResult {
 	t.Helper()
-	res, err := RemoveFolder(context.Background(), f.run, f.st, v, branch, fixedNow)
+	return f.removeWith(t, f.run, v, branch)
+}
+
+// removeWith removes the folder of branch the way the panel asks for it: with
+// the folder and HEAD the view showed.
+func (f *removeFixture) removeWith(t *testing.T, r gitx.Runner, v model.View, branch string) RemoveFolderResult {
+	t.Helper()
+	bv := v.Branches[branch]
+	res, err := RemoveFolder(context.Background(), r, f.st, v, branch, bv.Folder, bv.FolderHead, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +202,7 @@ func TestRemoveFolderMissingFolder(t *testing.T) {
 
 func TestRemoveFolderUnknownBranch(t *testing.T) {
 	f := newRemoveFixture(t)
-	if _, err := RemoveFolder(context.Background(), f.run, f.st, f.view(t), "nope", fixedNow); err == nil {
+	if _, err := RemoveFolder(context.Background(), f.run, f.st, f.view(t), "nope", f.wt, "", fixedNow); err == nil {
 		t.Fatal("want an error for a branch outside the view")
 	}
 }
@@ -221,7 +230,9 @@ func TestRemoveFolderProbeNameTaken(t *testing.T) {
 	if err := os.Mkdir(probe, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	res, err := RemoveFolder(context.Background(), f.run, f.st, f.view(t), "alice/done", fixedNow)
+	v := f.view(t)
+	bv := v.Branches["alice/done"]
+	res, err := RemoveFolder(context.Background(), f.run, f.st, v, "alice/done", bv.Folder, bv.FolderHead, fixedNow)
 	if err == nil || res.OK {
 		t.Fatalf("res = %+v, err = %v, want an error", res, err)
 	}
@@ -325,7 +336,9 @@ func TestRemoveFolderDoesNotFollowJunction(t *testing.T) {
 	if exists(f.wt) {
 		t.Fatal("folder still exists")
 	}
-	if len(res.SkippedLinks) != 1 || res.SkippedLinks[0] != "notes/link" {
+	// notes/link was skipped by the backup, node_modules/link removed before
+	// git ran; each is listed once.
+	if strings.Join(res.SkippedLinks, ",") != "notes/link,node_modules/link" {
 		t.Fatalf("SkippedLinks = %v", res.SkippedLinks)
 	}
 	if readFile(t, filepath.Join(res.BackupDir, "notes", "me.txt")) != "my notes\n" {
@@ -447,8 +460,10 @@ func TestDropNestedPaths(t *testing.T) {
 func TestRemoveFolderGitFailed(t *testing.T) {
 	f := newRemoveFixture(t)
 	f.write(t, ".env", "SECRET=1\n")
+	// Locked after the view was built, so only git notices.
+	v := f.view(t)
 	f.r.Git(f.r.Dir, "worktree", "lock", f.wt)
-	res := f.remove(t, f.view(t), "alice/done")
+	res := f.remove(t, v, "alice/done")
 	if res.OK || res.Reason != "git-failed" || !strings.Contains(res.Detail, "lock") || !strings.Contains(res.Detail, "still exists") {
 		t.Fatalf("res = %+v", res)
 	}
@@ -487,15 +502,99 @@ func (g ghostRunner) Run(ctx context.Context, dir string, args ...string) ([]byt
 	return out, err
 }
 
+// hookRunner runs git through ExecRunner and calls before, when set, ahead of
+// every command.
+type hookRunner struct {
+	gitx.ExecRunner
+	before func(dir string, args []string)
+}
+
+func (h hookRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if h.before != nil {
+		h.before(dir, args)
+	}
+	return h.ExecRunner.Run(ctx, dir, args...)
+}
+
+func isWorktreeRemove(args []string) bool {
+	return len(args) > 1 && args[0] == "worktree" && args[1] == "remove"
+}
+
+// Older Git for Windows treats a junction as a directory and deletes the files
+// of its target during `worktree remove`: the junction must be gone before git
+// runs.
+func TestRemoveFolderDropsJunctionsBeforeGit(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("directory junctions exist only on Windows")
+	}
+	f := newRemoveFixtureWith(t, map[string]string{".gitignore": ".env\nnode_modules/\nnotes/\nbuild/\n"})
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "keep.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.write(t, "build/out.txt", "x\n")
+	link := filepath.Join(f.wt, "build", "dep")
+	junction(t, link, outside)
+	atRemove := "git did not run"
+	run := hookRunner{before: func(_ string, args []string) {
+		if isWorktreeRemove(args) {
+			atRemove = "present"
+			if !exists(link) {
+				atRemove = "gone"
+			}
+		}
+	}}
+	res := f.removeWith(t, run, f.view(t), "alice/done")
+	if !res.OK {
+		t.Fatalf("res = %+v", res)
+	}
+	if atRemove != "gone" {
+		t.Fatalf("junction when worktree remove started: %s", atRemove)
+	}
+	if readFile(t, filepath.Join(outside, "keep.txt")) != "keep\n" {
+		t.Fatal("the file behind the junction was changed")
+	}
+	found := false
+	for _, s := range res.SkippedLinks {
+		found = found || s == "build/dep"
+	}
+	if !found {
+		t.Fatalf("SkippedLinks = %v, want build/dep", res.SkippedLinks)
+	}
+}
+
+// A build-named directory that is itself a repository (a gh-pages checkout in
+// dist/) can hold unpushed commits: never delete it as build output.
+func TestRemoveFolderRefusesNestedRepoInBuildDir(t *testing.T) {
+	f := newRemoveFixtureWith(t, map[string]string{".gitignore": ".env\nnode_modules/\nnotes/\ndist/\n"})
+	dist := filepath.Join(f.wt, "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.r.Git(dist, "init")
+	f.r.Commit(dist, "pages", map[string]string{"index.html": "pages\n"})
+	f.write(t, "node_modules/pkg/.git", "gitdir: elsewhere\n")
+	res := f.remove(t, f.view(t), "alice/done")
+	if res.OK || res.Reason != "nested-repo" {
+		t.Fatalf("res = %+v, want nested-repo", res)
+	}
+	if strings.Join(res.Files, ",") != "dist/.git,node_modules/pkg/.git" {
+		t.Fatalf("Files = %v", res.Files)
+	}
+	if !exists(filepath.Join(dist, "index.html")) || !f.branchExists() {
+		t.Fatal("the folder or the branch was touched")
+	}
+	if exists(filepath.Join(f.st.Dir, "backups")) || len(f.opNames(t)) != 0 {
+		t.Fatal("a refused removal made a backup or a log entry")
+	}
+}
+
 func TestRemoveFolderPartialBackupIsRemoved(t *testing.T) {
 	f := newRemoveFixture(t)
 	f.write(t, ".env", "SECRET=1\n")
 	f.write(t, "notes/me.txt", "n\n")
 	v := f.view(t)
-	res, err := RemoveFolder(context.Background(), ghostRunner{}, f.st, v, "alice/done", fixedNow)
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := f.removeWith(t, ghostRunner{}, v, "alice/done")
 	if res.OK || res.Reason != "backup-failed" || res.BackupDir != "" {
 		t.Fatalf("res = %+v", res)
 	}
@@ -504,5 +603,199 @@ func TestRemoveFolderPartialBackupIsRemoved(t *testing.T) {
 	}
 	if !exists(filepath.Join(f.wt, ".env")) || !exists(filepath.Join(f.wt, "notes", "me.txt")) {
 		t.Fatal("the folder was touched")
+	}
+}
+
+// The panel quotes the folder and HEAD it showed; anything else is a change
+// the user has not seen.
+func TestRemoveFolderRefusesStaleFolderOrHead(t *testing.T) {
+	f := newRemoveFixture(t)
+	v := f.view(t)
+	bv := v.Branches["alice/done"]
+	for _, c := range []struct{ name, folder, head string }{
+		{"other folder", f.r.Root + "/wt-other", bv.FolderHead},
+		{"other head", bv.Folder, strings.Repeat("0", 40)},
+	} {
+		res, err := RemoveFolder(context.Background(), f.run, f.st, v, "alice/done", c.folder, c.head, fixedNow)
+		if err != nil || res.OK || res.Reason != "changed" || res.Detail == "" {
+			t.Fatalf("%s: res = %+v, err = %v, want changed", c.name, res, err)
+		}
+	}
+	// A new commit in the folder after the view was built.
+	f.r.Commit(f.wt, "late", map[string]string{"late.txt": "late\n"})
+	res := f.remove(t, v, "alice/done")
+	if res.OK || res.Reason != "changed" || !strings.Contains(res.Detail, bv.FolderHead) {
+		t.Fatalf("new commit: res = %+v, want changed", res)
+	}
+	if !exists(filepath.Join(f.wt, "late.txt")) || len(f.opNames(t)) != 0 || exists(filepath.Join(f.st.Dir, "backups")) {
+		t.Fatal("a refused removal touched something")
+	}
+}
+
+// Anything that changes while the backup is copied must stop the removal: the
+// copy would miss it. Nothing is deleted and the backup is dropped.
+func TestRemoveFolderChangedDuringBackup(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(t *testing.T, f *removeFixture)
+	}{
+		{"new ignored file", func(t *testing.T, f *removeFixture) { f.write(t, "debug.log", "log\n") }},
+		{"new file in a backed-up dir", func(t *testing.T, f *removeFixture) { f.write(t, "notes/later.txt", "later\n") }},
+		{"backed-up file grew", func(t *testing.T, f *removeFixture) { f.write(t, ".env", "SECRET=1\nMORE=2\n") }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRemoveFixtureWith(t, map[string]string{".gitignore": ".env\nnode_modules/\nnotes/\n*.log\n"})
+			f.write(t, ".env", "SECRET=1\n")
+			f.write(t, "notes/me.txt", "n\n")
+			v := f.view(t)
+			listings := 0
+			run := hookRunner{before: func(_ string, args []string) {
+				if len(args) > 1 && args[0] == "ls-files" && args[1] == "--others" {
+					if listings++; listings == 2 {
+						c.change(t, f)
+					}
+				}
+			}}
+			res := f.removeWith(t, run, v, "alice/done")
+			if res.OK || res.Reason != "changed" || res.BackupDir != "" || len(res.Files) != 0 || res.Detail == "" {
+				t.Fatalf("res = %+v, want changed", res)
+			}
+			if !exists(filepath.Join(f.wt, ".env")) || !exists(filepath.Join(f.wt, "notes", "me.txt")) {
+				t.Fatal("the folder was touched")
+			}
+			if exists(f.st.BackupDir(v.Repo, filepath.Base(f.wt), fixedNow())) {
+				t.Fatal("the backup of a refused removal is left")
+			}
+			if len(f.opNames(t)) != 0 {
+				t.Fatal("a refused removal must not be logged")
+			}
+		})
+	}
+}
+
+// A commit made on a detached HEAD in the folder is reachable only from the
+// folder's own HEAD reflog, which `worktree remove` deletes.
+func TestRemoveFolderRefusesOrphanedCommits(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.r.Git(f.wt, "checkout", "--detach")
+	orphan := f.r.Commit(f.wt, "only here", map[string]string{"tmp.txt": "t\n"})
+	f.r.Git(f.wt, "checkout", "alice/done")
+	res := f.remove(t, f.view(t), "alice/done")
+	if res.OK || res.Reason != "orphaned-commits" || len(res.Files) != 1 || res.Files[0] != orphan[:12] {
+		t.Fatalf("res = %+v, want orphaned-commits %s", res, orphan[:12])
+	}
+	if !exists(f.wt) || len(f.opNames(t)) != 0 {
+		t.Fatal("a refused removal touched something")
+	}
+	// Once a branch holds that commit, nothing is lost and the folder goes.
+	f.r.Git(f.r.Dir, "branch", "keep", orphan)
+	if res := f.remove(t, f.view(t), "alice/done"); !res.OK {
+		t.Fatalf("res = %+v, want ok", res)
+	}
+}
+
+// swapSync replaces the flush functions for one test.
+func swapSync(t *testing.T, file func(*os.File) error, dir func(string) error) {
+	t.Helper()
+	oldFile, oldDir := syncFile, syncDir
+	syncFile, syncDir = file, dir
+	t.Cleanup(func() { syncFile, syncDir = oldFile, oldDir })
+}
+
+func TestRemoveFolderFlushesBackup(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.write(t, ".env", "SECRET=1\n")
+	f.write(t, "notes/me.txt", "n\n")
+	files, dirs := 0, map[string]bool{}
+	swapSync(t, func(*os.File) error { files++; return nil }, func(d string) error { dirs[d] = true; return nil })
+	res := f.remove(t, f.view(t), "alice/done")
+	if !res.OK {
+		t.Fatalf("res = %+v", res)
+	}
+	if files != 2 {
+		t.Fatalf("flushed %d files, want 2", files)
+	}
+	for _, d := range []string{res.BackupDir, filepath.Join(res.BackupDir, "notes"), filepath.Dir(res.BackupDir)} {
+		if !dirs[d] {
+			t.Fatalf("directory %s not flushed: %v", d, dirs)
+		}
+	}
+}
+
+func TestRemoveFolderFlushFailureKeepsFolder(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.write(t, ".env", "SECRET=1\n")
+	f.write(t, "node_modules/x.js", "x\n")
+	v := f.view(t)
+	swapSync(t, func(*os.File) error { return errors.New("disk full") }, syncDirectory)
+	res := f.remove(t, v, "alice/done")
+	if res.OK || res.Reason != "backup-failed" || !strings.Contains(res.Detail, "disk full") {
+		t.Fatalf("res = %+v", res)
+	}
+	if len(res.DeletedBuild) != 0 {
+		t.Fatalf("DeletedBuild = %v on a refusal", res.DeletedBuild)
+	}
+	if !exists(filepath.Join(f.wt, ".env")) || !exists(filepath.Join(f.wt, "node_modules", "x.js")) {
+		t.Fatal("the folder was touched")
+	}
+	if exists(f.st.BackupDir(v.Repo, filepath.Base(f.wt), fixedNow())) {
+		t.Fatal("a partial backup is left")
+	}
+}
+
+// The second lock probe runs after the backup: a file opened meanwhile keeps
+// the folder, and the finished backup is kept.
+func TestRemoveFolderLockedAfterBackup(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("a folder can only be locked by an open file on Windows")
+	}
+	f := newRemoveFixture(t)
+	f.write(t, ".env", "SECRET=1\n")
+	f.write(t, "node_modules/x.js", "x\n")
+	var held *os.File
+	t.Cleanup(func() {
+		if held != nil {
+			held.Close()
+		}
+	})
+	run := hookRunner{before: func(_ string, args []string) {
+		if held == nil && len(args) > 1 && args[0] == "ls-files" && args[1] == "--others" {
+			var err error
+			if held, err = os.Open(filepath.Join(f.wt, "node_modules", "x.js")); err != nil {
+				t.Error(err)
+			}
+		}
+	}}
+	res := f.removeWith(t, run, f.view(t), "alice/done")
+	if res.OK || res.Reason != "locked" || res.BackupDir == "" || len(res.DeletedBuild) != 0 {
+		t.Fatalf("res = %+v, want locked with the backup kept", res)
+	}
+	if readFile(t, filepath.Join(res.BackupDir, ".env")) != "SECRET=1\n" {
+		t.Fatal("the backup was not kept")
+	}
+	if !exists(filepath.Join(f.wt, "node_modules", "x.js")) || exists(f.wt+lockProbeSuffix) || len(f.opNames(t)) != 0 {
+		t.Fatal("the folder was changed or the refusal was logged")
+	}
+}
+
+func TestRemoveFolderBackupIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not used on Windows")
+	}
+	f := newRemoveFixture(t)
+	f.write(t, "notes/me.txt", "n\n")
+	res := f.remove(t, f.view(t), "alice/done")
+	if !res.OK {
+		t.Fatalf("res = %+v", res)
+	}
+	for _, d := range []string{filepath.Join(f.st.Dir, "backups"), filepath.Dir(res.BackupDir), res.BackupDir, filepath.Join(res.BackupDir, "notes")} {
+		info, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Fatalf("%s has mode %o, want 700", d, perm)
+		}
 	}
 }

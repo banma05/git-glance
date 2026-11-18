@@ -135,3 +135,27 @@ func TestBackups(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The config directory holds the operation log and backups of ignored files
+// (often secrets): it is created readable by its owner only.
+func TestStoreDirsArePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not used on Windows")
+	}
+	s := Store{Dir: filepath.Join(t.TempDir(), "cfg")}
+	if err := s.AppendOp(OpEntry{Op: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveRepo("/some/repo", RepoSettings{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{s.Dir, filepath.Join(s.Dir, "repos")} {
+		info, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Fatalf("%s has mode %o, want 700", d, perm)
+		}
+	}
+}
