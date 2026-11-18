@@ -9,6 +9,7 @@ interface Props {
   actions: Actions;
   mode: ViewMode;
   busy: boolean;
+  readOnly: boolean; // the core refuses every change (git too old or missing)
   editor: string;
   theme: Theme;
   showEditor: boolean; // only the browser opens folders with a command chosen here
@@ -18,14 +19,14 @@ const THEME_ICON: Record<Theme, string> = { auto: '◐', dark: '☾', light: '�
 
 // Toolbar is the wide window's row of operations. There is no button that
 // changes the remote; the only network action is reading it.
-export function Toolbar({ t, actions, mode, busy, editor, theme, showEditor }: Props) {
+export function Toolbar({ t, actions, mode, busy, readOnly, editor, theme, showEditor }: Props) {
   return (
     <div class="toolbar">
-      <button class="btn" disabled={busy} onClick={actions.align}>
+      <button class="btn" disabled={busy || readOnly} onClick={actions.align}>
         <span aria-hidden="true">⟳ </span>
         {t('toolbar.align')}
       </button>
-      <button class="btn" disabled={busy} onClick={() => actions.openDialog('create')}>
+      <button class="btn" disabled={busy || readOnly} onClick={() => actions.openDialog('create')}>
         <span aria-hidden="true">＋ </span>
         {t('toolbar.createFolder')}
       </button>
@@ -50,14 +51,14 @@ export function Toolbar({ t, actions, mode, busy, editor, theme, showEditor }: P
       {showEditor && (
         <label class="field">
           {t('toolbar.openWith')}
-          <select value={editor} onChange={(e) => actions.setEditor((e.target as HTMLSelectElement).value)}>
+          <select disabled={readOnly} value={editor} onChange={(e) => actions.setEditor((e.target as HTMLSelectElement).value)}>
             {EDITORS.map((id) => (
               <option value={id}>{id}</option>
             ))}
           </select>
         </label>
       )}
-      <button class="btn" onClick={actions.cycleTheme}>
+      <button class="btn" disabled={readOnly} onClick={actions.cycleTheme}>
         <span aria-hidden="true">{THEME_ICON[theme]} </span>
         {t(`toolbar.theme.${theme}`)}
       </button>

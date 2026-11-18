@@ -29,8 +29,11 @@ function branch(name: string, over: Partial<BranchView>): BranchView {
     trunk: 'main',
     trunkSource: 'count',
     folder: '',
+    folderHead: '',
     mainFolder: false,
     folderMissing: false,
+    folderBroken: false,
+    folderLocked: false,
     dirty: null,
     hasUpstream: true,
     upstreamGone: false,
@@ -48,7 +51,10 @@ function branch(name: string, over: Partial<BranchView>): BranchView {
     removeBlock: 'not-in-folder',
     old: false,
     lastCommit: 0,
+    error: '',
     ...over,
+    // every folder that is there has a HEAD
+    ...(over.folder && !over.folderMissing && over.folderHead === undefined ? { folderHead: hash(800 + over.color!) } : {}),
   };
 }
 
@@ -291,6 +297,8 @@ export function mockHost(): Host {
   const call = async <T,>(method: string, params?: object): Promise<T> => {
     const p = (params ?? {}) as Record<string, unknown>;
     switch (method) {
+      case 'version':
+        return { core: 'mock', git: '2.45', gitOK: true } as T;
       case 'repos':
         return (await delay(global.repos)) as T;
       case 'view':
@@ -360,7 +368,7 @@ export function mockHost(): Host {
           truncated: false,
         })) as T;
       case 'createFolder':
-        return (await delay({ ok: true, reason: '', files: [], path: String(p.path ?? ''), logError: '' })) as T;
+        return (await delay({ ok: true, reason: '', files: [], path: String(p.path ?? ''), detail: '', logError: '' })) as T;
       case 'removeFolder':
         return (await delay({
           ok: true,
@@ -379,7 +387,7 @@ export function mockHost(): Host {
       case 'setRepoSettings':
         return (await delay(mockView(String(p.repo ?? repo)).settings)) as T;
       case 'switch':
-        return (await delay({ ok: true, reason: '', files: [], path: '', logError: '' })) as T;
+        return (await delay({ ok: true, reason: '', files: [], path: '', detail: '', logError: '' })) as T;
       case 'trunkCommits':
         return (await delay([
           { hash: hash(901), subject: 'Update docs', time: nowSec() - 2 * DAY },

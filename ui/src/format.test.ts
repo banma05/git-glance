@@ -5,10 +5,10 @@ import { makeT } from './i18n';
 
 const base: BranchView = {
   name: 'feature/login', short: 'feature/login', topic: 'login', color: 0,
-  trunk: 'main', trunkSource: 'auto', folder: '', mainFolder: false, folderMissing: false,
-  dirty: null, hasUpstream: true, upstreamGone: false, ahead: 0, behind: 0, unpushed: 0,
+  trunk: 'main', trunkSource: 'auto', folder: '', folderHead: '', mainFolder: false, folderMissing: false,
+  folderBroken: false, folderLocked: false, dirty: null, hasUpstream: true, upstreamGone: false, ahead: 0, behind: 0, unpushed: 0,
   behindTrunk: 0, own: [], forkHash: '', forkTime: 0, merged: false, test: null, release: null,
-  canRemoveFolder: false, removeBlock: '', old: false, lastCommit: 0,
+  canRemoveFolder: false, removeBlock: '', old: false, lastCommit: 0, error: '',
 };
 const t = makeT('en');
 const keys = (b: Partial<BranchView>) => chips({ ...base, ...b }, t).map((c) => c.key);
@@ -58,6 +58,16 @@ describe('chips', () => {
   it('missing folder', () => {
     expect(keys({ folderMissing: true })).toEqual(['synced', 'folder-missing']);
   });
+  it('a folder git cannot read', () => {
+    const c = chips({ ...base, folderMissing: true, folderBroken: true }, t);
+    expect(c.map((x) => x.key)).toEqual(['synced', 'folder-broken']);
+    expect(c[1].text).toBe(t('chip.folderBroken'));
+  });
+  it('a branch whose details could not be read comes first and wins the graph row', () => {
+    const c = chips({ ...base, error: 'fatal: bad object', behind: 2 }, t);
+    expect(c[0]).toEqual({ key: 'error', text: t('chip.error'), tone: 'warn' });
+    expect(topChip(c)?.key).toBe('error');
+  });
   it('no chip about the upstream when it is gone', () => {
     expect(keys({ upstreamGone: true })).toEqual([]);
   });
@@ -65,7 +75,7 @@ describe('chips', () => {
 
 describe('blockText', () => {
   it('maps every reason from the core and falls back to the raw value', () => {
-    for (const b of ['not-in-folder', 'main-folder', 'folder-missing', 'dirty', 'unpushed', 'not-merged']) {
+    for (const b of ['not-in-folder', 'main-folder', 'folder-missing', 'locked-worktree', 'dirty', 'unpushed', 'not-merged', 'error']) {
       expect(blockText(b, t)).not.toBe(b);
     }
     expect(blockText('something-new', t)).toBe('something-new');

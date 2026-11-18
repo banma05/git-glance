@@ -16,7 +16,7 @@ describe('wide toolbar', () => {
   for (const locale of ['zh-cn', 'en']) {
     it(`has no push, pull, sync, merge or rebase button in ${locale}`, () => {
       const t = makeT(locale);
-      render(<Toolbar t={t} actions={actions()} mode="list" busy={false} editor="code" theme="auto" showEditor />);
+      render(<Toolbar t={t} actions={actions()} mode="list" busy={false} readOnly={false} editor="code" theme="auto" showEditor />);
       const buttons = screen.getAllByRole('button');
       expect(buttons.length).toBeGreaterThanOrEqual(7);
       for (const b of buttons) {
@@ -28,8 +28,19 @@ describe('wide toolbar', () => {
 
   it('disables the write buttons while a write runs', () => {
     const t = makeT('en');
-    render(<Toolbar t={t} actions={actions()} mode="list" busy editor="code" theme="auto" showEditor />);
+    render(<Toolbar t={t} actions={actions()} mode="list" busy readOnly={false} editor="code" theme="auto" showEditor />);
     expect((screen.getByText(t('toolbar.align')).closest('button') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText(t('toolbar.createFolder')).closest('button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('disables every button that changes something when the core refuses changes', () => {
+    const t = makeT('en');
+    render(<Toolbar t={t} actions={actions()} mode="list" busy={false} readOnly editor="code" theme="auto" showEditor />);
+    const btn = (key: Parameters<typeof t>[0]) => screen.getByText(t(key)).closest('button') as HTMLButtonElement;
+    expect(btn('toolbar.align').disabled).toBe(true);
+    expect(btn('toolbar.createFolder').disabled).toBe(true);
+    expect(btn('toolbar.theme.auto').disabled).toBe(true);
+    expect(btn('toolbar.compare').disabled).toBe(false);
+    expect(btn('toolbar.oplog').disabled).toBe(false);
   });
 });

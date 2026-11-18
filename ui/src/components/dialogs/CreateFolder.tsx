@@ -43,7 +43,7 @@ export function CreateFolder({ t, host, state, actions }: Props) {
       class="form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready && !state.busy) actions.createFolder(trunk, name, path.trim());
+        if (ready && !state.busy && !state.gitProblem) actions.createFolder(trunk, name, path.trim());
       }}
     >
       {trunks.length === 0 && <p class="muted">{t('dialog.create.noTrunk')}</p>}
@@ -71,7 +71,7 @@ export function CreateFolder({ t, host, state, actions }: Props) {
         />
       </label>
       <div class="dialog-actions">
-        <button class="btn" type="submit" disabled={!ready || state.busy}>
+        <button class="btn" type="submit" disabled={!ready || state.busy || !!state.gitProblem}>
           {t('dialog.create.submit')}
         </button>
       </div>
@@ -87,10 +87,11 @@ export function CreateFolder({ t, host, state, actions }: Props) {
           ) : (
             <>
               <p class="warn">{t('dialog.create.refused', { reason: reasonText('create.reason', out.result?.reason ?? '', t) })}</p>
+              {out.result?.path && <p>{t('detail.path', { path: out.result.path })}</p>}
               {out.result && out.result.files.length > 0 && <FileList files={out.result.files} />}
             </>
           )}
-          <ResultNotes t={t} logError={out.result?.logError} />
+          <ResultNotes t={t} detail={out.result?.detail} logError={out.result?.logError} />
         </div>
       )}
     </form>

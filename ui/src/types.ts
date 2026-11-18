@@ -42,9 +42,11 @@ export type RemoveBlock =
   | 'not-in-folder'
   | 'main-folder'
   | 'folder-missing'
+  | 'locked-worktree'
   | 'dirty'
   | 'unpushed'
-  | 'not-merged';
+  | 'not-merged'
+  | 'error';
 
 export interface BranchView {
   name: string;
@@ -54,8 +56,11 @@ export interface BranchView {
   trunk: string; // "" when unknown
   trunkSource: TrunkSource;
   folder: string; // "" when the branch has no folder
+  folderHead: string; // HEAD hash of the folder; "" when there is none or it is missing or broken
   mainFolder: boolean;
   folderMissing: boolean;
+  folderBroken: boolean; // the folder exists but git cannot read it (folderMissing is true too)
+  folderLocked: boolean; // `git worktree lock`
   dirty: DirtyCounts | null; // set only when the folder exists and has changes
   hasUpstream: boolean;
   upstreamGone: boolean;
@@ -73,11 +78,12 @@ export interface BranchView {
   removeBlock: RemoveBlock | string;
   old: boolean;
   lastCommit: number;
+  error: string; // "" normally; why the details of the branch could not be read
 }
 
 export interface TrunkView {
   name: string;
-  ref: string;
+  ref: string; // the name when it is compared through the local branch, else "<remote>/<name>"
   hash: string;
   time: number;
   hasLocal: boolean;
@@ -194,6 +200,7 @@ export interface OpResult {
   reason: string;
   files: string[];
   path: string;
+  detail: string;
   logError: string;
 }
 
@@ -245,7 +252,9 @@ export interface BackupsInfo {
 }
 
 export interface RpcError {
-  code: string; // not-repo, bad-params, unknown-method, git-failed, not-allowed, editor-not-found, internal
+  // not-repo, bare-repo, unsafe-repo, bad-params, unknown-method, git-failed,
+  // git-too-old, not-allowed, editor-not-found, internal
+  code: string;
   message: string;
 }
 

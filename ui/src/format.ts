@@ -11,9 +11,11 @@ const BLOCK_KEYS: Record<string, Key> = {
   'not-in-folder': 'block.notInFolder',
   'main-folder': 'block.mainFolder',
   'folder-missing': 'block.folderMissing',
+  'locked-worktree': 'block.lockedWorktree',
   dirty: 'block.dirty',
   unpushed: 'block.unpushed',
   'not-merged': 'block.notMerged',
+  error: 'block.error',
 };
 
 // chips lists the status chips of a branch in display order.
@@ -21,6 +23,7 @@ export function chips(b: BranchView, t: T): Chip[] {
   const out: Chip[] = [];
   const add = (key: string, text: string, tone: Chip['tone']) => out.push({ key, text, tone });
 
+  if (b.error) add('error', t('chip.error'), 'warn');
   if (!b.hasUpstream) {
     if (b.unpushed > 0) add('unpushed', t('chip.unpushed'), 'mute');
   } else if (!b.upstreamGone) {
@@ -43,7 +46,8 @@ export function chips(b: BranchView, t: T): Chip[] {
   }
 
   if (b.merged && b.canRemoveFolder) add('removable', t('chip.removable'), 'ok');
-  if (b.folderMissing) add('folder-missing', t('chip.folderMissing'), 'warn');
+  if (b.folderBroken) add('folder-broken', t('chip.folderBroken'), 'warn');
+  else if (b.folderMissing) add('folder-missing', t('chip.folderMissing'), 'warn');
   return out;
 }
 
@@ -85,7 +89,7 @@ export function dateTime(time: number): string {
 }
 
 // Highest first: the one chip a graph row can afford.
-const CHIP_PRIORITY = ['dirty', 'behind', 'folder-missing', 'removable', 'release-', 'test-', 'synced', 'ahead', 'unpushed'];
+const CHIP_PRIORITY = ['error', 'dirty', 'behind', 'folder-broken', 'folder-missing', 'removable', 'release-', 'test-', 'synced', 'ahead', 'unpushed'];
 
 // topChip picks the most important chip of a branch, or null when it has none.
 export function topChip(list: Chip[]): Chip | null {

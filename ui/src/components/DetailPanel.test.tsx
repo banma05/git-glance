@@ -70,20 +70,32 @@ describe('DetailPanel', () => {
   });
 
   it('shows the switch failure reason and the returned path', () => {
-    const result: OpResult = { ok: false, reason: 'checked-out-elsewhere', files: [], path: '/x', logError: '' };
+    const result: OpResult = { ok: false, reason: 'checked-out-elsewhere', files: [], path: '/x', detail: '', logError: '' };
     renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'x', result } });
     expect(screen.getByText(/这个分支已经放在别的文件夹里了/)).toBeTruthy();
     expect(screen.getByText(/\/x/)).toBeTruthy();
   });
 
   it('shows the log error of a switch', () => {
-    const result: OpResult = { ok: true, reason: '', files: [], path: '', logError: 'disk full' };
+    const result: OpResult = { ok: true, reason: '', files: [], path: '', detail: '', logError: 'disk full' };
     renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'x', result } }, en);
     expect(screen.getByText(/disk full/)).toBeTruthy();
   });
 
+  it('shows what git said when a switch failed', () => {
+    const result: OpResult = { ok: false, reason: 'git-failed', files: [], path: '/w', detail: 'error: would be overwritten', logError: '' };
+    renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'x', result } }, en);
+    expect(screen.getByText(en('switch.reason.git-failed'))).toBeTruthy();
+    expect(screen.getByText(/would be overwritten/)).toBeTruthy();
+  });
+
+  it('says when the details of the branch could not be read', () => {
+    renderPanel(branchOf('x', [], { error: 'fatal: bad object 1234', trunk: '', trunkSource: 'unknown' }), idle, en);
+    expect(screen.getByText(en('detail.error', { message: 'fatal: bad object 1234' }))).toBeTruthy();
+  });
+
   it('does not show the result of another branch', () => {
-    const result: OpResult = { ok: false, reason: 'dirty', files: [], path: '', logError: '' };
+    const result: OpResult = { ok: false, reason: 'dirty', files: [], path: '', detail: '', logError: '' };
     renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'other', result } }, en);
     expect(screen.queryByText(/uncommitted/)).toBeNull();
   });
@@ -180,7 +192,7 @@ describe('DetailPanel in the app', () => {
       branch: 'carol/feature/search',
     });
     await waitFor(() => expect(calls.filter((c) => c.method === 'view')).toHaveLength(2));
-    finish({ ok: false, reason: 'checked-out-elsewhere', files: [], path: '/x', logError: '' });
+    finish({ ok: false, reason: 'checked-out-elsewhere', files: [], path: '/x', detail: '', logError: '' });
     expect(await screen.findByText(/这个分支已经放在别的文件夹里了/)).toBeTruthy();
     expect(screen.getByText(/\/x/)).toBeTruthy();
     await waitFor(() => expect(switchBtn().disabled).toBe(false));
@@ -188,7 +200,7 @@ describe('DetailPanel in the app', () => {
   });
 
   it('reloads the view after a successful switch', async () => {
-    const { host, calls } = appHost(async () => ({ ok: true, reason: '', files: [], path: '', logError: '' }));
+    const { host, calls } = appHost(async () => ({ ok: true, reason: '', files: [], path: '', detail: '', logError: '' }));
     render(<App host={host} />);
     fireEvent.click(await screen.findByText('feature/search'));
     await waitFor(() => expect(calls.filter((c) => c.method === 'view')).toHaveLength(2));

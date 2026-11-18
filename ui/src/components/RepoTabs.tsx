@@ -9,11 +9,12 @@ interface Props {
   host: Host;
   repos: string[];
   repo: string;
+  readOnly?: boolean; // the core refuses every change, adding a repository too
   onSelect(repo: string): void;
   onAdd(path: string): void;
 }
 
-export function RepoTabs({ t, host, repos, repo, onSelect, onAdd }: Props) {
+export function RepoTabs({ t, host, repos, repo, readOnly = false, onSelect, onAdd }: Props) {
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
@@ -22,7 +23,7 @@ export function RepoTabs({ t, host, repos, repo, onSelect, onAdd }: Props) {
   // The path may be any folder inside the repository: discover finds its root.
   const submit = async () => {
     const typed = path.trim();
-    if (!typed || busy) return;
+    if (!typed || busy || readOnly) return;
     setBusy(true);
     setError('');
     try {
@@ -59,7 +60,7 @@ export function RepoTabs({ t, host, repos, repo, onSelect, onAdd }: Props) {
             {t('repo.addPrompt')}
             <input type="text" value={path} onInput={(e) => setPath((e.target as HTMLInputElement).value)} />
           </label>
-          <button class="btn" type="submit" disabled={busy || !path.trim()}>
+          <button class="btn" type="submit" disabled={busy || readOnly || !path.trim()}>
             {t('repo.addSubmit')}
           </button>
           {error && (

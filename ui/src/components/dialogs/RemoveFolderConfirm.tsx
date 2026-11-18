@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'preact/hooks';
 import { rpc } from '../../api';
-import { formatBytes } from '../../format';
+import { blockText, formatBytes } from '../../format';
 import type { Host } from '../../host/types';
 import type { T } from '../../i18n';
 import { errorText, reasonText } from '../../reasons';
 import type { Actions, AppState } from '../../state';
-import type { BackupsInfo } from '../../types';
+import type { BackupsInfo, BranchView } from '../../types';
 import { FileList, ResultNotes } from './parts';
 
 interface Props {
@@ -15,10 +15,31 @@ interface Props {
   actions: Pick<Actions, 'removeFolder'>;
 }
 
+// What the dialog showed when it opened. The folder and its HEAD go with the
+// removal, and the core refuses (changed) when either is no longer true.
+interface Shown {
+  name: string;
+  folder: string;
+  head: string;
+}
+
+// whyNot is why the confirm is disabled, "" when it is not: the view read
+// since the dialog opened must still allow the removal of the same folder at
+// the same commit.
+function whyNot(shown: Shown, now: BranchView | null, t: T): string {
+  if (!now) return t('dialog.remove.noBranch');
+  if (!now.canRemoveFolder) return t('dialog.remove.blocked', { reason: blockText(now.removeBlock, t) });
+  if (!shown.head || now.folder !== shown.folder || now.folderHead !== shown.head) return t('dialog.remove.reopen');
+  return '';
+}
+
 // RemoveFolderConfirm states what removing a folder does and calls removeFolder
 // only when the confirm button is clicked.
 export function RemoveFolderConfirm({ t, host, state, actions }: Props) {
-  const branch = state.view && state.selected ? (state.view.branches[state.selected] ?? null) : null;
+  const [shown] = useState<Shown | null>(() => {
+    const b = state.view && state.selected ? state.view.branches[state.selected] : undefined;
+    return b ? { name: b.name, folder: b.folder, head: b.folderHead } : null;
+  });
   const [backups, setBackups] = useState<BackupsInfo | null>(null);
   useEffect(() => {
     rpc(host, 'backups')
@@ -26,16 +47,17 @@ export function RemoveFolderConfirm({ t, host, state, actions }: Props) {
       .catch(() => setBackups(null));
   }, [host]);
 
-  const name = state.selected;
-  const out = state.removeOutcome && state.removeOutcome.branch === name ? state.removeOutcome : null;
-  if (!branch && !out) return <p class="muted">{t('dialog.remove.noBranch')}</p>;
+  const out = shown && state.removeOutcome && state.removeOutcome.branch === shown.name ? state.removeOutcome : null;
+  if (!shown) return <p class="muted">{t('dialog.remove.noBranch')}</p>;
+  const now = state.view?.branches[shown.name] ?? null;
   const r = out?.result ?? null;
   const done = !!r?.ok;
+  const blocked = whyNot(shown, now, t);
   return (
     <div>
-      {branch && !done && (
+      {!done && (
         <>
-          <p>{t('dialog.remove.intro', { branch: branch.name, path: branch.folder })}</p>
+          <p>{t('dialog.remove.intro', { branch: shown.name, path: shown.folder })}</p>
           <ul class="rules">
             <li>{t('dialog.remove.rule.disk')}</li>
             <li>{t('dialog.remove.rule.branch')}</li>
@@ -43,8 +65,19 @@ export function RemoveFolderConfirm({ t, host, state, actions }: Props) {
             <li>{t('dialog.remove.rule.build')}</li>
             <li>{t('dialog.remove.rule.changed')}</li>
           </ul>
+          {blocked && !out && (
+            <p class="warn" role="status">
+              {blocked}
+            </p>
+          )}
           <div class="dialog-actions">
-            <button class="btn danger" disabled={state.busy} onClick={() => actions.removeFolder(name)}>
+            <button
+              class="btn danger"
+              disabled={state.busy || !!state.gitProblem || !!blocked}
+              onClick={() => {
+                if (!blocked) actions.removeFolder(shown.name, shown.folder, shown.head);
+              }}
+            >
               {t('dialog.remove.confirm')}
             </button>
           </div>

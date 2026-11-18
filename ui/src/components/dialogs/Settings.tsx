@@ -24,7 +24,7 @@ type Note = { ok: boolean; text: string } | null;
 export function Settings({ t, host, state, actions }: Props) {
   const view = state.view;
   const repo = state.repo;
-  const busy = state.busy;
+  const busy = state.busy || !!state.gitProblem; // no change can start now
   const outcome = state.settingsOutcome;
   const trunks = view ? view.groups.map((g) => g.trunk.name) : [];
 

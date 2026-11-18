@@ -6,6 +6,7 @@ import { RepoTabs } from '../RepoTabs';
 import { NoticeLine } from '../NoticeLine';
 import { makeT } from '../../i18n';
 import { mockView } from '../../host/mock';
+import { blockText } from '../../format';
 import { HostError } from '../../host/types';
 import type { Host } from '../../host/types';
 import { useApp } from '../../state';
@@ -80,6 +81,7 @@ function Harness({ host, open, select }: { host: Host; open: DialogName; select?
 }
 
 const en = makeT('en');
+const typo = mockView(REPO).branches['alice/fix/typo'];
 const removeOk = {
   ok: true,
   reason: '',
@@ -114,7 +116,55 @@ describe('RemoveFolderConfirm', () => {
     expect(h.count('removeFolder')).toBe(0);
     fireEvent.click(confirm);
     await waitFor(() => expect(h.count('removeFolder')).toBe(1));
-    expect(h.calls.find((c) => c.method === 'removeFolder')?.params).toEqual({ repo: REPO, branch: 'alice/fix/typo' });
+    expect(h.calls.find((c) => c.method === 'removeFolder')?.params).toEqual({
+      repo: REPO,
+      branch: 'alice/fix/typo',
+      folder: '/demo/repo-typo',
+      head: typo.folderHead,
+    });
+  });
+
+  it('never confirms another HEAD than it showed: a view read since with a new HEAD disables it', async () => {
+    let views = 0;
+    const later = mockView(REPO);
+    later.branches['alice/fix/typo'] = { ...later.branches['alice/fix/typo'], folderHead: hex(77) };
+    const h = open({ view: () => (++views === 1 ? mockView(REPO) : later) });
+    const confirm = (await screen.findByRole('button', { name: en('dialog.remove.confirm') })) as HTMLButtonElement;
+    expect(screen.getByRole('dialog').textContent).toContain('/demo/repo-typo');
+    await waitFor(() => expect(confirm.disabled).toBe(true));
+    expect(screen.getByRole('dialog').textContent).toContain(en('dialog.remove.reopen'));
+    fireEvent.click(confirm);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.count('removeFolder')).toBe(0);
+  });
+
+  it('keeps the confirm disabled and names the reason when the folder cannot be removed', async () => {
+    const h = fakeHost({ removeFolder: removeOk });
+    render(<Harness host={h.host} open="remove" select="alice/feature/login" />);
+    const confirm = (await screen.findByRole('button', { name: en('dialog.remove.confirm') })) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    expect(screen.getByRole('dialog').textContent).toContain(blockText('dirty', en));
+    fireEvent.click(confirm);
+    expect(h.count('removeFolder')).toBe(0);
+  });
+
+  it('disables the confirm when the view read meanwhile says the folder can no longer be removed', async () => {
+    let views = 0;
+    const later = mockView(REPO);
+    later.branches['alice/fix/typo'] = { ...later.branches['alice/fix/typo'], canRemoveFolder: false, removeBlock: 'dirty' };
+    const h = open({ view: () => (++views === 1 ? mockView(REPO) : later) });
+    const confirm = (await screen.findByRole('button', { name: en('dialog.remove.confirm') })) as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(true));
+    expect(screen.getByRole('dialog').textContent).toContain(blockText('dirty', en));
+    expect(h.count('removeFolder')).toBe(0);
+  });
+
+  it('states what is checked right before the removal', async () => {
+    open();
+    await screen.findByRole('button', { name: en('dialog.remove.confirm') });
+    expect(screen.getByRole('dialog').textContent).toContain(en('dialog.remove.rule.changed'));
+    expect(en('dialog.remove.rule.changed')).toMatch(/checked again/);
+    expect(en('dialog.remove.rule.changed')).not.toMatch(/since the view was drawn/);
   });
 
   it('shows the backup, deleted build folders, skipped links, detail and the log error', async () => {
@@ -238,12 +288,33 @@ describe('Compare', () => {
     await screen.findByText('Only on A');
     expect(screen.getByText('Only on B')).toBeTruthy();
     expect(screen.getByText(en('dialog.compare.filesTruncated'))).toBeTruthy();
-    expect(h.calls.find((c) => c.method === 'compare')?.params).toEqual({ repo: REPO, a: 'alice/fix/typo', b: 'bob/fix/timeout' });
+    expect(h.calls.find((c) => c.method === 'compare')?.params).toEqual({
+      repo: REPO,
+      a: 'refs/heads/alice/fix/typo',
+      b: 'refs/heads/bob/fix/timeout',
+    });
     fireEvent.click(screen.getByText('src/a.ts'));
-    await waitFor(() => expect(h.openDiff).toHaveBeenCalledWith(REPO, 'alice/fix/typo', 'bob/fix/timeout', 'src/a.ts'));
+    await waitFor(() =>
+      expect(h.openDiff).toHaveBeenCalledWith(REPO, 'refs/heads/alice/fix/typo', 'refs/heads/bob/fix/timeout', 'src/a.ts'),
+    );
     await waitFor(() => expect(h.count('fileDiff')).toBe(1));
     await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain('+new'));
     expect(screen.getByText(en('dialog.compare.diffTruncated'))).toBeTruthy();
+  });
+
+  it('compares a trunk through its remote ref and names both sides by their branch names', async () => {
+    const h = fakeHost({ compare: result });
+    render(<Harness host={h.host} open="compare" select="alice/fix/typo" />);
+    fireEvent.change(await screen.findByLabelText(en('dialog.compare.b')), { target: { value: 'main' } });
+    fireEvent.click(screen.getByRole('button', { name: en('dialog.compare.run') }));
+    await waitFor(() => expect(h.count('compare')).toBe(1));
+    expect(h.calls.find((c) => c.method === 'compare')?.params).toEqual({
+      repo: REPO,
+      a: 'refs/heads/alice/fix/typo',
+      b: 'refs/remotes/origin/main',
+    });
+    await screen.findByText('Only on A');
+    expect(screen.getByText(en('dialog.compare.onlyB', { name: 'main' }))).toBeTruthy();
   });
 
   it('does not call fileDiff when the host opened the diff', async () => {
@@ -284,6 +355,27 @@ describe('CreateFolder', () => {
     await waitFor(() => expect((screen.getByLabelText(en('dialog.create.path')) as HTMLInputElement).value).not.toBe(''));
     fireEvent.click(screen.getByRole('button', { name: en('dialog.create.submit') }));
     await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain(en('create.reason.branch-exists')));
+  });
+
+  it('shows the folder and the detail of a refusal', async () => {
+    const h = fakeHost({
+      createFolder: {
+        ok: false,
+        reason: 'git-failed',
+        files: [],
+        path: '/demo/repo-feature-new',
+        detail: 'branch feature/new was created at abc1234 and kept',
+        logError: '',
+      },
+    });
+    render(<Harness host={h.host} open="create" />);
+    await type('feature/new');
+    await waitFor(() => expect((screen.getByLabelText(en('dialog.create.path')) as HTMLInputElement).value).not.toBe(''));
+    fireEvent.click(screen.getByRole('button', { name: en('dialog.create.submit') }));
+    const d = screen.getByRole('dialog');
+    await waitFor(() => expect(d.textContent).toContain(en('create.reason.git-failed')));
+    expect(d.textContent).toContain('/demo/repo-feature-new');
+    expect(d.textContent).toContain('was created at abc1234 and kept');
   });
 
   it('shows the new path and the log error, then reads the view again', async () => {
@@ -365,6 +457,25 @@ describe('OpLog', () => {
     expect(within(rows[0]).getByText('new/one')).toBeTruthy();
     expect(within(rows[1]).getByText('old/one')).toBeTruthy();
     expect(screen.getByText('d-new/one')).toBeTruthy();
+  });
+
+  it('writes a failed git step as the reason text followed by what git said', async () => {
+    const entry = {
+      time: 5,
+      repo: REPO,
+      op: 'switch',
+      branch: 'x',
+      folder: '/f',
+      command: [],
+      before: '',
+      after: '',
+      result: 'git-failed: error: would be overwritten',
+      detail: '',
+    };
+    const h = fakeHost({ ops: [entry] });
+    render(<Harness host={h.host} open="oplog" />);
+    await screen.findByText('x');
+    expect(screen.getByRole('dialog').textContent).toContain(en('switch.reason.git-failed') + ': error: would be overwritten');
   });
 });
 

@@ -4,7 +4,7 @@ import type { Host } from '../../host/types';
 import type { T } from '../../i18n';
 import { errorText } from '../../reasons';
 import type { AppState } from '../../state';
-import type { CommitInfo, CompareResult, FileDiffResult } from '../../types';
+import type { CommitInfo, CompareResult, FileDiffResult, TrunkView } from '../../types';
 
 const COMMIT_CAP = 200; // the core lists at most this many commits per side
 
@@ -20,28 +20,41 @@ function Commits({ list }: { list: CommitInfo[] }) {
   );
 }
 
+// trunkRef is the full ref a trunk is compared through: its remote copy when
+// it has one (design 4.1), else the local branch.
+export function trunkRef(tv: TrunkView): string {
+  return tv.ref === tv.name ? `refs/heads/${tv.name}` : `refs/remotes/${tv.ref}`;
+}
+
+type Shown = { a: string; b: string; refA: string; refB: string; result: CompareResult };
+
 export function Compare({ t, host, state }: { t: T; host: Host; state: AppState }) {
   const view = state.view;
-  const names: string[] = [];
+  // name shown in the lists -> the full ref sent to the core, so that a tag or a
+  // remote branch of the same name can never be meant instead
+  const refs = new Map<string, string>();
   if (view) {
-    for (const g of view.groups) names.push(g.trunk.name);
-    for (const n of Object.keys(view.branches)) if (!names.includes(n)) names.push(n);
+    for (const g of view.groups) refs.set(g.trunk.name, trunkRef(g.trunk));
+    for (const n of Object.keys(view.branches)) if (!refs.has(n)) refs.set(n, `refs/heads/${n}`);
   }
+  const names = [...refs.keys()];
   const [a, setA] = useState(state.selected);
   const [b, setB] = useState('');
-  const [shown, setShown] = useState<{ a: string; b: string; result: CompareResult } | null>(null);
+  const [shown, setShown] = useState<Shown | null>(null);
   const [diff, setDiff] = useState<{ path: string; result: FileDiffResult } | null>(null);
   const [error, setError] = useState<unknown>(null);
   const seq = useRef(0);
 
   const run = () => {
-    if (!a || !b) return;
+    const refA = refs.get(a);
+    const refB = refs.get(b);
+    if (!refA || !refB) return;
     const mine = ++seq.current;
     setError(null);
     setDiff(null);
-    rpc(host, 'compare', { repo: state.repo, a, b })
+    rpc(host, 'compare', { repo: state.repo, a: refA, b: refB })
       .then((result) => {
-        if (mine === seq.current) setShown({ a, b, result });
+        if (mine === seq.current) setShown({ a, b, refA, refB, result });
       })
       .catch((e) => {
         if (mine === seq.current) setError(e);
@@ -50,7 +63,7 @@ export function Compare({ t, host, state }: { t: T; host: Host; state: AppState 
 
   const openFile = (path: string) => {
     if (!shown) return;
-    const { a: fa, b: fb } = shown;
+    const { refA: fa, refB: fb } = shown;
     const mine = ++seq.current;
     setError(null);
     host

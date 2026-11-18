@@ -39,9 +39,57 @@ function fakeHost(over: Record<string, unknown> = {}, locale = 'en') {
   return { host, calls };
 }
 
-const core = (calls: string[]) => calls.filter((c) => c !== 'repos' && c !== 'getGlobal');
+const core = (calls: string[]) => calls.filter((c) => c !== 'repos' && c !== 'getGlobal' && c !== 'version');
 
 afterEach(cleanup);
+
+describe('git too old', () => {
+  const byName = (name: string) => screen.getByRole('button', { name: new RegExp(name) }) as HTMLButtonElement;
+
+  it('says so under the toolbar and disables the buttons that change something', async () => {
+    const { host } = fakeHost({ version: { core: '0.1.0', git: '2.29', gitOK: false } });
+    render(<App host={host} />);
+    expect(await screen.findByText(/Git 2\.29 is too old/)).toBeTruthy();
+    await screen.findByText('feature/login');
+    expect(byName('Align all with remote').disabled).toBe(true);
+    expect(byName('New requirement folder').disabled).toBe(true);
+    expect(byName('Compare two branches').disabled).toBe(false);
+    fireEvent.click(screen.getByText('feature/search'));
+    expect(byName('Switch here').disabled).toBe(true);
+  });
+
+  it('does not read the remote (a change for the core) and shows no fetch error', async () => {
+    const { host, calls } = fakeHost({
+      version: { core: '0.1.0', git: '2.29', gitOK: false },
+      fetch: new HostError('git-too-old', 'changes need git 2.30 or newer'),
+    });
+    render(<App host={host} />);
+    await screen.findByText('feature/login');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/Could not read the remote/)).toBeNull();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(calls.filter((c) => c === 'fetch').length).toBeLessThanOrEqual(1);
+  });
+
+  it('says git was not found when there is no git', async () => {
+    const { host } = fakeHost({ version: { core: '0.1.0', git: '', gitOK: false } });
+    render(<App host={host} />);
+    expect(await screen.findByText(/Git was not found/)).toBeTruthy();
+  });
+
+  it('shows the same line when a write is refused with git-too-old', async () => {
+    const { host } = fakeHost({
+      version: { core: '0.1.0', git: '2.45', gitOK: true },
+      align: new HostError('git-too-old', 'changes need git 2.30 or newer'),
+    });
+    render(<App host={host} />);
+    await screen.findByText('feature/login');
+    expect(screen.queryByText(/too old/)).toBeNull();
+    fireEvent.click(byName('Align all with remote'));
+    expect(await screen.findByText(/Git is too old/)).toBeTruthy();
+    await waitFor(() => expect(byName('Align all with remote').disabled).toBe(true));
+  });
+});
 
 describe('App', () => {
   it('calls view, then fetch, then view', async () => {
@@ -95,6 +143,7 @@ function scriptedHost(handler: (method: string, repo: string, n: number) => unkn
       calls.push(k);
       if (method === 'repos') return ['/a', '/b'] as T;
       if (method === 'getGlobal') return { repos: ['/a', '/b'], editor: 'code', theme: 'auto' } as T;
+      if (method === 'version') return { core: '0.1.0', git: '2.45', gitOK: true } as T;
       return (await handler(method, repo, counts[k])) as T;
     },
     openFolder: async () => undefined,
@@ -208,6 +257,24 @@ describe('App failures and repo switching', () => {
     await act(async () => refresh());
     await waitFor(() => expect(calls.slice(before)).toEqual(['repos:', 'view:/b']));
     expect(screen.getByRole('tab', { name: 'b' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('does not show the align report of repository a over repository b', async () => {
+    let finish!: (v: unknown) => void;
+    const report = { fetch: okFetch, updated: [{ branch: 'from-a', from: 'a1', to: 'a2', folder: '' }], skipped: [], logError: '' };
+    const { host } = scriptedHost((method, repo) => {
+      if (method === 'align') return new Promise((r) => (finish = r));
+      return method === 'view' ? mockView(repo) : okFetch;
+    });
+    render(<App host={host} />);
+    await screen.findByText('feature/login');
+    fireEvent.click(screen.getByRole('button', { name: /Align all with remote/ }));
+    fireEvent.click(screen.getByRole('tab', { name: 'b' }));
+    await act(async () => finish(report));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText(/from-a/)).toBeNull();
+    expect(screen.getByTestId('notice').textContent).toContain('Align with remote - a: done');
   });
 
   it('makes no further calls once the opening sequence has settled', async () => {

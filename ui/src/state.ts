@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { rpc } from './api';
 import { HostError } from './host/types';
 import type { Host, ThemeKind } from './host/types';
+import { baseName } from './reasons';
 import type { AlignReport, Global, OpResult, RemoveFolderResult, Theme, View } from './types';
 
 export type ViewMode = 'list' | 'graph';
@@ -16,7 +17,7 @@ export interface WriteOutcome<R> {
   error: unknown;
 }
 
-export type WriteKind = 'create' | 'remove' | 'setRole' | 'repoSettings' | 'clearBackups';
+export type WriteKind = 'create' | 'remove' | 'setRole' | 'repoSettings' | 'clearBackups' | 'align';
 
 // Notice is a write's result shown on the page when the dialog it was started
 // from is no longer open: which write, on what, and how it ended.
@@ -41,6 +42,10 @@ export interface SettingsOutcome {
 export type TrunkPick = { trunk: string; hash: string; time: number; subject: string };
 export type Picked = ({ kind: 'trunk' } & TrunkPick) | { kind: 'commit'; branch: string; hash: string };
 
+// GitProblem is why the core refuses every change: git is older than 2.30
+// (version known), missing, or a write was refused with git-too-old.
+export type GitProblem = { kind: 'old' | 'missing' | 'refused'; version: string };
+
 export interface AppState {
   repos: string[];
   repo: string;
@@ -64,6 +69,7 @@ export interface AppState {
   switchResult: { branch: string; result: OpResult } | null; // the last switch, shown in the detail area
   global: Global | null;
   theme: ThemeKind;
+  gitProblem: GitProblem | null; // set: every button that changes something is disabled
 }
 
 export interface Actions {
@@ -83,7 +89,7 @@ export interface Actions {
   closeDialog(): void;
   refreshView(): void; // read the view again (after a change made outside the actions)
   createFolder(trunk: string, branch: string, path: string): void;
-  removeFolder(branch: string): void;
+  removeFolder(branch: string, folder: string, head: string): void; // folder and head as the confirm dialog showed them
   setRole(branch: string, role: string, trunk: string): void;
   setRepoSettings(hidePrefix: string, oldDays: number): void;
   clearBackups(): void;
@@ -125,6 +131,7 @@ function initial(host: Host): AppState {
     switchResult: null,
     global: null,
     theme: host.theme(),
+    gitProblem: null,
   };
 }
 
@@ -142,10 +149,21 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       ref.current = { ...ref.current, ...p };
       setState(ref.current);
     };
+    // noteGit turns a git-too-old refusal into the git line; true when it was one.
+    const noteGit = (e: unknown) => {
+      if (!(e instanceof HostError) || e.code !== 'git-too-old') return false;
+      if (!ref.current.gitProblem) patch({ gitProblem: { kind: 'refused', version: '' } });
+      return true;
+    };
     const fail = (e: unknown) => {
-      if (e instanceof HostError && e.code === 'no-token') patch({ noToken: true, loaded: true });
+      if (noteGit(e)) patch({ loaded: true });
+      else if (e instanceof HostError && e.code === 'no-token') patch({ noToken: true, loaded: true });
       else patch({ error: e, loaded: true });
     };
+    // canWrite is false while a write runs or when the core refuses every change.
+    const canWrite = () => !ref.current.busy && !ref.current.gitProblem;
+    // gitRan: the reasons of a result after which git did run, so the view changed.
+    const gitRan = (r: OpResult) => r.ok || r.reason === 'git-failed' || r.reason === 'verify-failed';
     const current = (repo: string) => ref.current.repo === repo;
 
     // failFor reports a failure of a call made for `repo`; once the user has moved
@@ -169,6 +187,8 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     // refresh reads the remote in the background, then the view again. A failed
     // call lands in the "could not read the remote" line, which has the retry.
     const refresh = async (repo: string) => {
+      // the core counts fetch as a change, so with too old a git there is none
+      if (ref.current.gitProblem) return;
       patch({ fetching: true });
       try {
         const f = await rpc(host, 'fetch', { repo });
@@ -178,7 +198,9 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         patch({ view, fetching: false, fetchError: failed, error: null });
       } catch (e) {
         if (!current(repo)) return;
-        if (e instanceof HostError && e.code === 'no-token') fail(e);
+        if (noteGit(e)) {
+          // the git line says why
+        } else if (e instanceof HostError && e.code === 'no-token') fail(e);
         else patch({ fetchError: reasonOf(e) });
         patch({ fetching: false });
       }
@@ -206,6 +228,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     };
 
     const writeGlobal = async (params: { editor?: string; theme?: Theme }) => {
+      if (ref.current.gitProblem) return;
       try {
         patch({ global: await rpc(host, 'setGlobal', params), theme: host.theme() });
       } catch (e) {
@@ -213,7 +236,19 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       }
     };
 
+    // checkGit asks the core which git it found; an old or missing git disables
+    // every change before the user tries one.
+    const checkGit = async () => {
+      try {
+        const v = await rpc(host, 'version');
+        if (v?.gitOK === false) patch({ gitProblem: v.git ? { kind: 'old', version: v.git } : { kind: 'missing', version: '' } });
+      } catch {
+        // the writes report git-too-old themselves
+      }
+    };
+
     const start = async () => {
+      void checkGit();
       try {
         const repos = await rpc(host, 'repos');
         patch({ repos });
@@ -248,6 +283,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         if (repo !== ref.current.repo) void open(repo);
       },
       addRepo: (path) => {
+        if (ref.current.gitProblem) return;
         void (async () => {
           try {
             const repos = await rpc(host, 'addRepo', { path });
@@ -279,7 +315,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       },
       switchTo: (branch) => {
         const { repo, view } = ref.current;
-        if (!repo || !view || ref.current.busy) return;
+        if (!repo || !view || !canWrite()) return;
         // the branch is checked out in the main folder: the one whose branch says so, else the repository path
         const folder = Object.values(view.branches).find((b) => b.mainFolder && b.folder)?.folder ?? repo;
         patch({ busy: true, switchResult: null });
@@ -287,7 +323,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
           try {
             const result = await rpc(host, 'switch', { repo, folder, branch });
             if (current(repo)) patch({ switchResult: { branch, result } });
-            if (result.ok) await loadView(repo);
+            if (gitRan(result)) await loadView(repo);
           } catch (e) {
             failFor(repo, e);
           } finally {
@@ -313,7 +349,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       dismissNotice: () => patch({ notice: null }),
       setRole: (branch, role, trunk) => {
         const repo = ref.current.repo;
-        if (!repo || ref.current.busy) return;
+        if (!repo || !canWrite()) return;
         patch({ busy: true, settingsOutcome: null });
         void (async () => {
           let error: unknown = null;
@@ -322,6 +358,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
             await rpc(host, 'setRole', params);
           } catch (e) {
             error = e;
+            noteGit(e);
           }
           patch({ settingsOutcome: { kind: 'setRole', target: branch, error } });
           noteIfClosed('settings', { kind: 'setRole', target: branch, error, ok: !error, reason: '', logError: '' });
@@ -336,7 +373,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       },
       setRepoSettings: (hidePrefix, oldDays) => {
         const repo = ref.current.repo;
-        if (!repo || ref.current.busy) return;
+        if (!repo || !canWrite()) return;
         patch({ busy: true, settingsOutcome: null });
         void (async () => {
           let error: unknown = null;
@@ -344,6 +381,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
             await rpc(host, 'setRepoSettings', { repo, hidePrefix, oldDays });
           } catch (e) {
             error = e;
+            noteGit(e);
           }
           patch({ settingsOutcome: { kind: 'repoSettings', target: repo, error } });
           noteIfClosed('settings', { kind: 'repoSettings', target: repo, error, ok: !error, reason: '', logError: '' });
@@ -357,7 +395,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         })();
       },
       clearBackups: () => {
-        if (ref.current.busy) return;
+        if (!canWrite()) return;
         patch({ busy: true, settingsOutcome: null });
         void (async () => {
           let error: unknown = null;
@@ -365,6 +403,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
             await rpc(host, 'clearBackups');
           } catch (e) {
             error = e;
+            noteGit(e);
           }
           patch({ settingsOutcome: { kind: 'clearBackups', target: '', error } });
           noteIfClosed('settings', { kind: 'clearBackups', target: '', error, ok: !error, reason: '', logError: '' });
@@ -373,7 +412,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       },
       createFolder: (trunk, branch, path) => {
         const repo = ref.current.repo;
-        if (!repo || ref.current.busy) return;
+        if (!repo || !canWrite()) return;
         patch({ busy: true, createOutcome: null });
         void (async () => {
           try {
@@ -381,13 +420,14 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
             try {
               result = await rpc(host, 'createFolder', { repo, trunk, branch, path });
             } catch (error) {
+              noteGit(error);
               if (current(repo)) patch({ createOutcome: { branch, result: null, error } });
               noteIfClosed('create', { kind: 'create', target: branch, error, ok: false, reason: '', logError: '' });
               return;
             }
             if (current(repo)) patch({ createOutcome: { branch, result, error: null } });
             noteIfClosed('create', { kind: 'create', target: branch, error: null, ok: result.ok, reason: result.reason, logError: result.logError });
-            if (result.ok) await loadView(repo);
+            if (gitRan(result)) await loadView(repo);
           } catch (e) {
             failFor(repo, e);
           } finally {
@@ -395,16 +435,17 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
           }
         })();
       },
-      removeFolder: (branch) => {
+      removeFolder: (branch, folder, head) => {
         const repo = ref.current.repo;
-        if (!repo || ref.current.busy) return;
+        if (!repo || !canWrite()) return;
         patch({ busy: true, removeOutcome: null });
         void (async () => {
           try {
             let result: RemoveFolderResult;
             try {
-              result = await rpc(host, 'removeFolder', { repo, branch });
+              result = await rpc(host, 'removeFolder', { repo, branch, folder, head });
             } catch (error) {
+              noteGit(error);
               if (current(repo)) patch({ removeOutcome: { branch, result: null, error } });
               noteIfClosed('remove', { kind: 'remove', target: branch, error, ok: false, reason: '', logError: '' });
               return;
@@ -423,16 +464,23 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       closeDialog: () => patch({ dialog: null }),
       align: () => {
         const repo = ref.current.repo;
-        if (!repo || ref.current.busy) return;
+        if (!repo || !canWrite()) return;
         patch({ busy: true });
         void (async () => {
+          const target = baseName(repo);
           try {
             const alignReport = await rpc(host, 'align', { repo });
+            if (!current(repo)) {
+              // the user moved to another repository: its page does not get this report
+              patch({ notice: { kind: 'align', target, error: null, ok: true, reason: '', logError: alignReport.logError } });
+              return;
+            }
             patch({ alignReport, dialog: 'align' });
             await loadView(repo);
             if (!alignReport.fetch.ok) patch({ fetchError: alignReport.fetch.error || 'fetch' });
           } catch (e) {
-            fail(e);
+            if (current(repo)) fail(e);
+            else if (!noteGit(e)) patch({ notice: { kind: 'align', target, error: e, ok: false, reason: '', logError: '' } });
           } finally {
             patch({ busy: false });
           }
@@ -440,7 +488,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       },
       moveTrunk: (name, index) => {
         const repo = ref.current.repo;
-        if (!repo || ref.current.busy) return;
+        if (!repo || !canWrite()) return;
         patch({ busy: true });
         void (async () => {
           try {

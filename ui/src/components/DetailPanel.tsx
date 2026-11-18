@@ -7,7 +7,7 @@ import type { BranchView, OpResult } from '../types';
 interface Props {
   t: T;
   branch: BranchView | null;
-  state: Pick<AppState, 'busy' | 'switchResult'>;
+  state: Pick<AppState, 'busy' | 'switchResult'> & Partial<Pick<AppState, 'gitProblem'>>;
   pick?: Picked | null; // a commit of this branch picked in the graph
   actions: Pick<Actions, 'switchTo' | 'openFolder' | 'copy' | 'openDialog'>;
 }
@@ -49,6 +49,7 @@ function SwitchResult({ t, result }: { t: T; result: OpResult }) {
           ))}
         </ul>
       )}
+      {result.detail && <div class="muted">{t('dialog.detail', { detail: result.detail })}</div>}
       {result.logError && <div class="bad">{t('detail.logError', { message: result.logError })}</div>}
     </div>
   );
@@ -65,12 +66,18 @@ export function DetailPanel({ t, branch, state, actions, pick = null }: Props) {
   const hidden = dirty ? dirty.changed + dirty.untracked - dirty.files.length : 0;
   const note = sourceNote(b.trunkSource, t);
   const commit = pick?.kind === 'commit' && pick.branch === b.name ? b.own.find((c) => c.hash === pick.hash) : undefined;
+  const locked = state.busy || !!state.gitProblem; // no change can start now
 
   return (
     <div class="detail">
       <div class="detail-name">
         <strong title={t('detail.name')}>{b.name}</strong>
       </div>
+      {b.error && (
+        <p class="warn" role="status">
+          {t('detail.error', { message: b.error })}
+        </p>
+      )}
       {commit && (
         <dl class="detail-grid detail-commit">
           <dt>{t('detail.commit')}</dt>
@@ -169,10 +176,10 @@ export function DetailPanel({ t, branch, state, actions, pick = null }: Props) {
           </button>
         ) : (
           <>
-            <button class="btn" disabled={state.busy} onClick={() => actions.switchTo(b.name)}>
+            <button class="btn" disabled={locked} onClick={() => actions.switchTo(b.name)}>
               {t('detail.switch')}
             </button>
-            <button class="btn" disabled={state.busy} onClick={() => actions.openDialog('create')}>
+            <button class="btn" disabled={locked} onClick={() => actions.openDialog('create')}>
               {t('detail.create')}
             </button>
           </>
@@ -183,7 +190,7 @@ export function DetailPanel({ t, branch, state, actions, pick = null }: Props) {
         <button class="btn" onClick={() => actions.openDialog('compare')}>
           {t('detail.compare')}
         </button>
-        <button class="btn" disabled={!b.canRemoveFolder || state.busy} onClick={() => actions.openDialog('remove')}>
+        <button class="btn" disabled={!b.canRemoveFolder || locked} onClick={() => actions.openDialog('remove')}>
           {b.canRemoveFolder ? t('detail.remove') : t('detail.removeBlocked', { reason: blockText(b.removeBlock, t) })}
         </button>
       </div>

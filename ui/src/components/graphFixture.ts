@@ -38,8 +38,11 @@ export function branchOf(name: string, own: CommitInfo[], over: Partial<BranchVi
     trunk: 'main',
     trunkSource: 'count',
     folder: '',
+    folderHead: '',
     mainFolder: false,
     folderMissing: false,
+    folderBroken: false,
+    folderLocked: false,
     dirty: null,
     hasUpstream: true,
     upstreamGone: false,
@@ -57,6 +60,7 @@ export function branchOf(name: string, own: CommitInfo[], over: Partial<BranchVi
     removeBlock: 'not-in-folder',
     old: false,
     lastCommit: 0,
+    error: '',
     ...over,
   };
 }
