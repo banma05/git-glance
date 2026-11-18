@@ -23,38 +23,48 @@ import (
 // subcommand.
 type countingRunner struct {
 	gitx.ExecRunner
-	n     atomic.Int64
-	mu    sync.Mutex
-	calls map[string]int
-	spent map[string]time.Duration
+	n        atomic.Int64
+	mu       sync.Mutex
+	calls    map[string]int
+	spent    map[string]time.Duration
+	prefixes map[string]int // by the first two arguments
 }
 
-func (c *countingRunner) note(sub string, since time.Time) {
+func (c *countingRunner) note(args []string, since time.Time) {
 	c.n.Add(1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.calls == nil {
-		c.calls, c.spent = map[string]int{}, map[string]time.Duration{}
+		c.calls, c.spent, c.prefixes = map[string]int{}, map[string]time.Duration{}, map[string]int{}
 	}
-	c.calls[sub]++
-	c.spent[sub] += time.Since(since)
+	c.calls[args[0]]++
+	c.spent[args[0]] += time.Since(since)
+	c.prefixes[strings.Join(args[:min(2, len(args))], " ")]++
 }
 
 func (c *countingRunner) reset() {
 	c.n.Store(0)
 	c.mu.Lock()
-	c.calls, c.spent = nil, nil
+	c.calls, c.spent, c.prefixes = nil, nil, nil
 	c.mu.Unlock()
 }
 
 func (c *countingRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	defer c.note(args[0], time.Now())
+	defer c.note(args, time.Now())
 	return c.ExecRunner.Run(ctx, dir, args...)
 }
 
 func (c *countingRunner) RunInput(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error) {
-	defer c.note(args[0], time.Now())
+	defer c.note(args, time.Now())
 	return c.ExecRunner.RunInput(ctx, dir, input, args...)
+}
+
+// count returns how many calls started with the given arguments (space
+// separated).
+func (c *countingRunner) count(prefix string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.prefixes[prefix]
 }
 
 func (c *countingRunner) breakdown() string {
@@ -75,9 +85,10 @@ func (c *countingRunner) breakdown() string {
 // perfShape sizes a synthetic repository: commits on main, commits on v2
 // (cut from main), local feature branches with two own commits each (half on
 // main, half on v2; every third one pushed) and other remote-tracking
-// branches.
+// branches. A local repository has no remote-tracking refs at all.
 type perfShape struct {
 	main, v2, features, remotes int
+	local                       bool
 }
 
 // perfStream is a fast-import stream for the shape. It also returns the
@@ -115,9 +126,12 @@ func perfStream(s perfShape) ([]byte, int64) {
 		}
 		commit("refs/heads/"+name, fmt.Sprintf(":%d", fork), fmt.Sprintf("feat/%d-a.txt", k))
 		tip := commit("refs/heads/"+name, "", fmt.Sprintf("feat/%d-b.txt", k))
-		if k%3 == 0 {
+		if k%3 == 0 && !s.local {
 			fmt.Fprintf(&b, "reset refs/remotes/origin/%s\nfrom :%d\n\n", name, tip)
 		}
+	}
+	if s.local {
+		return b.Bytes(), ts
 	}
 	for n := 0; n < s.remotes; n++ {
 		fmt.Fprintf(&b, "reset refs/remotes/origin/r%04d\nfrom :%d\n\n", n, 1+(n*37)%s.main)
@@ -142,7 +156,11 @@ func perfRepo(t *testing.T, s perfShape) (*testrepo.Repo, settings.RepoSettings,
 		t.Fatalf("fast-import: %v\n%s", err, out)
 	}
 	r.Git(r.Dir, "reset", "-q", "--hard", "main")
-	r.Git(r.Dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	if s.local {
+		r.Git(r.Dir, "remote", "remove", "origin")
+	} else {
+		r.Git(r.Dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	}
 	r.Git(r.Dir, "pack-refs", "--all")
 	return r, settings.RepoSettings{Trunks: []settings.TrunkConfig{{Name: "main"}, {Name: "v2"}}}, last + 3600
 }
@@ -160,14 +178,18 @@ func TestPerfView(t *testing.T) {
 	}{
 		{"wide", perfShape{main: 5000, v2: 300, features: 300, remotes: 3000}},
 		{"long", perfShape{main: 39000, v2: 300, features: 20, remotes: 3800}},
+		{"local", perfShape{main: 39000, v2: 300, features: 20, local: true}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			if only := os.Getenv("GITGLANCE_PERF_ONLY"); only != "" && only != c.name {
+				t.Skip("GITGLANCE_PERF_ONLY")
+			}
 			started := time.Now()
 			r, rs, now := perfRepo(t, c.shape)
 			t.Logf("%+v built in %v", c.shape, time.Since(started).Round(time.Millisecond))
 			ctx := context.Background()
 			run := &countingRunner{}
-			ver, err := gitx.DetectVersion(ctx, run)
+			installed, err := gitx.DetectVersion(ctx, run)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -179,28 +201,63 @@ func TestPerfView(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				legacyView(t, run, ver, snap, rs, now)
+				legacyView(t, run, installed, snap, rs, now)
 				t.Logf("old path: total %v (%d git):%s", time.Since(t0).Round(time.Millisecond), run.n.Load(), run.breakdown())
 			}
-			cache := NewCache()
-			for _, pass := range []string{"first view", "unchanged refresh"} {
-				run.reset()
-				t0 := time.Now()
-				snap, err := repo.Read(ctx, run, r.Dir)
-				if err != nil {
-					t.Fatal(err)
+			if c.shape.local {
+				perfUnpushed(t, r)
+			}
+			// git 2.40 has no %(ahead-behind:): the counts go per branch.
+			for _, ver := range []gitx.Version{installed, {Major: 2, Minor: 40}} {
+				cache := NewCache()
+				for _, pass := range []string{"first view", "unchanged refresh"} {
+					run.reset()
+					t0 := time.Now()
+					snap, err := repo.Read(ctx, run, r.Dir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					readTime, readCalls := time.Since(t0), run.n.Load()
+					t1 := time.Now()
+					v, err := BuildCached(ctx, run, ver, snap, rs, now, cache)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Logf("git %d.%d %s: %d local, %d remote refs, %d sections; Read %v (%d git), Build %v (%d git), total %v",
+						ver.Major, ver.Minor, pass, len(snap.Local), len(snap.Remote), len(v.Sections), readTime.Round(time.Millisecond), readCalls,
+						time.Since(t1).Round(time.Millisecond), run.n.Load()-readCalls, time.Since(t0).Round(time.Millisecond))
+					t.Logf("git %d.%d %s git calls/time by subcommand:%s", ver.Major, ver.Minor, pass, run.breakdown())
 				}
-				readTime, readCalls := time.Since(t0), run.n.Load()
-				t1 := time.Now()
-				v, err := BuildCached(ctx, run, ver, snap, rs, now, cache)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Logf("%s: %d local, %d remote refs, %d sections; Read %v (%d git), Build %v (%d git), total %v",
-					pass, len(snap.Local), len(snap.Remote), len(v.Sections), readTime.Round(time.Millisecond), readCalls,
-					time.Since(t1).Round(time.Millisecond), run.n.Load()-readCalls, time.Since(t0).Round(time.Millisecond))
-				t.Logf("%s git calls/time by subcommand:%s", pass, run.breakdown())
 			}
 		})
 	}
+}
+
+// perfUnpushed times the batched unpushed count against one rev-list per
+// branch, in a repository without remote-tracking refs (the walk then holds
+// the whole history).
+func perfUnpushed(t *testing.T, r *testrepo.Repo) {
+	t.Helper()
+	ctx := context.Background()
+	_, snap := readSnap(t, r)
+	var tips []string
+	for _, ref := range snap.Local {
+		tips = append(tips, ref.Hash)
+	}
+	t0 := time.Now()
+	batched, err := countUnpushed(ctx, gitx.ExecRunner{}, r.Dir, tips)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchTime := time.Since(t0)
+	m := &Matcher{R: gitx.ExecRunner{}, Dir: r.Dir}
+	t1 := time.Now()
+	for _, ref := range snap.Local {
+		n, err := m.Unpushed(ctx, ref.Hash)
+		if err != nil || n != batched[ref.Hash] {
+			t.Fatalf("%s: per branch %d (%v), batched %d", ref.Name, n, err, batched[ref.Hash])
+		}
+	}
+	t.Logf("unpushed over %d tips without remote-tracking refs: batched %v, per branch (sequential) %v",
+		len(tips), batchTime.Round(time.Millisecond), time.Since(t1).Round(time.Millisecond))
 }

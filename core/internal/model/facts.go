@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,22 +53,74 @@ type gitFacts interface {
 	unpushedAll(ctx context.Context, refs []repo.Ref) map[string]int
 	unpushed(ctx context.Context, ref repo.Ref) (int, error)
 	between(ctx context.Context, newer, older string) (int, error)
+	// aheadBehindAll counts, for git without %(ahead-behind:), as many
+	// (trunk tip, branch tip) pairs as it can at once; the others are asked
+	// one by one through aheadBehind.
+	aheadBehindAll(ctx context.Context, pairs []tipPair) map[tipPair]AheadBehind
+	aheadBehind(ctx context.Context, trunk Target, ref repo.Ref) (AheadBehind, error)
 }
 
+// tipPair is a trunk tip and a branch tip.
+type tipPair struct{ trunk, tip string }
+
 // hashFacts asks git about the commit hashes of the snapshot, never about
-// ref names: an answer then depends on nothing but those hashes, so it can be
-// kept in the Cache, and a ref that moved since the snapshot cannot mix into
-// the view.
+// ref names: an answer then depends on nothing but those hashes and the
+// history git shows for them (the shallow boundary, grafts and replace refs,
+// fingerprinted in history and part of every cache key), so it can be kept in
+// the Cache, and a ref that moved since the snapshot cannot mix into the
+// answers.
 type hashFacts struct {
 	r       gitx.Runner
 	dir     string
 	m       *Matcher
 	cache   *Cache
+	history string // fingerprint of what can change the history behind a hash
 	remotes string // fingerprint of the snapshot's remote-tracking refs
 }
 
-func newHashFacts(r gitx.Runner, snap repo.Snapshot, c *Cache) *hashFacts {
-	return &hashFacts{r: r, dir: snap.Repo, m: &Matcher{R: r, Dir: snap.Repo}, cache: c, remotes: remotesKey(snap.Remote)}
+// newHashFacts prepares the facts of one build. When the history
+// fingerprint cannot be read, nothing is cached.
+func newHashFacts(ctx context.Context, r gitx.Runner, snap repo.Snapshot, c *Cache) *hashFacts {
+	f := &hashFacts{r: r, dir: snap.Repo, m: &Matcher{R: r, Dir: snap.Repo}, cache: c, remotes: remotesKey(snap.Remote)}
+	if c != nil {
+		history, err := historyKey(ctx, r, snap.Repo)
+		if err != nil {
+			f.cache = nil
+		}
+		f.history = history
+	}
+	return f
+}
+
+func (f *hashFacts) get(key string) (any, bool) { return f.cache.get(f.history + "\x00" + key) }
+func (f *hashFacts) put(key string, v any)      { f.cache.put(f.history+"\x00"+key, v) }
+
+// historyKey fingerprints what can make the same commit hashes stand for a
+// different history: the shallow boundary, grafts and replace refs.
+func historyKey(ctx context.Context, r gitx.Runner, dir string) (string, error) {
+	out, err := r.Run(ctx, dir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	common := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(dir, common)
+	}
+	h := sha256.New()
+	for _, name := range []string{"shallow", "info/grafts"} {
+		data, err := os.ReadFile(filepath.Join(common, filepath.FromSlash(name)))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		fmt.Fprintf(h, "%s %d\n", name, len(data))
+		h.Write(data)
+	}
+	out, err = r.Run(ctx, dir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/replace")
+	if err != nil {
+		return "", err
+	}
+	h.Write(out)
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func needHashes(hashes ...string) error {
@@ -82,7 +137,7 @@ func (f *hashFacts) ownCommits(ctx context.Context, trunk Target, ref repo.Ref) 
 		return ownResult{}, err
 	}
 	key := "own\x00" + trunk.Hash + "\x00" + ref.Hash
-	if v, ok := f.cache.get(key); ok {
+	if v, ok := f.get(key); ok {
 		return v.(ownResult).clone(), nil
 	}
 	own, fork, forkTime, err := f.m.OwnCommits(ctx, trunk.Hash, ref.Hash)
@@ -93,7 +148,7 @@ func (f *hashFacts) ownCommits(ctx context.Context, trunk Target, ref repo.Ref) 
 	if err != nil {
 		return ownResult{}, err
 	}
-	f.cache.put(key, o.clone())
+	f.put(key, o.clone())
 	return o, nil
 }
 
@@ -104,14 +159,14 @@ func (f *hashFacts) contains(ctx context.Context, target Target, ref repo.Ref, o
 	// own is fixed by the fork and the branch tip, so these three name every
 	// input.
 	key := "contains\x00" + target.Hash + "\x00" + ref.Hash + "\x00" + o.fork
-	if v, ok := f.cache.get(key); ok {
+	if v, ok := f.get(key); ok {
 		return cloneContainment(v.(Containment)), nil
 	}
 	c, err := f.m.Contains(ctx, target.Hash, ref.Hash, o.fork, o.own)
 	if err != nil {
 		return Containment{}, err
 	}
-	f.cache.put(key, cloneContainment(c))
+	f.put(key, cloneContainment(c))
 	return c, nil
 }
 
@@ -124,7 +179,7 @@ func (f *hashFacts) unpushedAll(ctx context.Context, refs []repo.Ref) map[string
 		if !isHash(ref.Hash) {
 			continue
 		}
-		if v, ok := f.cache.get(f.unpushedKey(ref.Hash)); ok {
+		if v, ok := f.get(f.unpushedKey(ref.Hash)); ok {
 			res[ref.Name] = v.(int)
 		} else if !slices.Contains(missing, ref.Hash) {
 			missing = append(missing, ref.Hash)
@@ -147,7 +202,7 @@ func (f *hashFacts) unpushedAll(ctx context.Context, refs []repo.Ref) map[string
 		}
 		res[ref.Name] = n
 		if keep {
-			f.cache.put(f.unpushedKey(ref.Hash), n)
+			f.put(f.unpushedKey(ref.Hash), n)
 		}
 	}
 	return res
@@ -165,14 +220,63 @@ func (f *hashFacts) between(ctx context.Context, newer, older string) (int, erro
 		return 0, err
 	}
 	key := "between\x00" + newer + "\x00" + older
-	if v, ok := f.cache.get(key); ok {
+	if v, ok := f.get(key); ok {
 		return v.(int), nil
 	}
 	n, err := countBetween(ctx, f.r, f.dir, newer, older)
 	if err == nil {
-		f.cache.put(key, n)
+		f.put(key, n)
 	}
 	return n, err
+}
+
+func aheadBehindKey(p tipPair) string { return "aheadBehind\x00" + p.trunk + "\x00" + p.tip }
+
+func (f *hashFacts) aheadBehindAll(ctx context.Context, pairs []tipPair) map[tipPair]AheadBehind {
+	res := map[tipPair]AheadBehind{}
+	var missing []tipPair
+	for _, p := range pairs {
+		if !isHash(p.trunk) || !isHash(p.tip) {
+			continue
+		}
+		if v, ok := f.get(aheadBehindKey(p)); ok {
+			res[p] = v.(AheadBehind)
+		} else if _, dup := res[p]; !dup && !slices.Contains(missing, p) {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) == 0 {
+		return res
+	}
+	counts, err := countAheadBehind(ctx, f.r, f.dir, missing)
+	if err != nil {
+		return res // the rest are asked one by one
+	}
+	for p, ab := range counts {
+		res[p] = ab
+		f.put(aheadBehindKey(p), ab)
+	}
+	return res
+}
+
+func (f *hashFacts) aheadBehind(ctx context.Context, trunk Target, ref repo.Ref) (AheadBehind, error) {
+	if err := needHashes(trunk.Hash, ref.Hash); err != nil {
+		return AheadBehind{}, err
+	}
+	key := aheadBehindKey(tipPair{trunk.Hash, ref.Hash})
+	if v, ok := f.get(key); ok {
+		return v.(AheadBehind), nil
+	}
+	out, err := f.r.Run(ctx, f.dir, "rev-list", "--left-right", "--count", trunk.Hash+"..."+ref.Hash, "--")
+	if err != nil {
+		return AheadBehind{}, err
+	}
+	ab, err := parseCounts(string(out), true)
+	if err != nil {
+		return AheadBehind{}, err
+	}
+	f.put(key, ab)
+	return ab, nil
 }
 
 // remotesUnchanged reports whether the remote-tracking refs are still those
@@ -273,6 +377,126 @@ func countBetween(ctx context.Context, r gitx.Runner, dir, newer, older string) 
 	return max(n-1, 0), nil
 }
 
+// countAheadBehind counts every pair from one walk of their history, what
+// `rev-list --left-right --count trunk...tip` counts: ahead is what the tip
+// reaches and the trunk does not, behind the other way round.
+// `rev-list --parents <tips…>` lists every commit any of them reaches, with
+// its parents, so the reachable sets can be walked in-process. Tips go in
+// chunks, each with its trunks, to keep the command line short.
+func countAheadBehind(ctx context.Context, r gitx.Runner, dir string, pairs []tipPair) (map[tipPair]AheadBehind, error) {
+	byTrunk := map[string][]string{}
+	var trunks []string
+	for _, p := range pairs {
+		if _, ok := byTrunk[p.trunk]; !ok {
+			trunks = append(trunks, p.trunk)
+		}
+		byTrunk[p.trunk] = append(byTrunk[p.trunk], p.tip)
+	}
+	res := map[tipPair]AheadBehind{}
+	for _, trunk := range trunks {
+		tips := byTrunk[trunk]
+		for start := 0; start < len(tips); start += maxTipArgs - 1 {
+			chunk := tips[start:min(start+maxTipArgs-1, len(tips))]
+			args := append([]string{"rev-list", "--parents", trunk}, chunk...)
+			out, err := r.Run(ctx, dir, append(args, "--")...)
+			if err != nil {
+				return nil, err
+			}
+			g, err := readGraph(string(out))
+			if err != nil {
+				return nil, err
+			}
+			inTrunk, err := g.reach(trunk)
+			if err != nil {
+				return nil, err
+			}
+			trunkSize := 0
+			for _, in := range inTrunk {
+				if in {
+					trunkSize++
+				}
+			}
+			for _, tip := range chunk {
+				reached, err := g.reach(tip)
+				if err != nil {
+					return nil, err
+				}
+				ab := AheadBehind{Behind: trunkSize}
+				for i, in := range reached {
+					switch {
+					case in && inTrunk[i]:
+						ab.Behind--
+					case in:
+						ab.Ahead++
+					}
+				}
+				res[tipPair{trunk, tip}] = ab
+			}
+		}
+	}
+	return res, nil
+}
+
+// commitGraph is a commit history read from `rev-list --parents`.
+type commitGraph struct {
+	index   map[string]int32
+	parents [][]int32
+}
+
+func readGraph(out string) (*commitGraph, error) {
+	g := &commitGraph{index: map[string]int32{}}
+	id := func(h string) int32 {
+		i, ok := g.index[h]
+		if !ok {
+			i = int32(len(g.parents))
+			g.index[h] = i
+			g.parents = append(g.parents, nil)
+		}
+		return i
+	}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		for _, h := range f {
+			if !isHash(h) {
+				return nil, fmt.Errorf("unexpected rev-list line %q", line)
+			}
+		}
+		c := id(f[0])
+		ps := make([]int32, 0, len(f)-1)
+		for _, h := range f[1:] {
+			ps = append(ps, id(h))
+		}
+		g.parents[c] = ps
+	}
+	return g, nil
+}
+
+// reach marks every commit the commit from reaches, itself included. rev-list
+// lists every commit it started from, so a missing one is an error.
+func (g *commitGraph) reach(from string) ([]bool, error) {
+	start, ok := g.index[from]
+	if !ok {
+		return nil, fmt.Errorf("%s is not in the listed history", from)
+	}
+	seen := make([]bool, len(g.parents))
+	stack := []int32{start}
+	seen[start] = true
+	for len(stack) > 0 {
+		c := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, p := range g.parents[c] {
+			if !seen[p] {
+				seen[p] = true
+				stack = append(stack, p)
+			}
+		}
+	}
+	return seen, nil
+}
+
 // isHash reports whether s is a full SHA-1 or SHA-256 object name.
 func isHash(s string) bool {
 	if len(s) != 40 && len(s) != 64 {
@@ -286,18 +510,25 @@ func isHash(s string) bool {
 	return true
 }
 
+// buildSlots is shared by every build in the process: together they run at
+// most buildWorkers calls of forEach at a time, however many views are built
+// at once.
+var buildSlots = make(chan struct{}, buildWorkers)
+
 // forEach runs fn for 0..n-1 on at most workers goroutines and returns each
-// call's error. A panic becomes that call's error.
-func forEach(n, workers int, fn func(i int) error) []error {
+// call's error. Each call first takes one of the process-wide buildSlots; if
+// ctx ends while it waits, the call's error is ctx's. A panic becomes that
+// call's error.
+func forEach(ctx context.Context, n, workers int, fn func(i int) error) []error {
 	errs := make([]error, n)
 	next := make(chan int)
 	var wg sync.WaitGroup
-	for w := 0; w < min(workers, n); w++ {
+	for w := 0; w < max(1, min(workers, n)); w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := range next {
-				errs[i] = recovered(func() error { return fn(i) })
+				errs[i] = inSlot(ctx, func() error { return recovered(func() error { return fn(i) }) })
 			}
 		}()
 	}
@@ -307,6 +538,17 @@ func forEach(n, workers int, fn func(i int) error) []error {
 	close(next)
 	wg.Wait()
 	return errs
+}
+
+// inSlot runs fn holding one of buildSlots.
+func inSlot(ctx context.Context, fn func() error) error {
+	select {
+	case buildSlots <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-buildSlots }()
+	return fn()
 }
 
 func recovered(fn func() error) (err error) {

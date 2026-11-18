@@ -84,14 +84,14 @@ func TestBuildIgnoresShowSignature(t *testing.T) {
 		if !hasArg(args, "--no-show-signature") {
 			t.Errorf("missing --no-show-signature: git %s", strings.Join(args, " "))
 		}
-		for _, shape := range []string{"--format=%ct", logFields, hashAndSubject, "-p"} {
+		for _, shape := range []string{ownFields, hashAndSubject, "-p"} {
 			if hasArg(args, shape) {
 				seen[shape] = true
 			}
 		}
 	}
 	// Every log call in the model package must have run at least once.
-	if len(seen) != 4 {
+	if len(seen) != 3 {
 		t.Fatalf("log shapes exercised: %v", seen)
 	}
 }

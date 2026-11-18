@@ -2,8 +2,11 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -451,6 +454,11 @@ func TestContainsWithOwnCutShort(t *testing.T) {
 	if err != nil || len(own) != maxOwnCommits {
 		t.Fatalf("own %d, %v", len(own), err)
 	}
+	oldOwn, oldFork, _, err := legacyOwnCommits(context.Background(), m, "main", "feature/a")
+	if err != nil || oldFork != fork || !reflect.DeepEqual(oldOwn, own) {
+		t.Fatalf("the own list differs from the old one: %v", err)
+	}
+	run.reset()
 	c, err := m.containsRefs(context.Background(), "main", "feature/a", fork, own)
 	if err != nil {
 		t.Fatal(err)
@@ -460,5 +468,50 @@ func TestContainsWithOwnCutShort(t *testing.T) {
 	}
 	if !strings.Contains(run.breakdown(), "rev-list=") {
 		t.Fatalf("the separate ancestor walk did not run:%s", run.breakdown())
+	}
+}
+
+// The fork's commit time comes with the own commits (as the --boundary line of
+// the same log): two processes, not three.
+func TestOwnCommitsReadsForkTimeInTheSameLog(t *testing.T) {
+	r, _, own, fork := containFixture(t, 2)
+	run := &countingRunner{}
+	m := &Matcher{R: run, Dir: r.Dir}
+	got, gotFork, forkTime, err := m.OwnCommits(context.Background(), "main", "feature/a")
+	if err != nil || gotFork != fork || len(got) != len(own) || got[0] != own[0] {
+		t.Fatalf("own %+v fork %s, %v", got, gotFork, err)
+	}
+	if want := r.Git(r.Dir, "log", "-1", "--format=%ct", fork); strconv.FormatInt(forkTime, 10) != want {
+		t.Fatalf("fork time %d, want %s", forkTime, want)
+	}
+	if n := run.n.Load(); n != 2 {
+		t.Fatalf("%d git processes:%s", n, run.breakdown())
+	}
+}
+
+// mergeBaseRunner answers merge-base with a fixed failure.
+type mergeBaseRunner struct {
+	gitx.ExecRunner
+	err error
+}
+
+func (m mergeBaseRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if args[0] == "merge-base" {
+		return nil, m.err
+	}
+	return m.ExecRunner.Run(ctx, dir, args...)
+}
+
+// Only a merge-base that exits 1 with no output and nothing on stderr means
+// "no common history"; anything else is an error, never cached as such.
+func TestOwnCommitsNoForkOnlyOnCleanExit1(t *testing.T) {
+	r, _, _, _ := containFixture(t, 1)
+	quiet := &gitx.GitError{Args: []string{"merge-base"}, ExitCode: 1}
+	loud := &gitx.GitError{Args: []string{"merge-base"}, ExitCode: 1, Stderr: "fatal: something went wrong\n"}
+	if _, _, _, err := (&Matcher{R: mergeBaseRunner{err: quiet}, Dir: r.Dir}).OwnCommits(context.Background(), "main", "feature/a"); !errors.Is(err, errNoForkPoint) {
+		t.Fatalf("clean exit 1: %v, want no fork point", err)
+	}
+	if _, _, _, err := (&Matcher{R: mergeBaseRunner{err: loud}, Dir: r.Dir}).OwnCommits(context.Background(), "main", "feature/a"); err == nil || errors.Is(err, errNoForkPoint) {
+		t.Fatalf("exit 1 with stderr: %v, want an error", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -27,7 +28,7 @@ type legacyFacts struct {
 }
 
 func (l legacyFacts) ownCommits(ctx context.Context, t Target, ref repo.Ref) (ownResult, error) {
-	own, fork, forkTime, err := l.m.OwnCommits(ctx, fullRef(t), headRef(ref.Name))
+	own, fork, forkTime, err := legacyOwnCommits(ctx, l.m, fullRef(t), headRef(ref.Name))
 	if errors.Is(err, errNoForkPoint) {
 		return ownResult{noFork: true}, nil
 	}
@@ -83,20 +84,45 @@ func viewJSON(t *testing.T, v View) []byte {
 }
 
 // sameViews checks that the new build (cold, then from c) gives exactly the
-// old view of the repository as it is now.
+// old view of the repository as it is now, with the installed git and as on
+// git 2.40 (no %(ahead-behind:): counts per branch).
 func sameViews(t *testing.T, r *testrepo.Repo, rs settings.RepoSettings, now int64, c *Cache) {
 	t.Helper()
-	ver, snap := readSnap(t, r)
-	want := viewJSON(t, legacyView(t, gitx.ExecRunner{}, ver, snap, rs, now))
-	for _, cache := range []*Cache{nil, c, c} {
-		v, err := BuildCached(context.Background(), gitx.ExecRunner{}, ver, snap, rs, now, cache)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := viewJSON(t, v); !bytes.Equal(got, want) {
-			t.Fatalf("views differ (cache %v):\nold:\n%s\nnew:\n%s", cache != nil, want, got)
+	sameViewsUsing(t, gitx.ExecRunner{}, r, rs, now, c)
+}
+
+// sameViewsUsing is sameViews with git run through run; it returns the view.
+func sameViewsUsing(t *testing.T, run gitx.Runner, r *testrepo.Repo, rs settings.RepoSettings, now int64, c *Cache) (v View) {
+	t.Helper()
+	installed, snap := readSnap(t, r)
+	for _, ver := range []gitx.Version{installed, {Major: 2, Minor: 40}} {
+		want := viewJSON(t, legacyView(t, run, ver, snap, rs, now))
+		for _, cache := range []*Cache{nil, c, c} {
+			var err error
+			if v, err = BuildCached(context.Background(), run, ver, snap, rs, now, cache); err != nil {
+				t.Fatal(err)
+			}
+			if got := viewJSON(t, v); !bytes.Equal(got, want) {
+				t.Fatalf("views differ (git %v, cache %v):\nold:\n%s\nnew:\n%s", ver, cache != nil, want, got)
+			}
 		}
 	}
+	return v
+}
+
+// failMergeBase fails the merge-base of one branch, asked by name (old path)
+// or by tip hash (new path), with the same error either way, as a broken
+// object would.
+type failMergeBase struct {
+	gitx.ExecRunner
+	name, hash string
+}
+
+func (f failMergeBase) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if args[0] == "merge-base" && (listHas(args, f.hash) || listHas(args, headRef(f.name))) {
+		return nil, &gitx.GitError{Args: []string{"merge-base"}, ExitCode: 128, Stderr: "fatal: bad object\n"}
+	}
+	return f.ExecRunner.Run(ctx, dir, args...)
 }
 
 // kitchenSink has every kind of branch the matcher knows: squash-merged,
@@ -204,9 +230,44 @@ func TestBuildMatchesTheOldPath(t *testing.T) {
 		r.Git(r.Dir, "fetch", "-q", "origin")
 		sameViews(t, r, rs, r.Clock().Unix()+3600, c)
 	})
+	t.Run("failing branch, detached and missing folders", func(t *testing.T) {
+		r, rs := kitchenSink(t)
+		r.Git(r.Dir, "worktree", "add", "-q", "--detach", r.Root+"/wt-detached", "main~1")
+		r.Git(r.Dir, "branch", "--no-track", "alice/lost", "main")
+		lost := r.AddWorktree("lost", "alice/lost")
+		r.Commit(lost, "lost work", map[string]string{"lost.txt": "l\n"})
+		if err := os.RemoveAll(lost); err != nil {
+			t.Fatal(err)
+		}
+		run := failMergeBase{name: "alice/partial", hash: r.Git(r.Dir, "rev-parse", "alice/partial")}
+		v := sameViewsUsing(t, run, r, rs, r.Clock().Unix()+3600, NewCache())
+		if bv := v.Branches["alice/partial"]; bv.Error == "" {
+			t.Fatalf("the failing branch has no error: %+v", bv)
+		}
+		if bv := v.Branches["alice/lost"]; !bv.FolderMissing {
+			t.Fatalf("the branch whose folder is gone: %+v", bv)
+		}
+		_, snap := readSnap(t, r)
+		detached := 0
+		for _, w := range snap.Worktrees {
+			if w.Detached {
+				detached++
+			}
+		}
+		if detached != 1 {
+			t.Fatalf("%d detached folders in %+v", detached, snap.Worktrees)
+		}
+	})
 	t.Run("many branches", func(t *testing.T) {
 		r, rs := manyBranches(t, 12)
 		sameViews(t, r, rs, r.Clock().Unix(), NewCache())
+	})
+	t.Run("no remote-tracking refs", func(t *testing.T) {
+		r, rs, now := perfRepo(t, perfShape{main: 300, v2: 40, features: 30, local: true})
+		if refs := r.Git(r.Dir, "for-each-ref", "refs/remotes"); refs != "" {
+			t.Fatalf("remote-tracking refs left: %s", refs)
+		}
+		sameViews(t, r, rs, now, NewCache())
 	})
 	t.Run("synthetic", func(t *testing.T) {
 		r, rs, now := perfRepo(t, perfShape{main: 400, v2: 60, features: 40, remotes: 300})
@@ -356,4 +417,41 @@ func legacySquash(ctx context.Context, m *Matcher, target, branch, fork string, 
 		}
 	}
 	return nil
+}
+
+func (l legacyFacts) aheadBehind(ctx context.Context, trunk Target, ref repo.Ref) (AheadBehind, error) {
+	res, err := perBranchCounter{l.r, l.dir}.Counts(ctx, []string{ref.Name}, fullRef(trunk))
+	return res[ref.Name], err
+}
+
+// legacyOwnCommits is OwnCommits as it was before the fork time came from
+// the --boundary line: three git calls.
+func legacyOwnCommits(ctx context.Context, m *Matcher, trunkRef, branchRef string) ([]repo.CommitInfo, string, int64, error) {
+	out, err := m.run(ctx, "merge-base", trunkRef, branchRef)
+	fork := strings.TrimSpace(out)
+	var ge *gitx.GitError
+	if fork == "" && (err == nil || errors.As(err, &ge) && ge.ExitCode == 1) {
+		return nil, "", 0, fmt.Errorf("%w between %s and %s", errNoForkPoint, trunkRef, branchRef)
+	}
+	if err != nil {
+		return nil, "", 0, err
+	}
+	out, err = m.run(ctx, "log", noSignature, "-1", "--format=%ct", fork, "--")
+	if err != nil {
+		return nil, "", 0, err
+	}
+	forkTime, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("fork time: %w", err)
+	}
+	out, err = m.run(ctx, "log", noSignature, "--format=%H%x00%s%x00%ct", "-n", strconv.Itoa(maxOwnCommits), fork+".."+branchRef, "--")
+	if err != nil {
+		return nil, "", 0, err
+	}
+	commits, err := parseCommits(out)
+	return commits, fork, forkTime, err
+}
+
+func (l legacyFacts) aheadBehindAll(context.Context, []tipPair) map[tipPair]AheadBehind {
+	return map[tipPair]AheadBehind{}
 }

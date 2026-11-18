@@ -23,7 +23,7 @@ const (
 	stateAll          = "all"
 	stateSome         = "some"
 	stateNone         = "none"
-	logFields         = "--format=%H%x00%s%x00%ct"
+	ownFields         = "--format=%m%H%x00%s%x00%ct" // %m: ">" in the range, "-" on its boundary
 	hashAndSubject    = "--format=%H%x00%s"
 	literalPathPrefix = ":(literal)"
 	// noSignature goes on every log/show: log.showSignature=true in the user's
@@ -88,27 +88,63 @@ func (m *Matcher) OwnCommits(ctx context.Context, trunkRef, branchRef string) ([
 	out, err := m.run(ctx, "merge-base", trunkRef, branchRef)
 	fork := strings.TrimSpace(out)
 	var ge *gitx.GitError
-	if fork == "" && (err == nil || errors.As(err, &ge) && ge.ExitCode == 1) {
-		// merge-base exits 1 with no output when there is no common ancestor.
+	if fork == "" && (err == nil || errors.As(err, &ge) && ge.ExitCode == 1 && strings.TrimSpace(ge.Stderr) == "") {
+		// merge-base exits 1 with no output and says nothing when there is no
+		// common ancestor; anything on stderr is a failure, not that answer.
 		return nil, "", 0, fmt.Errorf("%w between %s and %s", errNoForkPoint, trunkRef, branchRef)
 	}
 	if err != nil {
 		return nil, "", 0, err
 	}
-	out, err = m.run(ctx, "log", noSignature, "-1", "--format=%ct", fork, "--")
+	// --boundary adds the parents just outside the range: the fork is one of
+	// them whenever there is an own commit, which saves asking for its time.
+	out, err = m.run(ctx, "log", noSignature, "--boundary", ownFields, "-n", strconv.Itoa(maxOwnCommits), fork+".."+branchRef, "--")
 	if err != nil {
 		return nil, "", 0, err
 	}
-	forkTime, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-	if err != nil {
-		return nil, "", 0, fmt.Errorf("fork time: %w", err)
-	}
-	out, err = m.run(ctx, "log", noSignature, logFields, "-n", strconv.Itoa(maxOwnCommits), fork+".."+branchRef, "--")
+	commits, boundary, err := parseOwn(out)
 	if err != nil {
 		return nil, "", 0, err
 	}
-	commits, err := parseCommits(out)
-	return commits, fork, forkTime, err
+	forkTime, ok := boundary[fork]
+	if !ok {
+		out, err = m.run(ctx, "log", noSignature, "-1", ownFields, fork, "--")
+		if err != nil {
+			return nil, "", 0, err
+		}
+		alone, _, err := parseOwn(out)
+		if err != nil || len(alone) != 1 || alone[0].Hash != fork {
+			return nil, "", 0, fmt.Errorf("fork time of %s: %v", fork, err)
+		}
+		forkTime = alone[0].Time
+	}
+	return commits, fork, forkTime, nil
+}
+
+// parseOwn reads `log --boundary` lines in ownFields format: commits of the
+// range (mark ">"), and the commit time of each boundary commit (mark "-").
+func parseOwn(out string) ([]repo.CommitInfo, map[string]int64, error) {
+	var lines []string
+	boundary := map[string]int64{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch {
+		case strings.HasPrefix(line, ">"):
+			lines = append(lines, line[1:])
+		case strings.HasPrefix(line, "-"):
+			f := strings.Split(line[1:], "\x00")
+			if len(f) != 3 {
+				continue
+			}
+			ts, err := strconv.ParseInt(f[2], 10, 64)
+			if err != nil {
+				return nil, nil, fmt.Errorf("commit time of %s: %w", f[0], err)
+			}
+			boundary[f[0]] = ts
+		}
+	}
+	commits, err := parseCommits(strings.Join(lines, "\n"))
+	return commits, boundary, err
 }
 
 // Contains finds, step by step, which own commits are already in target.

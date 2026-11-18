@@ -118,6 +118,7 @@ type builder struct {
 	trunks   []Trunk
 	counts   map[string]map[string]AheadBehind // trunk name -> branch -> counts
 	folders  map[string]repo.Worktree
+	bulk     Counter // nil: ahead/behind are asked per branch
 	facts    gitFacts
 	workers  int
 	unpushed map[string]int // answered in one go; the others are asked per branch
@@ -132,23 +133,31 @@ func Build(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.Snapsho
 // BuildCached assembles the view of snap, keeping in c (which may be nil)
 // what the next build of the same repository can reuse. Git is asked about
 // the snapshot's commit hashes, never about short names, so a tag that
-// shares a branch's name cannot shadow it and a ref that moves meanwhile
-// cannot mix into the view. Branches are worked on by a few goroutines; the
-// view does not depend on their order.
+// shares a branch's name cannot shadow it. (On git 2.41+ the ahead/behind
+// counts that pick a branch's trunk come from one for-each-ref call over the
+// live refs, so a branch that moves during the build can be counted at its
+// new tip.) Branches are worked on by a few goroutines; the view does not
+// depend on their order.
 func BuildCached(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.Snapshot, rs settings.RepoSettings, now int64, c *Cache) (View, error) {
-	return build(ctx, NewCounter(r, snap.Repo, v), newHashFacts(r, snap, c), buildWorkers, snap, rs, now)
+	var bulk Counter
+	if v.AtLeast(2, 41) {
+		bulk = bulkCounter{r, snap.Repo}
+	}
+	return build(ctx, bulk, newHashFacts(ctx, r, snap, c), buildWorkers, snap, rs, now)
 }
 
-func build(ctx context.Context, counter Counter, facts gitFacts, workers int, snap repo.Snapshot, rs settings.RepoSettings, now int64) (View, error) {
+// build assembles the view. bulk counts ahead/behind for all branches at once;
+// when nil, facts are asked per branch.
+func build(ctx context.Context, bulk Counter, facts gitFacts, workers int, snap repo.Snapshot, rs settings.RepoSettings, now int64) (View, error) {
 	rs = normalizeSettings(rs)
 	b := &builder{
 		ctx: ctx, snap: snap, rs: rs, now: now,
 		trunks:  uniqueTrunks(ResolveTrunks(snap, rs)),
 		folders: foldersByBranch(snap.Worktrees),
-		facts:   facts, workers: workers,
+		bulk:    bulk, facts: facts, workers: workers,
 	}
 	features := featureRefs(snap.Local, rs, b.trunks)
-	if err := b.count(counter, features); err != nil {
+	if err := b.count(features); err != nil {
 		return View{}, err
 	}
 	view := View{
@@ -158,7 +167,7 @@ func build(ctx context.Context, counter Counter, facts gitFacts, workers int, sn
 	}
 	b.unpushed = facts.unpushedAll(ctx, features)
 	views := make([]BranchView, len(features))
-	errs := forEach(len(features), workers, func(i int) error {
+	errs := forEach(ctx, len(features), workers, func(i int) error {
 		var err error
 		views[i], err = b.branch(features[i])
 		return err
@@ -272,26 +281,67 @@ func (b *builder) hasLocalCopy(t Trunk) bool {
 
 // count fills b.counts for every trunk: the feature branches, plus the local
 // copy of the trunk itself when it is compared through a remote ref.
-func (b *builder) count(c Counter, features []repo.Ref) error {
+func (b *builder) count(features []repo.Ref) error {
 	b.counts = map[string]map[string]AheadBehind{}
+	refsOf := map[string][]repo.Ref{}
+	var pairs []tipPair
 	for _, t := range b.trunks {
-		names := make([]string, 0, len(features)+1)
-		for _, ref := range features {
-			names = append(names, ref.Name)
-		}
+		refs := append([]repo.Ref{}, features...)
 		if b.hasLocalCopy(t) {
-			names = append(names, t.Name)
+			local, _ := findRef(b.snap.Local, t.Name)
+			refs = append(refs, local)
 		}
-		if len(names) == 0 {
+		refsOf[t.Name] = refs
+		for _, ref := range refs {
+			pairs = append(pairs, tipPair{t.Hash, ref.Hash})
+		}
+	}
+	var known map[tipPair]AheadBehind
+	if b.bulk == nil {
+		known = b.facts.aheadBehindAll(b.ctx, pairs)
+	}
+	for _, t := range b.trunks {
+		if len(refsOf[t.Name]) == 0 {
 			continue
 		}
-		res, err := c.Counts(b.ctx, names, fullRef(t.Target))
+		res, err := b.countAgainst(t, refsOf[t.Name], known)
 		if err != nil {
 			return fmt.Errorf("counting against %s: %w", t.Name, err)
 		}
 		b.counts[t.Name] = res
 	}
 	return nil
+}
+
+// countAgainst counts refs against trunk t: in one call when the bulk counter
+// is there; else from known (one walk for all pairs) and, for the rest, per
+// branch on the worker pool.
+func (b *builder) countAgainst(t Trunk, refs []repo.Ref, known map[tipPair]AheadBehind) (map[string]AheadBehind, error) {
+	if b.bulk != nil {
+		names := make([]string, 0, len(refs))
+		for _, ref := range refs {
+			names = append(names, ref.Name)
+		}
+		return b.bulk.Counts(b.ctx, names, fullRef(t.Target))
+	}
+	counts := make([]AheadBehind, len(refs))
+	errs := forEach(b.ctx, len(refs), b.workers, func(i int) error {
+		if ab, ok := known[tipPair{t.Hash, refs[i].Hash}]; ok {
+			counts[i] = ab
+			return nil
+		}
+		var err error
+		counts[i], err = b.facts.aheadBehind(b.ctx, t.Target, refs[i])
+		return err
+	})
+	res := make(map[string]AheadBehind, len(refs))
+	for i, ref := range refs {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		res[ref.Name] = counts[i]
+	}
+	return res, nil
 }
 
 func (b *builder) assign(branch string) Assignment {
@@ -565,7 +615,7 @@ func (b *builder) sections(view View) ([]graph.Section, error) {
 		}
 	}
 	counts := make([]int, len(pairs))
-	errs := forEach(len(pairs), b.workers, func(i int) error {
+	errs := forEach(b.ctx, len(pairs), b.workers, func(i int) error {
 		var err error
 		counts[i], err = b.facts.between(b.ctx, pairs[i].newer, pairs[i].older)
 		return err
