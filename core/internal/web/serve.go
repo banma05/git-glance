@@ -58,8 +58,10 @@ var openBrowser = func(target string) error {
 	return nil
 }
 
-// rpcReadTimeout bounds how long a client may take to send a request body.
-var rpcReadTimeout = 10 * time.Second
+// readTimeout bounds how long a client may take to send a whole request, the
+// body drain after a refusal included. net/http lifts it once the body has
+// been read, so a handler that runs longer than this still answers.
+var readTimeout = 10 * time.Second
 
 // NewServer returns the HTTP handler: static files from ui and POST /rpc.
 // Static files hold no data, so they need only an allowed Host. POST /rpc
@@ -125,8 +127,6 @@ func refuse(w http.ResponseWriter, code int, msg string) {
 }
 
 func (s *server) serveRPC(w http.ResponseWriter, r *http.Request, port string) {
-	// Bound every read of this request, including the drain after a refusal.
-	http.NewResponseController(w).SetReadDeadline(time.Now().Add(rpcReadTimeout))
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		refuse(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -215,6 +215,7 @@ func newToken() (string, error) {
 func hardenServer(srv *http.Server) {
 	srv.DisableGeneralOptionsHandler = true
 	srv.ReadHeaderTimeout = 10 * time.Second
+	srv.ReadTimeout = readTimeout
 }
 
 // launchFile writes an HTML page that sends the browser to url, in a private

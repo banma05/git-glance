@@ -23,9 +23,30 @@ var version = "dev"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	finished := make(chan struct{})
+	go watchSignals(ctx, stop, finished, os.Stderr)
 	code := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	close(finished)
 	stop()
 	os.Exit(code)
+}
+
+// watchSignals tells the user what the first Ctrl-C or SIGTERM does and then
+// releases the signals, so a second one gets the default handling and ends the
+// process. It stays silent when run returned on its own (finished is closed).
+func watchSignals(ctx context.Context, stop func(), finished <-chan struct{}, errOut io.Writer) {
+	select {
+	case <-finished:
+		return
+	case <-ctx.Done():
+	}
+	select {
+	case <-finished:
+		return
+	default:
+	}
+	fmt.Fprintln(errOut, "gitglance: shutting down, waiting for running operations; press Ctrl-C again to force quit")
+	stop()
 }
 
 // run executes one command and returns the process exit code. For rpc it

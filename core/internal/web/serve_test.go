@@ -617,11 +617,20 @@ func TestServeShutdownLetsWriteFinish(t *testing.T) {
 }
 
 func TestShutdownNotBlockedByUnsentBody(t *testing.T) {
-	old := rpcReadTimeout
-	rpcReadTimeout = 400 * time.Millisecond
-	defer func() { rpcReadTimeout = old }()
+	old := readTimeout
+	readTimeout = 400 * time.Millisecond
+	defer func() { readTimeout = old }()
 
-	for name, tokenLine := range map[string]string{"no token": "", "valid token": "X-GitGlance-Token: %s\r\n"} {
+	// Each request declares a 100 byte body and never sends it.
+	cases := map[string]string{
+		"rpc without token":    "POST /rpc HTTP/1.1\r\nHost: %h\r\nContent-Type: application/json\r\n",
+		"rpc with token":       "POST /rpc HTTP/1.1\r\nHost: %h\r\nContent-Type: application/json\r\nX-GitGlance-Token: %t\r\n",
+		"post to static (405)": "POST / HTTP/1.1\r\nHost: %h\r\n",
+		"rpc with bad host":    "POST /rpc HTTP/1.1\r\nHost: evil.example\r\nContent-Type: application/json\r\n",
+		"get with a body":      "GET / HTTP/1.1\r\nHost: %h\r\n",
+		"options star":         "OPTIONS * HTTP/1.1\r\nHost: %h\r\n",
+	}
+	for name, head := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := startServe(t, newHandler(t, gitx.ExecRunner{}), false)
 			conn, err := net.Dial("tcp", "127.0.0.1:"+s.port)
@@ -629,15 +638,42 @@ func TestShutdownNotBlockedByUnsentBody(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			line := ""
-			if tokenLine != "" {
-				line = strings.Replace(tokenLine, "%s", s.tok, 1)
-			}
-			io.WriteString(conn, "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:"+s.port+"\r\nContent-Type: application/json\r\n"+line+"Content-Length: 100\r\n\r\n")
+			head = strings.NewReplacer("%h", "127.0.0.1:"+s.port, "%t", s.tok).Replace(head)
+			io.WriteString(conn, head+"Content-Length: 100\r\n\r\n")
 			time.Sleep(100 * time.Millisecond)
 			s.cancel()
 			s.waitReturn(t, 3*time.Second)
 		})
+	}
+}
+
+// The read timeout covers reading the request only: a handler that takes
+// longer than it still answers.
+func TestSlowHandlerNotCutByReadTimeout(t *testing.T) {
+	old := readTimeout
+	readTimeout = 300 * time.Millisecond
+	defer func() { readTimeout = old }()
+	dirs := gateDirs(t)
+	g := gatedRunner()
+	s := startServe(t, newHandler(t, g), false)
+	status := make(chan int, 1)
+	go func() {
+		req, _ := http.NewRequest("POST", s.base+"/rpc", strings.NewReader(addRepoReq(1, dirs[0])))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-GitGlance-Token", s.tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			status <- -1
+			return
+		}
+		resp.Body.Close()
+		status <- resp.StatusCode
+	}()
+	waitStart(t, g)
+	time.Sleep(900 * time.Millisecond)
+	g.release <- struct{}{}
+	if c := <-status; c != 200 {
+		t.Fatalf("slow write answered %d", c)
 	}
 }
 
