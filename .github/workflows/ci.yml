@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - run: go test ./...
+        working-directory: core
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+        working-directory: ui
+      - run: npx vitest run
+        working-directory: ui
+      - run: npx tsc --noEmit
+        working-directory: ui
+      - run: npx vite build
+        working-directory: ui
+
+  vscode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            vscode/package-lock.json
+      - run: npm ci
+        working-directory: ui
+      - run: npm ci
+        working-directory: vscode
+      - run: node scripts/build.mjs ui
+      - run: node scripts/build.mjs core --targets host
+      - run: npx vitest run
+        working-directory: vscode
+      - run: xvfb-run -a npm run test:smoke
+        working-directory: vscode

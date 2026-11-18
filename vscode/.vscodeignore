@@ -5,7 +5,7 @@ scripts/**
 .vscode-test/**
 node_modules/**
 tsconfig.json
-vitest.config.ts
+vitest.config.mts
 esbuild.mjs
 **/*.map
 bin/**/*.exe.bak
