@@ -531,6 +531,42 @@ func TestWriteSurvivesClientDisconnect(t *testing.T) {
 	}
 }
 
+// A read stops when its HTTP client goes away: git sees a cancelled context.
+func TestReadStopsWhenTheClientGoesAway(t *testing.T) {
+	dirs := gateDirs(t)
+	g := gatedRunner()
+	ts := startWeb(t, newHandlerAt(t, g, t.TempDir()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	body := `{"id":1,"method":"discover","params":{"path":` + strconv.Quote(dirs[0]) + `}}`
+	req, _ := http.NewRequestWithContext(ctx, "POST", ts.URL+"/rpc", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitGlance-Token", testToken)
+	clientDone := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		clientDone <- err
+	}()
+	waitStart(t, g)
+	cancel()
+	if err := <-clientDone; err == nil {
+		t.Fatal("client was not cancelled")
+	}
+	time.Sleep(200 * time.Millisecond) // let the server notice the disconnect
+	g.release <- struct{}{}
+	select {
+	case err := <-g.ctxErr:
+		if err == nil {
+			t.Fatal("the read went on after its client had gone")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read never reached the end of git")
+	}
+}
+
 type served struct {
 	url, base, tok string
 	port           string

@@ -17,16 +17,23 @@ import (
 
 type method struct {
 	write bool // changes the local machine: takes the global write lock
+	noGit bool // a read that runs no git command: it never waits for a read slot
 	fn    func(context.Context, json.RawMessage) (any, error)
 }
 
 func (h *Handler) table() map[string]method {
-	read := func(fn func(context.Context, json.RawMessage) (any, error)) method { return method{false, fn} }
-	write := func(fn func(context.Context, json.RawMessage) (any, error)) method { return method{true, fn} }
+	read := func(fn func(context.Context, json.RawMessage) (any, error)) method { return method{fn: fn} }
+	noGit := func(fn func(context.Context, json.RawMessage) (any, error)) method {
+		return method{noGit: true, fn: fn}
+	}
+	write := func(fn func(context.Context, json.RawMessage) (any, error)) method {
+		return method{write: true, fn: fn}
+	}
 	return map[string]method{
-		"version":         read(h.version),
+		"version":         noGit(h.version),
+		"cancel":          noGit(h.cancel),
 		"discover":        read(h.discover),
-		"repos":           read(h.repos),
+		"repos":           noGit(h.repos),
 		"addRepo":         write(h.addRepo),
 		"removeRepo":      write(h.removeRepo),
 		"view":            read(h.view),
@@ -42,13 +49,13 @@ func (h *Handler) table() map[string]method {
 		"moveTrunk":       write(h.moveTrunk),
 		"assign":          write(h.assign),
 		"setRepoSettings": write(h.setRepoSettings),
-		"getGlobal":       read(h.getGlobal),
+		"getGlobal":       noGit(h.getGlobal),
 		"setGlobal":       write(h.setGlobal),
 		"ops":             read(h.ops),
 		"defaultFolder":   read(h.defaultFolder),
 		"remoteBranches":  read(h.remoteBranches),
 		"trunkCommits":    read(h.trunkCommits),
-		"backups":         read(h.backups),
+		"backups":         noGit(h.backups),
 		"clearBackups":    write(h.clearBackups),
 		"openInEditor":    read(h.openInEditor),
 	}
@@ -115,6 +122,29 @@ func (h *Handler) version(context.Context, json.RawMessage) (any, error) {
 		res.GitOK = h.gitUsable()
 	}
 	return res, nil
+}
+
+// cancel checks its params and answers {}. The cancelling itself is done by
+// ServeLines, which knows the reads of its connection.
+func (h *Handler) cancel(_ context.Context, raw json.RawMessage) (any, error) {
+	if _, err := cancelTarget(raw); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
+// cancelTarget reads the request id a cancel names: {"target": <id>}.
+func cancelTarget(raw json.RawMessage) (int64, error) {
+	var p struct {
+		Target *int64 `json:"target"`
+	}
+	if err := decode(raw, &p); err != nil {
+		return 0, err
+	}
+	if p.Target == nil {
+		return 0, badParams("target is required")
+	}
+	return *p.Target, nil
 }
 
 type repoParam struct {

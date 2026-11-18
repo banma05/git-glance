@@ -23,7 +23,8 @@ import (
 
 const (
 	maxLine         = 1 << 20 // longest accepted request line
-	maxConcurrent   = 16      // read requests handled at the same time
+	maxConcurrent   = 16      // reads of one connection running git at the same time
+	maxQueuedReads  = 1024    // reads of one connection waiting for one of those
 	maxQueuedWrites = 1024    // writes waiting for the write worker
 )
 
@@ -45,7 +46,7 @@ type Response struct {
 // RPCError codes: not-repo, bare-repo, unsafe-repo (Message is git's text),
 // bad-params, unknown-method, git-failed, git-too-old (every write method
 // when git is missing or older than 2.30), not-allowed, editor-not-found,
-// internal.
+// cancelled (a read stopped by a cancel request), internal.
 type RPCError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -248,9 +249,12 @@ func (h *Handler) queueWrite(ctx context.Context, req Request, done func(Respons
 }
 
 // Do runs one request and returns its response. Read methods run at once on
-// the caller's goroutine; write methods wait their turn on the same FIFO queue
-// ServeLines uses, so writes from every transport run one at a time in arrival
-// order. A write that has started is not abandoned when ctx is done.
+// the caller's goroutine and stop when ctx is done (over HTTP: when the
+// browser aborts the request); write methods wait their turn on the same FIFO
+// queue ServeLines uses, so writes from every transport run one at a time in
+// arrival order. A write that has started is not abandoned when ctx is done.
+// The cancel method answers {} and stops nothing here: it acts on the reads
+// of a ServeLines connection.
 func (h *Handler) Do(ctx context.Context, req Request) Response {
 	if !h.isWrite(req.Method) {
 		return h.Handle(ctx, req)
@@ -267,6 +271,14 @@ func (h *Handler) Do(ctx context.Context, req Request) Response {
 // out of order. It stops reading at EOF or when ctx is done, then waits for
 // the running requests before returning. A line longer than 1 MiB gets a
 // bad-params response with id 0 and the server keeps going.
+//
+// Reading lines never waits for a request. Writes go to the write queue. A
+// read waits in its own goroutine for one of maxConcurrent slots, except the
+// methods that run no git, which take none; with maxQueuedReads reads
+// already waiting, a read is answered at once with an internal error. A
+// cancel request stops this connection's read (running or waiting) with the
+// target id, which then answers the cancelled error; writes are never
+// cancelled.
 func ServeLines(ctx context.Context, h *Handler, in io.Reader, out io.Writer) error {
 	lines := make(chan lineItem)
 	stop := make(chan struct{})
@@ -276,7 +288,8 @@ func ServeLines(ctx context.Context, h *Handler, in io.Reader, out io.Writer) er
 	var (
 		outMu sync.Mutex
 		wg    sync.WaitGroup
-		sem   = make(chan struct{}, maxConcurrent)
+		slots = make(chan struct{}, maxConcurrent)
+		reads = &openReads{byID: map[int64]map[uint64]context.CancelCauseFunc{}}
 	)
 	send := func(resp Response) {
 		b, err := json.Marshal(resp)
@@ -320,18 +333,108 @@ func ServeLines(ctx context.Context, h *Handler, in io.Reader, out io.Writer) er
 				}
 				continue
 			}
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				return ctx.Err()
+			if req.Method == "cancel" {
+				if target, err := cancelTarget(req.Params); err == nil {
+					reads.cancel(target)
+				}
+				send(h.Handle(ctx, req))
+				continue
 			}
+			if reads.count() >= maxConcurrent+maxQueuedReads {
+				send(Response{ID: req.ID, Error: &RPCError{Code: "internal", Message: "too many queued reads"}})
+				continue
+			}
+			// Opened here, in line order, so that a later cancel line finds it.
+			rctx, closeRead := reads.open(ctx, req.ID)
 			wg.Add(1)
 			go func() {
-				defer func() { <-sem; wg.Done() }()
-				send(h.Handle(ctx, req))
+				defer wg.Done()
+				defer closeRead()
+				send(h.serveRead(rctx, req, slots))
 			}()
 		}
 	}
+}
+
+// errCancelled is the cause of a read stopped by a cancel request.
+var errCancelled = errors.New("cancelled by request")
+
+// serveRead runs one read for ServeLines. It first takes one of slots, unless
+// the method runs no git. A read stopped by a cancel request answers the
+// cancelled error, whatever it had come to.
+func (h *Handler) serveRead(ctx context.Context, req Request, slots chan struct{}) Response {
+	if m, ok := h.methods[req.Method]; ok && !m.noGit {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		case <-ctx.Done():
+			if resp, ok := cancelledRead(ctx, req.ID); ok {
+				return resp
+			}
+			return Response{ID: req.ID, Error: &RPCError{Code: "internal", Message: "stopped before the request started"}}
+		}
+	}
+	resp := h.Handle(ctx, req)
+	if cancelled, ok := cancelledRead(ctx, req.ID); ok {
+		return cancelled
+	}
+	return resp
+}
+
+func cancelledRead(ctx context.Context, id int64) (Response, bool) {
+	if !errors.Is(context.Cause(ctx), errCancelled) {
+		return Response{}, false
+	}
+	return Response{ID: id, Error: &RPCError{Code: "cancelled", Message: "cancelled by request"}}, true
+}
+
+// openReads are the reads of one ServeLines connection, running or waiting
+// for a slot, by request id. The ids are the client's: a cancel stops every
+// open read with its target id.
+type openReads struct {
+	mu   sync.Mutex
+	next uint64
+	n    int
+	byID map[int64]map[uint64]context.CancelCauseFunc
+}
+
+// open registers a read and returns its context and the function that
+// unregisters it.
+func (o *openReads) open(ctx context.Context, id int64) (context.Context, func()) {
+	rctx, cancel := context.WithCancelCause(ctx)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.next++
+	key := o.next
+	if o.byID[id] == nil {
+		o.byID[id] = map[uint64]context.CancelCauseFunc{}
+	}
+	o.byID[id][key] = cancel
+	o.n++
+	return rctx, func() {
+		o.mu.Lock()
+		delete(o.byID[id], key)
+		if len(o.byID[id]) == 0 {
+			delete(o.byID, id)
+		}
+		o.n--
+		o.mu.Unlock()
+		cancel(nil)
+	}
+}
+
+func (o *openReads) cancel(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, stop := range o.byID[id] {
+		stop(errCancelled)
+	}
+}
+
+func (o *openReads) count() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.n
 }
 
 type lineItem struct {
