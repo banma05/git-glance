@@ -1,5 +1,6 @@
 import { browserHost } from './browser';
 import { vscodeHost } from './vscode';
+import { mockHost } from './mock';
 
 export type ThemeKind = 'dark' | 'light';
 
@@ -34,5 +35,6 @@ declare global {
 }
 
 export function pickHost(): Host {
+  if (new URLSearchParams(location.search).get('mock') === '1') return mockHost();
   return window.acquireVsCodeApi ? vscodeHost() : browserHost();
 }
