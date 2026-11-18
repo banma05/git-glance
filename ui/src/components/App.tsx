@@ -57,7 +57,7 @@ export function App({ host }: { host: Host }) {
   if (host.mode === 'sidebar') {
     return (
       <div class="app narrow">
-        <Sidebar t={t} state={state} actions={actions} />
+        <Sidebar t={t} host={host} state={state} actions={actions} />
         {fetchLine}
         {errorLine}
         {!state.loaded && <div class="muted pad">{t('app.loading')}</div>}
@@ -91,7 +91,7 @@ export function App({ host }: { host: Host }) {
                 <ListView t={t} view={view} state={state} actions={actions} compact />
               </aside>
               <div class="center">
-                <GraphView t={t} />
+                <GraphView t={t} host={host} repo={state.repo} view={view} theme={state.theme} selected={state.selected} onSelect={actions.select} />
               </div>
             </>
           ) : (
@@ -101,7 +101,7 @@ export function App({ host }: { host: Host }) {
           )}
         </div>
       )}
-      {view && <DetailPanel t={t} branch={selected} />}
+      {view && <DetailPanel t={t} branch={selected} state={state} actions={actions} />}
       <Dialogs t={t} state={state} actions={actions} />
     </div>
   );

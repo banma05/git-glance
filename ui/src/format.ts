@@ -53,3 +53,11 @@ export function blockText(block: string, t: T): string {
   const key = BLOCK_KEYS[block];
   return key ? t(key) : block;
 }
+
+// shortDate writes a unix time (seconds) as MM-DD in local time; "" for an unset time.
+export function shortDate(time: number): string {
+  if (!time) return '';
+  const d = new Date(time * 1000);
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+}

@@ -1,7 +1,154 @@
+import { blockText, chips } from '../format';
 import type { T } from '../i18n';
-import type { BranchView } from '../types';
+import { reasonText } from '../reasons';
+import type { Actions, AppState } from '../state';
+import type { BranchView, OpResult } from '../types';
 
-// PLACEHOLDER (task 15b replaces this file with the full detail area).
-export function DetailPanel({ t, branch }: { t: T; branch: BranchView | null }) {
-  return <div class="detail placeholder">{branch ? branch.name : t('detail.none')}</div>;
+interface Props {
+  t: T;
+  branch: BranchView | null;
+  state: Pick<AppState, 'busy' | 'switchResult'>;
+  actions: Pick<Actions, 'switchTo' | 'openFolder' | 'copy' | 'openDialog'>;
+}
+
+const SOURCE_KEYS = { created: 'detail.source.created', manual: 'detail.source.manual' } as const;
+const BY_KEYS = {
+  ancestor: 'detail.by.ancestor',
+  patch: 'detail.by.patch',
+  subject: 'detail.by.subject',
+  squash: 'detail.by.squash',
+  '': 'detail.by.none',
+} as const;
+const REMOTE_CHIPS = ['unpushed', 'behind', 'ahead', 'synced'];
+
+// A source code from a newer core that has no text yet is shown as it is.
+function sourceNote(source: string, t: T): string {
+  if (source === 'count') return '';
+  return source in SOURCE_KEYS ? t(SOURCE_KEYS[source as keyof typeof SOURCE_KEYS]) : source;
+}
+
+function remoteText(b: BranchView, t: T): string {
+  if (b.hasUpstream && b.upstreamGone) return t('detail.remote.gone');
+  const parts = chips(b, t)
+    .filter((c) => REMOTE_CHIPS.includes(c.key))
+    .map((c) => c.text);
+  if (parts.length === 0 && !b.hasUpstream) return t('chip.unpushed');
+  return parts.join(' · ');
+}
+
+function SwitchResult({ t, result }: { t: T; result: OpResult }) {
+  return (
+    <div class="switch-result" role="status">
+      <div class={result.ok ? 'ok' : 'bad'}>{result.ok ? t('detail.switched') : reasonText('switch.reason', result.reason, t)}</div>
+      {result.path && <div class="muted">{t('detail.path', { path: result.path })}</div>}
+      {result.files.length > 0 && (
+        <ul class="files">
+          {result.files.map((f) => (
+            <li>{f}</li>
+          ))}
+        </ul>
+      )}
+      {result.logError && <div class="bad">{t('detail.logError', { message: result.logError })}</div>}
+    </div>
+  );
+}
+
+// DetailPanel is everything about the selected branch and what can be done with
+// it. It never pushes, pulls or merges; removing a folder only opens the
+// confirm dialog.
+export function DetailPanel({ t, branch, state, actions }: Props) {
+  if (!branch) return <div class="detail placeholder">{t('detail.none')}</div>;
+  const b = branch;
+  const result = state.switchResult && state.switchResult.branch === b.name ? state.switchResult.result : null;
+  const dirty = b.dirty;
+  const hidden = dirty ? dirty.changed + dirty.untracked - dirty.files.length : 0;
+  const note = sourceNote(b.trunkSource, t);
+
+  return (
+    <div class="detail">
+      <div class="detail-name">
+        <strong title={t('detail.name')}>{b.name}</strong>
+      </div>
+      <dl class="detail-grid">
+        <dt>{t('detail.folder')}</dt>
+        <dd>{b.folder ? b.folder : t('detail.noFolder')}</dd>
+
+        <dt>{t('detail.trunk')}</dt>
+        <dd>{b.trunk ? (note ? `${b.trunk} (${note})` : b.trunk) : t('detail.trunkUnknown')}</dd>
+
+        <dt>{t('detail.remote')}</dt>
+        <dd>{remoteText(b, t)}</dd>
+
+        {dirty && (
+          <>
+            <dt>{t('detail.files')}</dt>
+            <dd>
+              <ul class="files">
+                {dirty.files.map((f) => (
+                  <li>{f}</li>
+                ))}
+              </ul>
+              {hidden > 0 && <div class="muted">{t('detail.moreFiles', { n: hidden })}</div>}
+            </dd>
+          </>
+        )}
+
+        {b.test && (
+          <>
+            <dt>{t('detail.test')}</dt>
+            <dd>
+              <ul class="files">
+                {b.test.per.map((c) => (
+                  <li>
+                    <code>{c.hash.slice(0, 7)}</code> {c.subject} <span class="muted">({byText(c.by, t)})</span>
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          </>
+        )}
+
+        {b.release && (
+          <>
+            <dt>{t('detail.release')}</dt>
+            <dd>
+              {b.release.in.length > 0 && <div>{t('detail.releaseIn', { list: b.release.in.join(', ') })}</div>}
+              {b.release.notIn.length > 0 && <div>{t('detail.releaseNotIn', { list: b.release.notIn.join(', ') })}</div>}
+            </dd>
+          </>
+        )}
+      </dl>
+
+      <div class="detail-actions">
+        {b.folder ? (
+          <button class="btn" onClick={() => actions.openFolder(b.folder)}>
+            {t('detail.open')}
+          </button>
+        ) : (
+          <>
+            <button class="btn" disabled={state.busy} onClick={() => actions.switchTo(b.name)}>
+              {t('detail.switch')}
+            </button>
+            <button class="btn" disabled={state.busy} onClick={() => actions.openDialog('create')}>
+              {t('detail.create')}
+            </button>
+          </>
+        )}
+        <button class="btn" onClick={() => actions.copy(b.name)}>
+          {t('detail.copy')}
+        </button>
+        <button class="btn" onClick={() => actions.openDialog('compare')}>
+          {t('detail.compare')}
+        </button>
+        <button class="btn" disabled={!b.canRemoveFolder || state.busy} onClick={() => actions.openDialog('remove')}>
+          {b.canRemoveFolder ? t('detail.remove') : t('detail.removeBlocked', { reason: blockText(b.removeBlock, t) })}
+        </button>
+      </div>
+      {result && <SwitchResult t={t} result={result} />}
+    </div>
+  );
+}
+
+function byText(by: string, t: T): string {
+  return by in BY_KEYS ? t(BY_KEYS[by as keyof typeof BY_KEYS]) : by;
 }

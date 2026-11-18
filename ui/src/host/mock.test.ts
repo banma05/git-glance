@@ -17,8 +17,8 @@ describe('mock host', () => {
       if (typeof v === 'string') strings.push(v);
       return v;
     });
-    const text = strings.join(' | ');
-    // "unpushed" is a core reason code, not an action
+    // "unpushed" is a core reason code and "merge" a core graph row kind, not actions
+    const text = strings.filter((x) => x !== 'merge').join(' | ');
     expect(text).not.toMatch(/(?<!un)push|pull|sync|merge|rebase/i);
   });
 

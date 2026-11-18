@@ -1,3 +1,4 @@
+import type { Host } from '../host/types';
 import type { T } from '../i18n';
 import { chips } from '../format';
 import { baseName } from '../reasons';
@@ -10,11 +11,12 @@ import { branchColor } from './ListView';
 
 interface Props {
   t: T;
+  host: Host;
   state: AppState;
   actions: Actions;
 }
 
-function Fish({ t, b, state, actions }: Props & { b: BranchView }) {
+function Fish({ t, b, state, actions }: Omit<Props, 'host'> & { b: BranchView }) {
   const first = chips(b, t)[0];
   const sub = [b.folder ? baseName(b.folder) : '', first?.text ?? ''].filter(Boolean).join(' · ');
   const open = state.selected === b.name;
@@ -31,15 +33,16 @@ function Fish({ t, b, state, actions }: Props & { b: BranchView }) {
           {sub && <span class="row-sub muted">{sub}</span>}
         </span>
       </button>
-      {open && <DetailPanel t={t} branch={b} />}
+      {open && <DetailPanel t={t} branch={b} state={state} actions={actions} />}
     </div>
   );
 }
 
 // Sidebar is the narrow mode: a repository dropdown, the list/graph toggle and
 // the button that opens the wide window, then a vertical list of branches.
-export function Sidebar({ t, state, actions }: Props) {
+export function Sidebar({ t, host, state, actions }: Props) {
   const view = state.view;
+  const selected = view && state.selected ? (view.branches[state.selected] ?? null) : null;
   const list = (names: string[]) =>
     names
       .map((n) => view?.branches[n])
@@ -80,7 +83,12 @@ export function Sidebar({ t, state, actions }: Props) {
           ⤢
         </button>
       </div>
-      {view && state.mode === 'graph' && <GraphView t={t} />}
+      {view && state.mode === 'graph' && (
+        <>
+          <GraphView t={t} host={host} repo={state.repo} view={view} theme={state.theme} selected={state.selected} onSelect={actions.select} />
+          {selected && <DetailPanel t={t} branch={selected} state={state} actions={actions} />}
+        </>
+      )}
       {view && state.mode === 'list' && (
         <div class="list compact">
           {view.groups.map((g) => group(trunkKey(g.trunk.name), t('group.trunk', { name: g.trunk.name }), g.branches))}

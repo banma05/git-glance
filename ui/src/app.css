@@ -55,3 +55,36 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
 .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center; }
 .dialog { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 14px 18px; min-width: 320px; max-width: 80vw; max-height: 80vh; overflow: auto; }
 .dialog h3 { margin: 0 0 8px; }
+
+.detail-name { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; word-break: break-all; }
+.detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 4px 0 8px; }
+.detail-grid dt { color: var(--fg-mute); }
+.detail-grid dd { margin: 0; min-width: 0; word-break: break-all; }
+.detail .files { margin: 0; padding-left: 16px; }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.switch-result { margin-top: 8px; }
+.switch-result .ok { color: var(--tone-ok); }
+.switch-result .bad { color: var(--tone-warn); }
+
+.graph { padding: 4px 0; }
+.g-title { padding: 4px 10px; font-weight: 600; color: var(--fg-mute); }
+.g-section { margin-bottom: 10px; }
+.g-row { display: flex; align-items: stretch; gap: 6px; padding-right: 10px; overflow: hidden; }
+.g-row.selected { background: var(--surface); }
+.g-gutter { flex: none; display: block; }
+.g-line { stroke: var(--fg-mute); stroke-width: 2; fill: none; }
+.g-line.g-trunk { stroke: var(--fg-mute); }
+.g-dot { fill: var(--fg); stroke: var(--bg); stroke-width: 1.5; }
+.g-trunk-dot { fill: var(--fg-mute); }
+.g-hollow { fill: var(--bg); stroke: var(--fg-mute); stroke-width: 2; }
+.g-faint { opacity: 0.5; }
+.g-text { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; line-height: 1.25; }
+.g-text.dim { opacity: 0.65; }
+.g-text.italic .g-name { font-style: italic; }
+.g-main { display: flex; flex-direction: column; align-items: flex-start; background: none; border: none; color: inherit; font: inherit; padding: 0; text-align: left; cursor: pointer; min-width: 0; max-width: 100%; }
+.g-main:hover .g-name { text-decoration: underline; }
+.g-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.g-name.dim { opacity: 0.7; }
+.g-sub { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; }
+.g-date { flex: none; align-self: center; font-size: 11px; font-variant-numeric: tabular-nums; }
+.g-expanded .g-name { font-size: 12px; }

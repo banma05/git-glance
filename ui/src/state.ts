@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { rpc } from './api';
 import { HostError } from './host/types';
 import type { Host, ThemeKind } from './host/types';
-import type { AlignReport, Global, Theme, View } from './types';
+import type { AlignReport, Global, OpResult, Theme, View } from './types';
 
 export type ViewMode = 'list' | 'graph';
 export type DialogName = 'align' | 'create' | 'compare' | 'oplog' | 'settings' | 'remove';
@@ -22,6 +22,7 @@ export interface AppState {
   dialog: DialogName | null;
   alignReport: AlignReport | null;
   busy: boolean; // a write is running
+  switchResult: { branch: string; result: OpResult } | null; // the last switch, shown in the detail area
   global: Global | null;
   theme: ThemeKind;
 }
@@ -33,6 +34,9 @@ export interface Actions {
   refresh(): void; // read the remote again, then the view (the retry button)
   setMode(mode: ViewMode): void;
   select(branch: string): void;
+  switchTo(branch: string): void; // switch the main folder to a branch
+  openFolder(path: string): void;
+  copy(text: string): void;
   toggleGroup(key: string): void;
   openDialog(name: DialogName): void;
   closeDialog(): void;
@@ -64,6 +68,7 @@ function initial(host: Host): AppState {
     dialog: null,
     alignReport: null,
     busy: false,
+    switchResult: null,
     global: null,
     theme: host.theme(),
   };
@@ -122,7 +127,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
 
     const open = async (repo: string) => {
       // fetching is reset here: a refresh of the repository left behind drops its result
-      patch({ repo, view: null, selected: '', fetchError: '', error: null, alignReport: null, fetching: false });
+      patch({ repo, view: null, selected: '', fetchError: '', error: null, alignReport: null, switchResult: null, fetching: false });
       try {
         await loadView(repo);
         if (!current(repo)) return;
@@ -182,7 +187,31 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         if (ref.current.repo && !ref.current.fetching) void refresh(ref.current.repo);
       },
       setMode: (mode) => patch({ mode }),
-      select: (selected) => patch({ selected: ref.current.selected === selected ? '' : selected }),
+      select: (selected) => patch({ selected: ref.current.selected === selected ? '' : selected, switchResult: null }),
+      switchTo: (branch) => {
+        const { repo, view } = ref.current;
+        if (!repo || !view || ref.current.busy) return;
+        // the branch is checked out in the main folder: the one whose branch says so, else the repository path
+        const folder = Object.values(view.branches).find((b) => b.mainFolder && b.folder)?.folder ?? repo;
+        patch({ busy: true, switchResult: null });
+        void (async () => {
+          try {
+            const result = await rpc(host, 'switch', { repo, folder, branch });
+            if (current(repo)) patch({ switchResult: { branch, result } });
+            if (result.ok) await loadView(repo);
+          } catch (e) {
+            failFor(repo, e);
+          } finally {
+            patch({ busy: false });
+          }
+        })();
+      },
+      openFolder: (path) => {
+        host.openFolder(path).catch(fail);
+      },
+      copy: (text) => {
+        host.copy(text).catch(fail);
+      },
       toggleGroup: (key) => patch({ collapsed: { ...ref.current.collapsed, [key]: !ref.current.collapsed[key] } }),
       openDialog: (dialog) => patch({ dialog }),
       closeDialog: () => patch({ dialog: null }),
