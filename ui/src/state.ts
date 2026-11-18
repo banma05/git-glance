@@ -36,6 +36,11 @@ export interface SettingsOutcome {
   error: unknown; // null when the write worked
 }
 
+// What a click in the graph picked besides a whole branch: one commit of a
+// branch, or a commit on a trunk (head or fork point, or one of the hidden ones).
+export type TrunkPick = { trunk: string; hash: string; time: number; subject: string };
+export type Picked = ({ kind: 'trunk' } & TrunkPick) | { kind: 'commit'; branch: string; hash: string };
+
 export interface AppState {
   repos: string[];
   repo: string;
@@ -47,6 +52,7 @@ export interface AppState {
   noToken: boolean;
   mode: ViewMode;
   selected: string; // branch name, "" when none
+  pick: Picked | null; // a commit or trunk commit picked in the graph
   collapsed: Record<string, boolean>; // group key -> folded
   dialog: DialogName | null;
   alignReport: AlignReport | null;
@@ -67,6 +73,8 @@ export interface Actions {
   refresh(): void; // read the remote again, then the view (the retry button)
   setMode(mode: ViewMode): void;
   select(branch: string): void;
+  selectCommit(branch: string, hash: string): void;
+  selectTrunk(p: TrunkPick): void;
   switchTo(branch: string): void; // switch the main folder to a branch
   openFolder(path: string): void;
   copy(text: string): void;
@@ -105,6 +113,7 @@ function initial(host: Host): AppState {
     noToken: false,
     mode: 'list',
     selected: '',
+    pick: null,
     collapsed: {},
     dialog: null,
     alignReport: null,
@@ -177,7 +186,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
 
     const open = async (repo: string) => {
       // fetching is reset here: a refresh of the repository left behind drops its result
-      patch({ repo, view: null, selected: '', fetchError: '', error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
+      patch({ repo, view: null, selected: '', pick: null, fetchError: '', error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
       try {
         await loadView(repo);
         if (!current(repo)) return;
@@ -237,7 +246,17 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         if (ref.current.repo && !ref.current.fetching) void refresh(ref.current.repo);
       },
       setMode: (mode) => patch({ mode }),
-      select: (selected) => patch({ selected: ref.current.selected === selected ? '' : selected, switchResult: null }),
+      select: (selected) => patch({ selected: ref.current.selected === selected && !ref.current.pick ? '' : selected, pick: null, switchResult: null }),
+      selectCommit: (branch, hash) => {
+        const p = ref.current.pick;
+        const same = p?.kind === 'commit' && p.branch === branch && p.hash === hash;
+        patch(same ? { selected: '', pick: null, switchResult: null } : { selected: branch, pick: { kind: 'commit', branch, hash }, switchResult: null });
+      },
+      selectTrunk: (p) => {
+        const cur = ref.current.pick;
+        const same = cur?.kind === 'trunk' && cur.hash === p.hash;
+        patch(same ? { selected: '', pick: null } : { selected: '', pick: { kind: 'trunk', ...p }, switchResult: null });
+      },
       switchTo: (branch) => {
         const { repo, view } = ref.current;
         if (!repo || !view || ref.current.busy) return;

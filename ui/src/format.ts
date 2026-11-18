@@ -83,3 +83,15 @@ export function dateTime(time: number): string {
   const two = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
 }
+
+// Highest first: the one chip a graph row can afford.
+const CHIP_PRIORITY = ['dirty', 'behind', 'folder-missing', 'removable', 'release-', 'test-', 'synced', 'ahead', 'unpushed'];
+
+// topChip picks the most important chip of a branch, or null when it has none.
+export function topChip(list: Chip[]): Chip | null {
+  for (const p of CHIP_PRIORITY) {
+    const hit = list.find((c) => (p.endsWith('-') ? c.key.startsWith(p) : c.key === p));
+    if (hit) return hit;
+  }
+  return list[0] ?? null;
+}

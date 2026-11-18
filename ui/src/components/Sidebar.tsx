@@ -6,6 +6,7 @@ import { trunkKey } from '../state';
 import type { Actions, AppState } from '../state';
 import type { BranchView } from '../types';
 import { DetailPanel } from './DetailPanel';
+import { Details } from './Details';
 import { GraphView } from './GraphView';
 import { branchColor } from './ListView';
 
@@ -42,7 +43,6 @@ function Fish({ t, b, state, actions }: Omit<Props, 'host'> & { b: BranchView })
 // the button that opens the wide window, then a vertical list of branches.
 export function Sidebar({ t, host, state, actions }: Props) {
   const view = state.view;
-  const selected = view && state.selected ? (view.branches[state.selected] ?? null) : null;
   const list = (names: string[]) =>
     names
       .map((n) => view?.branches[n])
@@ -85,8 +85,19 @@ export function Sidebar({ t, host, state, actions }: Props) {
       </div>
       {view && state.mode === 'graph' && (
         <>
-          <GraphView t={t} host={host} repo={state.repo} view={view} theme={state.theme} selected={state.selected} onSelect={actions.select} />
-          {selected && <DetailPanel t={t} branch={selected} state={state} actions={actions} />}
+          <GraphView
+            t={t}
+            host={host}
+            repo={state.repo}
+            view={view}
+            theme={state.theme}
+            selected={state.selected}
+            pick={state.pick}
+            onSelect={actions.select}
+            onCommit={actions.selectCommit}
+            onTrunk={actions.selectTrunk}
+            inline={state.selected || state.pick ? <Details t={t} view={view} state={state} actions={actions} /> : undefined}
+          />
         </>
       )}
       {view && state.mode === 'list' && (

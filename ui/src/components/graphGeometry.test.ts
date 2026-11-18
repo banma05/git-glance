@@ -77,3 +77,26 @@ describe('graph geometry, the layout fixture', () => {
     expect(rowGeometry(rows, spans, 4).segs.find((s) => s.lane === 3)!.dashed).toBe(false);
   });
 });
+
+describe('graph geometry, heights and the trunk lane', () => {
+  it('gives every kind the same compact row height', () => {
+    const kinds = ['head', 'commit', 'more-own', 'fork', 'merge', 'more'] as const;
+    expect(new Set(kinds.map((k) => heightOf(k))).size).toBe(1);
+    expect(heightOf('commit')).toBe(28);
+  });
+
+  it('never names a branch on a trunk segment, and keeps every branch lane at x >= 44', () => {
+    for (const section of [layoutSection, forkNewerSection]) {
+      const spans = spansOf(section.rows);
+      section.rows.forEach((_, i) => {
+        for (const seg of rowGeometry(section.rows, spans, i).segs) {
+          if (seg.lane === 0) expect(seg.branch).toBe('');
+          else {
+            expect(seg.branch).not.toBe('');
+            expect(seg.x).toBeGreaterThanOrEqual(44);
+          }
+        }
+      });
+    }
+  });
+});

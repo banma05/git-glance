@@ -114,8 +114,6 @@ export const en: Record<Key, string> = {
 
   'graph.head': 'Latest on {name}',
   'graph.fork': 'Branches start here',
-  'graph.merged': 'Merged into the trunk',
-  'graph.mergedCount': 'Merged into the trunk · {n} commits',
   'graph.moreOwn': '··· {n} more commits',
   'graph.moreTrunk': '··· {n} commits by others',
   'graph.loading': 'Loading…',
@@ -243,4 +241,14 @@ export const en: Record<Key, string> = {
   'notice.ok': '{label}: done',
   'notice.failed': '{label}: not done: {reason}',
   'notice.dismiss': 'Dismiss',
+  'graph.trunkTip': '{hash} · trunk',
+  'detail.commit': 'Commit',
+  'detail.hash': 'Hash',
+  'detail.subject': 'Subject',
+  'detail.date': 'Time',
+  'detail.lastCommit': 'Last commit',
+  'detail.chips': 'Status',
+  'detail.trunkCommit': 'Commit on the trunk',
+  'detail.forksHere': 'Branches that start here',
+  'detail.noForks': 'No branch starts here',
 };

@@ -31,3 +31,27 @@ describe('mock host', () => {
     expect(v.groups.map((g) => g.trunk.name)).toEqual(['main', 'develop']);
   });
 });
+
+describe('mock graph data', () => {
+  it('uses realistic 40-digit hashes, not zero padding', () => {
+    const v = mockView('/demo/repo');
+    const hashes = v.sections.flatMap((s) => s.rows.map((r) => r.hash)).filter(Boolean);
+    expect(hashes.length).toBeGreaterThan(0);
+    for (const h of hashes) {
+      expect(h).toMatch(/^[0-9a-f]{40}$/);
+      expect(h.startsWith('0000000')).toBe(false);
+    }
+    expect(new Set(hashes).size).toBeGreaterThan(8);
+  });
+
+  it('gives several branches their own commits on lanes beside the trunk', () => {
+    const v = mockView('/demo/repo');
+    const withOwn = Object.values(v.branches).filter((b) => b.own.length > 0 && !b.merged);
+    expect(withOwn.length).toBeGreaterThanOrEqual(2);
+    const lanes = new Set(
+      v.sections.flatMap((s) => s.rows.filter((r) => r.kind === 'commit').map((r) => r.lane)),
+    );
+    expect(Math.min(...lanes)).toBeGreaterThanOrEqual(1);
+    expect(lanes.size).toBeGreaterThanOrEqual(2);
+  });
+});

@@ -6,7 +6,7 @@ import { errorText } from '../reasons';
 import { useApp } from '../state';
 import { Dialogs } from './dialogs/Dialogs';
 import { NoticeLine } from './NoticeLine';
-import { DetailPanel } from './DetailPanel';
+import { Details } from './Details';
 import { GraphView } from './GraphView';
 import { ListView } from './ListView';
 import { RepoTabs } from './RepoTabs';
@@ -54,7 +54,6 @@ export function App({ host }: { host: Host }) {
     </div>
   ) : null;
   const noticeLine = state.notice ? <NoticeLine t={t} notice={state.notice} onDismiss={actions.dismissNotice} /> : null;
-  const selected = view && state.selected ? (view.branches[state.selected] ?? null) : null;
 
   if (host.mode === 'sidebar') {
     return (
@@ -95,7 +94,7 @@ export function App({ host }: { host: Host }) {
                 <ListView t={t} view={view} state={state} actions={actions} compact />
               </aside>
               <div class="center">
-                <GraphView t={t} host={host} repo={state.repo} view={view} theme={state.theme} selected={state.selected} onSelect={actions.select} />
+                <GraphView t={t} host={host} repo={state.repo} view={view} theme={state.theme} selected={state.selected} pick={state.pick} onSelect={actions.select} onCommit={actions.selectCommit} onTrunk={actions.selectTrunk} />
               </div>
             </>
           ) : (
@@ -105,7 +104,7 @@ export function App({ host }: { host: Host }) {
           )}
         </div>
       )}
-      {view && <DetailPanel t={t} branch={selected} state={state} actions={actions} />}
+      {view && <Details t={t} view={view} state={state} actions={actions} />}
       <Dialogs t={t} host={host} state={state} actions={actions} />
     </div>
   );

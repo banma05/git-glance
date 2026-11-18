@@ -7,7 +7,17 @@ import type { BranchView, Global, Group, Row, Section, TrunkView, View } from '.
 // &lang=zh-CN for Chinese.
 
 const DAY = 86400;
-const hash = (n: number) => n.toString(16).padStart(40, '0');
+// A deterministic pseudo hash: 40 hex digits derived from n.
+const hash = (n: number) => {
+  let x = (n + 1) * 2654435761;
+  let out = '';
+  for (let i = 0; i < 5; i++) {
+    x = Math.imul(x ^ (x >>> 15), 2246822519) ^ Math.imul(x ^ (x >>> 13), 3266489917);
+    x = (x ^ (x >>> 16)) >>> 0;
+    out += x.toString(16).padStart(8, '0');
+  }
+  return out;
+};
 
 function branch(name: string, over: Partial<BranchView>): BranchView {
   const parts = name.split('/');

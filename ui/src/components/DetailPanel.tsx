@@ -1,13 +1,14 @@
-import { blockText, chips } from '../format';
+import { blockText, chips, dateTime } from '../format';
 import type { T } from '../i18n';
 import { reasonText } from '../reasons';
-import type { Actions, AppState } from '../state';
+import type { Actions, AppState, Picked } from '../state';
 import type { BranchView, OpResult } from '../types';
 
 interface Props {
   t: T;
   branch: BranchView | null;
   state: Pick<AppState, 'busy' | 'switchResult'>;
+  pick?: Picked | null; // a commit of this branch picked in the graph
   actions: Pick<Actions, 'switchTo' | 'openFolder' | 'copy' | 'openDialog'>;
 }
 
@@ -56,19 +57,47 @@ function SwitchResult({ t, result }: { t: T; result: OpResult }) {
 // DetailPanel is everything about the selected branch and what can be done with
 // it. It never pushes, pulls or merges; removing a folder only opens the
 // confirm dialog.
-export function DetailPanel({ t, branch, state, actions }: Props) {
+export function DetailPanel({ t, branch, state, actions, pick = null }: Props) {
   if (!branch) return <div class="detail placeholder">{t('detail.none')}</div>;
   const b = branch;
   const result = state.switchResult && state.switchResult.branch === b.name ? state.switchResult.result : null;
   const dirty = b.dirty;
   const hidden = dirty ? dirty.changed + dirty.untracked - dirty.files.length : 0;
   const note = sourceNote(b.trunkSource, t);
+  const commit = pick?.kind === 'commit' && pick.branch === b.name ? b.own.find((c) => c.hash === pick.hash) : undefined;
 
   return (
     <div class="detail">
       <div class="detail-name">
         <strong title={t('detail.name')}>{b.name}</strong>
       </div>
+      {commit && (
+        <dl class="detail-grid detail-commit">
+          <dt>{t('detail.commit')}</dt>
+          <dd>
+            <code>{commit.hash}</code>
+          </dd>
+          <dt>{t('detail.subject')}</dt>
+          <dd>{commit.subject}</dd>
+          <dt>{t('detail.date')}</dt>
+          <dd>{dateTime(commit.time)}</dd>
+          {b.test && (
+            <>
+              <dt>{t('detail.test')}</dt>
+              <dd>{byText(b.test.per.find((c) => c.hash === commit.hash)?.by ?? '', t)}</dd>
+            </>
+          )}
+          {b.release && (
+            <>
+              <dt>{t('detail.release')}</dt>
+              <dd>
+                {b.release.in.length > 0 && <div>{t('detail.releaseIn', { list: b.release.in.join(', ') })}</div>}
+                {b.release.notIn.length > 0 && <div>{t('detail.releaseNotIn', { list: b.release.notIn.join(', ') })}</div>}
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
       <dl class="detail-grid">
         <dt>{t('detail.folder')}</dt>
         <dd>{b.folder ? b.folder : t('detail.noFolder')}</dd>
@@ -78,6 +107,20 @@ export function DetailPanel({ t, branch, state, actions }: Props) {
 
         <dt>{t('detail.remote')}</dt>
         <dd>{remoteText(b, t)}</dd>
+
+        <dt>{t('detail.chips')}</dt>
+        <dd>
+          {chips(b, t).map((c) => (
+            <span class={`chip ${c.tone}`}>{c.text}</span>
+          ))}
+        </dd>
+
+        {b.lastCommit > 0 && (
+          <>
+            <dt>{t('detail.lastCommit')}</dt>
+            <dd>{dateTime(b.lastCommit)}</dd>
+          </>
+        )}
 
         {dirty && (
           <>

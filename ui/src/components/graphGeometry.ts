@@ -5,12 +5,11 @@ import type { Row } from '../types';
 
 export const LANE_X = 22; // the trunk is lane 0; lane n sits at 22 + n * 22
 export const LANE_STEP = 22;
-export const ROW_H = 34;
-export const SHORT_H = 26; // more, more-own and fork rows
+export const ROW_H = 28; // every graph row is one line of this height
 export const EXPANDED_H = 22; // one hidden trunk commit
 
 export const laneX = (lane: number) => LANE_X + lane * LANE_STEP;
-export const heightOf = (kind: Row['kind']) => (kind === 'more' || kind === 'more-own' || kind === 'fork' ? SHORT_H : ROW_H);
+export const heightOf = (_kind: Row['kind']) => ROW_H;
 
 // A Span is the stretch of one lane that belongs to one branch: from its first
 // row to its last row (the row where it joins the trunk, or its last commit).

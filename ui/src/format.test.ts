@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BranchView } from './types';
-import { blockText, chips, dateTime, formatBytes } from './format';
+import { blockText, chips, dateTime, formatBytes, topChip } from './format';
 import { makeT } from './i18n';
 
 const base: BranchView = {
@@ -82,5 +82,27 @@ describe('formatBytes and dateTime', () => {
   it('leaves an unset time empty', () => {
     expect(dateTime(0)).toBe('');
     expect(dateTime(1700000000)).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d$/);
+  });
+});
+
+describe('topChip', () => {
+  const pick = (b: Partial<BranchView>) => topChip(chips({ ...base, ...b }, t))?.key;
+  const test = { state: 'all' as const, matched: 1, total: 1, per: [] };
+  const release = { state: 'none' as const, in: [], notIn: ['main'] };
+
+  it('prefers changes in the folder over everything else', () => {
+    expect(pick({ dirty: { changed: 1, untracked: 0, files: [] }, behind: 2, folderMissing: true, test })).toBe('dirty');
+  });
+  it('follows the order dirty, behind, folder missing, removable, release, test, in sync', () => {
+    expect(pick({ behind: 2, folderMissing: true, test })).toBe('behind');
+    expect(pick({ folderMissing: true, test })).toBe('folder-missing');
+    expect(pick({ merged: true, canRemoveFolder: true, test })).toBe('removable');
+    expect(pick({ test, release })).toBe('release-none');
+    expect(pick({ test })).toBe('test-all');
+    expect(pick({})).toBe('synced');
+  });
+  it('falls back to what is left, and to null with no chips', () => {
+    expect(pick({ hasUpstream: false, unpushed: 2 })).toBe('unpushed');
+    expect(topChip([])).toBeNull();
   });
 });

@@ -111,8 +111,6 @@ export const zh = {
 
   'graph.head': '{name} 最新一点',
   'graph.fork': '从这里拉出',
-  'graph.merged': '已合进主干',
-  'graph.mergedCount': '已合进主干 · {n} 个提交',
   'graph.moreOwn': '··· 另 {n} 个提交',
   'graph.moreTrunk': '··· {n} 个别人的提交',
   'graph.loading': '读取中…',
@@ -240,4 +238,14 @@ export const zh = {
   'notice.ok': '{label}：已完成',
   'notice.failed': '{label}：没有完成：{reason}',
   'notice.dismiss': '知道了',
+  'graph.trunkTip': '{hash} · 主干',
+  'detail.commit': '提交',
+  'detail.hash': '提交号',
+  'detail.subject': '标题',
+  'detail.date': '时间',
+  'detail.lastCommit': '最近提交',
+  'detail.chips': '状态',
+  'detail.trunkCommit': '主干上的提交',
+  'detail.forksHere': '从这里拉出的分支',
+  'detail.noForks': '没有分支从这里拉出',
 } as const;
