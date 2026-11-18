@@ -70,3 +70,30 @@ describe('browserHost', () => {
     expect(() => h.openWide()).not.toThrow();
   });
 });
+
+describe('browserHost theme', () => {
+  function setup(globalTheme: string, systemDark: boolean, setGlobalTheme: string[]) {
+    history.replaceState(null, '', '/#token=t');
+    vi.stubGlobal('matchMedia', () => ({ matches: systemDark, addEventListener: () => undefined }));
+    const f = vi.fn(async (_url: unknown, init: any) => {
+      const req = JSON.parse(init.body);
+      const theme = req.method === 'setGlobal' ? setGlobalTheme.shift() : globalTheme;
+      return new Response(JSON.stringify({ id: req.id, result: { repos: [], editor: 'code', theme } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', f);
+    return browserHost();
+  }
+
+  it('follows setGlobal: explicit theme wins, auto returns to the system theme', async () => {
+    const h = setup('auto', true, ['light', 'auto']);
+    const seen: string[] = [];
+    h.onTheme((t) => seen.push(t));
+    expect(h.theme()).toBe('dark');
+    await h.call('setGlobal', { theme: 'light' });
+    expect(h.theme()).toBe('light');
+    expect(seen).toEqual(['light']);
+    await h.call('setGlobal', { theme: 'auto' });
+    expect(h.theme()).toBe('dark');
+    expect(seen).toEqual(['light', 'dark']);
+  });
+});

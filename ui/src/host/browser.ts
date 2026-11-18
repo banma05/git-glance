@@ -33,12 +33,21 @@ export function browserHost(): Host {
   const listeners: Array<(t: ThemeKind) => void> = [];
   let setting: Global['theme'] = 'auto';
   let nextId = 1;
+  let changed = false; // a setGlobal result was applied, so an older getGlobal reply must not override it
 
   const theme = (): ThemeKind => {
     if (setting === 'dark' || setting === 'light') return setting;
     return dark && !dark.matches ? 'light' : 'dark';
   };
   const notify = () => listeners.forEach((cb) => cb(theme()));
+  // applyGlobal takes the theme setting from a getGlobal or setGlobal result and
+  // tells the listeners when the theme in effect changed.
+  const applyGlobal = (g?: Partial<Global>) => {
+    if (g?.theme !== 'dark' && g?.theme !== 'light' && g?.theme !== 'auto') return;
+    const before = theme();
+    setting = g.theme;
+    if (theme() !== before) notify();
+  };
 
   const call = async <T>(method: string, params?: object): Promise<T> => {
     if (!token) throw new HostError('no-token', 'no access token: open the link printed in the terminal');
@@ -55,6 +64,10 @@ export function browserHost(): Host {
       throw new HostError('bad-response', `unexpected response (HTTP ${res.status})`);
     }
     if (body.error) throw new HostError(body.error.code, body.error.message);
+    if (method === 'setGlobal') {
+      changed = true;
+      applyGlobal(body.result as Partial<Global>);
+    }
     return body.result as T;
   };
 
@@ -65,10 +78,7 @@ export function browserHost(): Host {
     // The saved theme setting wins over the system one once it is known.
     void call<Global>('getGlobal')
       .then((g) => {
-        if ((g?.theme === 'dark' || g?.theme === 'light' || g?.theme === 'auto') && g.theme !== setting) {
-          setting = g.theme;
-          notify();
-        }
+        if (!changed) applyGlobal(g);
       })
       .catch(() => undefined);
   }
