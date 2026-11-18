@@ -1,11 +1,16 @@
 import * as vscode from 'vscode';
-import { Generation, handleWebviewMessage } from './bridge';
+import { alignAll } from './align';
+import { Generation, handlePageMessage } from './bridge';
 import { coreBinaryPath } from './binpath';
 import { CoreClient } from './core';
 import { GIT_SCHEME, GitContentProvider } from './gitfs';
+import { Discovery } from './startup';
 import { renderHtml } from './webview';
 
 type Mode = 'sidebar' | 'wide';
+
+// How long a page that asks for the repository list waits for startup discovery.
+const DISCOVERY_WAIT_MS = 15_000;
 
 const themeKind = (): 'light' | 'dark' => {
   const k = vscode.window.activeColorTheme.kind;
@@ -14,41 +19,69 @@ const themeKind = (): 'light' | 'dark' => {
 
 let activeCore: CoreClient | undefined;
 
+// What a page and the extension said to each other; kept only in the test host.
+export interface TrafficEntry {
+  mode: Mode;
+  dir: 'in' | 'out';
+  message: unknown;
+}
+
+interface Page {
+  mode: Mode;
+  render(): void;
+  post(message: object): void;
+}
+
 export function activate(ctx: vscode.ExtensionContext) {
   const out = vscode.window.createOutputChannel('Git Glance');
   const core = new CoreClient(coreBinaryPath(ctx.extensionPath), undefined, ctx.extensionPath);
   activeCore = core;
   core.onLog((l) => out.appendLine(l));
   const log = (l: string) => out.appendLine(l);
+  const testing = ctx.extensionMode === vscode.ExtensionMode.Test;
+  const traffic: TrafficEntry[] = [];
+  const record = (mode: Mode, dir: 'in' | 'out', message: unknown) => {
+    if (testing) traffic.push({ mode, dir, message });
+  };
 
-  const pages = new Set<vscode.Webview>();
+  const pages = new Map<vscode.Webview, Page>();
   let wide: vscode.WebviewPanel | undefined;
-  let reloads = 0;
+  // A page reads the repository list again (and its current view) on "refresh".
+  const refreshPage = (webview: vscode.Webview) => pages.get(webview)?.post({ type: 'refresh' });
+  const refreshPages = () => pages.forEach((p) => p.post({ type: 'refresh' }));
 
-  const initFor = () => ({ locale: vscode.env.language, theme: themeKind(), reload: reloads });
-  const setup = (webview: vscode.Webview, mode: Mode) => {
+  const discovery = new Discovery(registerWorkspaceRepos(core, log), DISCOVERY_WAIT_MS);
+
+  const setup = (webview: vscode.Webview, mode: Mode): vscode.Disposable => {
     const gen = new Generation();
     webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(ctx.extensionUri, 'media', 'ui')] };
+    const post = (x: object) => {
+      record(mode, 'out', x);
+      void webview.postMessage(x);
+    };
     const render = () => {
-      gen.bump();
+      const init = { locale: vscode.env.language, theme: themeKind(), page: gen.next() };
       try {
-        webview.html = renderHtml(webview, ctx.extensionUri, mode, initFor());
+        webview.html = renderHtml(webview, ctx.extensionUri, mode, init);
       } catch (e) {
         log(`cannot render the page: ${e}`);
         webview.html = `<!doctype html><body>${vscode.l10n.t('Git Glance could not load its page.')}</body>`;
       }
     };
-    render();
-    pages.add(webview);
-    return {
-      render,
-      subscription: webview.onDidReceiveMessage((m) =>
-        handleWebviewMessage(m, { core, post: gen.guard((x) => void webview.postMessage(x)), openWide, log }).catch((e) => log(`bridge: ${e}`)),
-      ),
+    const deps = {
+      core,
+      post,
+      openWide,
+      log,
+      beforeRepos: () => discovery.beforeRepos(webview, () => refreshPage(webview)),
     };
+    pages.set(webview, { mode, render, post });
+    render();
+    return webview.onDidReceiveMessage((m) => {
+      record(mode, 'in', m);
+      handlePageMessage(m, gen, deps).catch((e) => log(`bridge: ${e}`));
+    });
   };
-
-  const renders = new Map<vscode.Webview, () => void>();
 
   function openWide() {
     if (wide) {
@@ -61,24 +94,20 @@ export function activate(ctx: vscode.ExtensionContext) {
       localResourceRoots: [vscode.Uri.joinPath(ctx.extensionUri, 'media', 'ui')],
     });
     wide = panel;
-    const s = setup(panel.webview, 'wide');
-    renders.set(panel.webview, s.render);
+    const subscription = setup(panel.webview, 'wide');
     panel.onDidDispose(() => {
-      s.subscription.dispose();
+      subscription.dispose();
       pages.delete(panel.webview);
-      renders.delete(panel.webview);
       wide = undefined;
     });
   }
 
   const sidebar: vscode.WebviewViewProvider = {
     resolveWebviewView(view) {
-      const s = setup(view.webview, 'sidebar');
-      renders.set(view.webview, s.render);
+      const subscription = setup(view.webview, 'sidebar');
       view.onDidDispose(() => {
-        s.subscription.dispose();
+        subscription.dispose();
         pages.delete(view.webview);
-        renders.delete(view.webview);
       });
     },
   };
@@ -88,20 +117,20 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider('gitglance.sidebar', sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.workspace.registerTextDocumentContentProvider(GIT_SCHEME, new GitContentProvider(core)),
     vscode.commands.registerCommand('gitglance.openWide', openWide),
+    // Refresh starts every page from scratch, and lets a core that failed to
+    // start be started again.
     vscode.commands.registerCommand('gitglance.refresh', () => {
-      reloads++;
-      renders.forEach((r) => r());
+      core.allowRestart();
+      pages.forEach((p) => p.render());
     }),
-    vscode.commands.registerCommand('gitglance.alignAll', () => alignAll(core, log)),
+    vscode.commands.registerCommand('gitglance.alignAll', () => alignAll(core, log, refreshPages)),
     vscode.window.onDidChangeActiveColorTheme(() => {
-      for (const w of pages) void w.postMessage({ type: 'theme', kind: themeKind() });
+      pages.forEach((p) => p.post({ type: 'theme', kind: themeKind() }));
     }),
   );
 
-  void registerWorkspaceRepos(core, log);
-
   // Only the test host may reach the core client.
-  return ctx.extensionMode === vscode.ExtensionMode.Test ? { CoreClient, core: () => core } : undefined;
+  return testing ? { CoreClient, core: () => core, traffic: () => traffic.slice(), discovered: () => discovery.done } : undefined;
 }
 
 // Each workspace folder that is inside a repository is added to the list the
@@ -114,35 +143,6 @@ async function registerWorkspaceRepos(core: CoreClient, log: (l: string) => void
     } catch (e: any) {
       log(`skipping ${folder.uri.fsPath}: ${e?.message ?? e}`);
     }
-  }
-}
-
-// alignAll fast-forwards the branches of every listed repository, after the
-// user confirms. The core only moves branches that are clean and only behind.
-async function alignAll(core: CoreClient, log: (l: string) => void): Promise<void> {
-  const yes = vscode.l10n.t('Align');
-  const pick = await vscode.window.showInformationMessage(
-    vscode.l10n.t('Fast-forward every branch that is only behind its remote in all listed repositories?'),
-    { modal: true, detail: vscode.l10n.t('Branches with local changes or commits of their own are left alone.') },
-    yes,
-  );
-  if (pick !== yes) return;
-  let updated = 0;
-  let skipped = 0;
-  try {
-    const repos = await core.call<string[]>('repos');
-    for (const repo of repos) {
-      try {
-        const rep = await core.call<{ updated: unknown[]; skipped: unknown[] }>('align', { repo });
-        updated += rep.updated?.length ?? 0;
-        skipped += rep.skipped?.length ?? 0;
-      } catch (e: any) {
-        log(`align failed for ${repo}: ${e?.message ?? e}`);
-      }
-    }
-    void vscode.window.showInformationMessage(vscode.l10n.t('Git Glance: {0} branches updated, {1} left alone.', updated, skipped));
-  } catch (e: any) {
-    void vscode.window.showErrorMessage(vscode.l10n.t('Git Glance: {0}', String(e?.message ?? e)));
   }
 }
 

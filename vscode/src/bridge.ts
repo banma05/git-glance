@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -9,25 +10,43 @@ export interface BridgeDeps {
   post(message: object): void;
   openWide(): void;
   log(line: string): void;
+  beforeRepos?(): Promise<void>; // holds the repository list while startup discovery runs
 }
 
 const METHOD_NAME = /^[A-Za-z]{1,40}$/;
 const MAX_COPY = 1_000_000;
 
-// Generation numbers a page's renders. A reply made for an older render is
-// dropped, so a reloaded page (whose ids restart) never gets a stale answer.
+// Generation tells the renders of one webview apart. Every render gets a new
+// token, which travels to the page in its init object and comes back with each
+// message. A message of an older render is ignored, and a reply is dropped when
+// the page was rendered again while the call ran, so a reloaded page (whose
+// ids restart) never gets an answer meant for the page before it.
 export class Generation {
-  private current = 0;
-  bump(): void {
-    this.current++;
+  private current = '';
+
+  // next starts a new render and returns its token.
+  next(): string {
+    this.current = randomBytes(16).toString('hex');
+    return this.current;
   }
-  // guard wraps post for the message being handled now.
-  guard(post: (message: object) => void): (message: object) => void {
-    const mine = this.current;
+
+  // guard returns the post function for a message that carried `page`, or
+  // undefined when the message does not belong to the current render.
+  guard(page: unknown, post: (message: object) => void): ((message: object) => void) | undefined {
+    if (typeof page !== 'string' || page === '' || page !== this.current) return undefined;
     return (message) => {
-      if (mine === this.current) post(message);
+      if (page === this.current) post(message);
     };
   }
+}
+
+// handlePageMessage serves one message of a page if it belongs to the page's
+// current render.
+export async function handlePageMessage(msg: unknown, gen: Generation, deps: BridgeDeps): Promise<void> {
+  const page = typeof msg === 'object' && msg !== null ? (msg as { page?: unknown }).page : undefined;
+  const post = gen.guard(page, deps.post);
+  if (!post) return;
+  await handleWebviewMessage(msg, { ...deps, post });
 }
 
 // unsafeFolderPath is true for paths that must not even be stat-ed: UNC and
@@ -57,6 +76,7 @@ export async function handleWebviewMessage(msg: unknown, deps: BridgeDeps): Prom
       if (typeof msg.method !== 'string' || !METHOD_NAME.test(msg.method)) return fail('bad-message', vscode.l10n.t('Invalid method.'));
       if (msg.params !== undefined && !isObject(msg.params)) return fail('bad-message', vscode.l10n.t('Invalid parameters.'));
       try {
+        if (msg.method === 'repos' && deps.beforeRepos) await deps.beforeRepos();
         const result = await deps.core.call(msg.method, msg.params as object | undefined);
         deps.post({ type: 'result', id, result });
       } catch (e: any) {

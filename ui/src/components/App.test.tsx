@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { App } from './App';
 import { HostError } from '../host/types';
 import type { Host } from '../host/types';
@@ -180,6 +180,34 @@ describe('App failures and repo switching', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('feature/login')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('reads the repository list again when the host says refresh, and opens the first one', async () => {
+    let repos: string[] = [];
+    let refresh: () => void = () => undefined;
+    const { host, calls } = fakeHost({ repos: () => repos });
+    host.onRefresh = (cb) => (refresh = cb);
+    render(<App host={host} />);
+    expect(await screen.findByText('No repository yet; click + to add one')).toBeTruthy();
+    repos = ['/demo/repo'];
+    await act(async () => refresh());
+    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(screen.queryByText('No repository yet; click + to add one')).toBeNull();
+    expect(core(calls)).toEqual(['view', 'fetch', 'view']);
+  });
+
+  it('on refresh keeps the open repository and reads only its view again', async () => {
+    let refresh: () => void = () => undefined;
+    const { host, calls } = scriptedHost((method, repo) => (method === 'view' ? mockView(repo) : okFetch));
+    host.onRefresh = (cb) => (refresh = cb);
+    render(<App host={host} />);
+    await screen.findByText('feature/login');
+    fireEvent.click(screen.getByRole('tab', { name: 'b' }));
+    await waitFor(() => expect(calls.filter((c) => c === 'view:/b').length).toBe(2));
+    const before = calls.length;
+    await act(async () => refresh());
+    await waitFor(() => expect(calls.slice(before)).toEqual(['repos:', 'view:/b']));
+    expect(screen.getByRole('tab', { name: 'b' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('makes no further calls once the opening sequence has settled', async () => {

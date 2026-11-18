@@ -18,11 +18,14 @@ function readInit(): NonNullable<Window['__GG_INIT__']> {
 
 // vscodeHost talks to the extension through webview postMessage. The extension
 // forwards calls to the core and answers with {type:'result', id, result|error}.
+// Every message carries the page token of this render: the extension ignores
+// messages of a page it has replaced since.
 export function vscodeHost(): Host {
   const api = window.acquireVsCodeApi!();
   const init = readInit();
   const pending = new Map<number, Pending>();
   const listeners: Array<(t: ThemeKind) => void> = [];
+  const refreshers: Array<() => void> = [];
   let current: ThemeKind = init.theme ?? 'dark';
   let nextId = 1;
 
@@ -38,27 +41,34 @@ export function vscodeHost(): Host {
     } else if (m.type === 'theme') {
       current = m.kind === 'light' ? 'light' : 'dark';
       listeners.forEach((cb) => cb(current));
+    } else if (m.type === 'refresh') {
+      refreshers.forEach((cb) => cb());
     }
   });
+
+  const post = (message: object) => api.postMessage({ ...message, page: init.page });
 
   const request = <T>(message: object) =>
     new Promise<T>((resolve, reject) => {
       const id = nextId++;
       pending.set(id, { resolve, reject });
-      api.postMessage({ ...message, id });
+      post({ ...message, id });
     });
 
   return {
     call: <T>(method: string, params?: object) => request<T>({ type: 'call', method, params }),
-    openFolder: async (path) => api.postMessage({ type: 'openFolder', path }),
-    copy: async (text) => api.postMessage({ type: 'copy', text }),
+    openFolder: async (path) => post({ type: 'openFolder', path }),
+    copy: async (text) => post({ type: 'copy', text }),
     openDiff: (repo, a, b, path) => request<boolean>({ type: 'openDiff', repo, a, b, path }),
-    openWide: () => api.postMessage({ type: 'openWide' }),
+    openWide: () => post({ type: 'openWide' }),
     mode: init.mode ?? 'sidebar',
     locale: init.locale ?? 'en',
     theme: () => current,
     onTheme: (cb) => {
       listeners.push(cb);
+    },
+    onRefresh: (cb) => {
+      refreshers.push(cb);
     },
   };
 }

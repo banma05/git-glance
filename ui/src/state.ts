@@ -135,7 +135,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
   const [state, setState] = useState<AppState>(() => initial(host));
   const ref = useRef(state);
 
-  const { actions, start } = useMemo(() => {
+  const { actions, start, reread } = useMemo(() => {
     // patch updates the latest state at once, so the next step of a running
     // action reads what the previous step wrote.
     const patch = (p: Partial<AppState>) => {
@@ -219,6 +219,26 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         patch({ repos });
         if (repos.length === 0) patch({ loaded: true });
         else await open(repos[0]);
+      } catch (e) {
+        fail(e);
+      }
+    };
+
+    // reread answers the host's "refresh": the repository list is read again;
+    // the open repository keeps its place and only its view is read again,
+    // and with none open the first one opens.
+    const reread = async () => {
+      try {
+        const repos = await rpc(host, 'repos');
+        patch({ repos });
+        const cur = ref.current.repo;
+        if (cur && repos.includes(cur)) {
+          await loadView(cur).catch((e) => failFor(cur, e));
+        } else if (repos.length > 0) {
+          await open(repos[0]);
+        } else {
+          patch({ repo: '', view: null, selected: '', pick: null, loaded: true });
+        }
       } catch (e) {
         fail(e);
       }
@@ -441,7 +461,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       setTheme: (theme) => void writeGlobal({ theme }),
       openWide: () => host.openWide(),
     };
-    return { actions, start };
+    return { actions, start, reread };
   }, [host]);
 
   useEffect(() => {
@@ -449,8 +469,9 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       ref.current = { ...ref.current, theme };
       setState(ref.current);
     });
+    host.onRefresh?.(() => void reread());
     void start();
-  }, [host, start]);
+  }, [host, start, reread]);
 
   return { state, actions };
 }

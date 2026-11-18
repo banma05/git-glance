@@ -14,6 +14,7 @@ export interface Host {
   locale: string; // e.g. "zh-cn", "en"
   theme(): ThemeKind;
   onTheme(cb: (t: ThemeKind) => void): void;
+  onRefresh?(cb: () => void): void; // the host asks the page to read the repository list and the view again
 }
 
 // HostError is what a rejected call carries: the code and message of the core's
@@ -30,7 +31,7 @@ export class HostError extends Error {
 declare global {
   interface Window {
     acquireVsCodeApi?: () => { postMessage(message: unknown): void };
-    __GG_INIT__?: { mode?: 'sidebar' | 'wide'; locale?: string; theme?: ThemeKind };
+    __GG_INIT__?: { mode?: 'sidebar' | 'wide'; locale?: string; theme?: ThemeKind; page?: string };
   }
 }
 

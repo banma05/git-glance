@@ -62,6 +62,25 @@ describe('vscodeHost', () => {
     expect(await d).toBe(true);
   });
 
+  it('tags every message with the page token of its render', async () => {
+    (window as any).__GG_INIT__ = { mode: 'sidebar', locale: 'en', theme: 'dark', page: 'tok-1' };
+    const h = vscodeHost();
+    void h.call('repos');
+    void h.openFolder('/p');
+    void h.copy('txt');
+    h.openWide();
+    void h.openDiff('/r', 'a', 'b', 'f');
+    expect(sent.map((m) => m.page)).toEqual(['tok-1', 'tok-1', 'tok-1', 'tok-1', 'tok-1']);
+  });
+
+  it('tells the page to read again when the extension says refresh', () => {
+    const h = vscodeHost();
+    const cb = vi.fn();
+    h.onRefresh?.(cb);
+    deliver({ type: 'refresh' });
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
   it('notifies theme changes', () => {
     const h = vscodeHost();
     const cb = vi.fn();

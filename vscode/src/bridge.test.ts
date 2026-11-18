@@ -20,7 +20,7 @@ vi.mock('vscode', () => ({
   },
 }));
 
-import { Generation, handleWebviewMessage, unsafeFolderPath, type BridgeDeps } from './bridge';
+import { Generation, handlePageMessage, handleWebviewMessage, unsafeFolderPath, type BridgeDeps } from './bridge';
 
 let posted: any[];
 let call: ReturnType<typeof vi.fn>;
@@ -137,18 +137,79 @@ describe('openFolder path safety', () => {
   });
 });
 
-describe('Generation', () => {
+describe('page tokens', () => {
+  it('gives every render a new, unguessable token', () => {
+    const gen = new Generation();
+    const a = gen.next();
+    const b = gen.next();
+    expect(a).toMatch(/^[0-9a-f]{32}$/);
+    expect(b).not.toBe(a);
+  });
+
   it('drops a reply for a render that was replaced while the call was pending', async () => {
     let finish!: (v: unknown) => void;
     call.mockImplementationOnce(() => new Promise((r) => (finish = r)));
     const gen = new Generation();
-    const pending = handleWebviewMessage({ type: 'call', id: 1, method: 'view' }, { ...deps, post: gen.guard(deps.post) });
-    gen.bump(); // the page was reloaded
+    const old = gen.next();
+    const pending = handlePageMessage({ type: 'call', id: 1, method: 'view', page: old }, gen, deps);
+    const fresh = gen.next(); // the page was reloaded
     finish({ old: true });
     await pending;
     expect(posted).toEqual([]);
     // a call made after the reload is answered
-    await handleWebviewMessage({ type: 'call', id: 1, method: 'view' }, { ...deps, post: gen.guard(deps.post) });
+    await handlePageMessage({ type: 'call', id: 1, method: 'view', page: fresh }, gen, deps);
     expect(posted).toEqual([{ type: 'result', id: 1, result: { ok: true } }]);
+  });
+
+  it('ignores a message of an older render that arrives after the reload', async () => {
+    const gen = new Generation();
+    const old = gen.next();
+    gen.next();
+    await handlePageMessage({ type: 'call', id: 1, method: 'view', page: old }, gen, deps);
+    await handlePageMessage({ type: 'copy', text: 'x', page: old }, gen, deps);
+    await handlePageMessage({ type: 'openWide', page: old }, gen, deps);
+    expect(call).not.toHaveBeenCalled();
+    expect(h.writeText).not.toHaveBeenCalled();
+    expect(openWide).not.toHaveBeenCalled();
+    expect(posted).toEqual([]);
+  });
+
+  it('ignores a message without a token', async () => {
+    const gen = new Generation();
+    gen.next();
+    await handlePageMessage({ type: 'call', id: 1, method: 'view' }, gen, deps);
+    await handlePageMessage({ type: 'call', id: 2, method: 'view', page: 7 }, gen, deps);
+    expect(call).not.toHaveBeenCalled();
+    expect(posted).toEqual([]);
+  });
+
+  it('serves a message of the current render', async () => {
+    const gen = new Generation();
+    const page = gen.next();
+    await handlePageMessage({ type: 'call', id: 3, method: 'repos', page }, gen, deps);
+    expect(call).toHaveBeenCalledWith('repos', undefined);
+    expect(posted).toEqual([{ type: 'result', id: 3, result: { ok: true } }]);
+  });
+});
+
+describe('repository list during startup discovery', () => {
+  it('asks the core for repos only after beforeRepos settles', async () => {
+    let open!: () => void;
+    const beforeRepos = vi.fn(() => new Promise<void>((r) => (open = r)));
+    const pending = handleWebviewMessage({ type: 'call', id: 1, method: 'repos' }, { ...deps, beforeRepos });
+    await Promise.resolve();
+    expect(beforeRepos).toHaveBeenCalledTimes(1);
+    expect(call).not.toHaveBeenCalled();
+    open();
+    await pending;
+    expect(call).toHaveBeenCalledWith('repos', undefined);
+    expect(posted).toEqual([{ type: 'result', id: 1, result: { ok: true } }]);
+  });
+
+  it('does not hold other methods', async () => {
+    const beforeRepos = vi.fn(() => new Promise<void>(() => undefined));
+    await handleWebviewMessage({ type: 'call', id: 1, method: 'view', params: { repo: '/r' } }, { ...deps, beforeRepos });
+    expect(beforeRepos).not.toHaveBeenCalled();
+    expect(call).toHaveBeenCalledWith('view', { repo: '/r' });
   });
 });
