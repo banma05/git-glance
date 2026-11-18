@@ -83,3 +83,17 @@ export function layoutView(section: Section = layoutSection): View {
     fetchError: '',
   };
 }
+
+// TestLayoutForkNewerThanOwn, transcribed: the fork of A (80) is newer than its
+// own commit (70), so the fork row sorts above the commit.
+export const forkNewerSection: Section = {
+  trunk: 'main',
+  lanes: 3,
+  rows: [
+    row('head', 0, '', 'H', 100),
+    row('fork', 0, '', 'F1', 80, 0, [1]),
+    row('commit', 2, 'B', 'b1', 75),
+    row('commit', 1, 'A', 'a1', 70),
+    row('fork', 0, '', 'F2', 60, 0, [2]),
+  ],
+};
