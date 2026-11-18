@@ -169,7 +169,7 @@ func heldBranches(ctx context.Context, r gitx.Runner, repoRoot string) (map[stri
 	}
 	held := map[string]bool{}
 	for _, dir := range gitDirs {
-		for _, name := range []string{"rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"} {
+		for _, name := range []string{"rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START", "rebase-merge/update-refs"} {
 			data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -177,12 +177,31 @@ func heldBranches(ctx context.Context, r gitx.Runner, repoRoot string) (map[stri
 			if err != nil {
 				return nil, err
 			}
-			if b := strings.TrimPrefix(strings.TrimSpace(string(data)), "refs/heads/"); b != "" {
+			for _, b := range heldNames(name, string(data)) {
 				held[b] = true
 			}
 		}
 	}
 	return held, nil
+}
+
+// heldNames reads the branch names out of one state file. update-refs (from
+// `rebase --update-refs`) lists every branch it will move, one record of ref,
+// old and new hash per branch; the others name one branch.
+func heldNames(file, data string) []string {
+	if !strings.HasSuffix(file, "update-refs") {
+		if b := strings.TrimPrefix(strings.TrimSpace(data), "refs/heads/"); b != "" {
+			return []string{b}
+		}
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(data, "\n") {
+		if b, ok := strings.CutPrefix(strings.TrimSpace(line), "refs/heads/"); ok && b != "" {
+			names = append(names, b)
+		}
+	}
+	return names
 }
 
 // holdersOf returns every non-detached worktree that has branch checked out.

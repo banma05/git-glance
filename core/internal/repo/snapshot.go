@@ -5,6 +5,7 @@ package repo
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -86,7 +87,7 @@ func (e *UnsafeRepoError) Error() string { return e.Message }
 // of its folders. A submodule is its own repository, whose git directory lies
 // inside the superproject's.
 func Discover(ctx context.Context, r gitx.Runner, path string) (string, error) {
-	out, err := r.Run(ctx, path, "worktree", "list", "--porcelain")
+	list, err := listWorktrees(ctx, r, path)
 	if err != nil {
 		var ge *gitx.GitError
 		if !errors.As(err, &ge) {
@@ -97,20 +98,38 @@ func Discover(ctx context.Context, r gitx.Runner, path string) (string, error) {
 		}
 		return "", ErrNotRepo
 	}
-	list := parseWorktrees(string(out))
 	switch {
 	case len(list) == 0:
 		return "", ErrNotRepo
 	case list[0].Bare:
 		return "", ErrBareRepo
 	}
-	return filepath.ToSlash(filepath.Clean(mainFolder(ctx, r, list[0].Path))), nil
+	return filepath.ToSlash(filepath.Clean(list[0].Path)), nil
+}
+
+// listWorktrees lists the folders of the repository that contains dir, the
+// main folder first. Discover and Read both use it, so they agree on that
+// folder.
+func listWorktrees(ctx context.Context, r gitx.Runner, dir string) ([]Worktree, error) {
+	out, err := r.Run(ctx, dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	list := parseWorktrees(string(out))
+	if len(list) > 0 && !list[0].Bare {
+		list[0].Path = mainFolder(ctx, r, list[0].Path)
+	}
+	return list, nil
 }
 
 // mainFolder corrects the first folder git lists: for a submodule git lists
 // its git directory (.git/modules/<name>), while the folder itself is set by
-// core.worktree there. Asked inside that directory, git names the folder.
+// core.worktree there. Asked inside that directory, git names the folder. A
+// folder that holds a .git entry is a working folder and needs no question.
 func mainFolder(ctx context.Context, r gitx.Runner, listed string) string {
+	if _, err := os.Lstat(filepath.Join(listed, ".git")); err == nil {
+		return listed
+	}
 	out, err := r.Run(ctx, listed, "rev-parse", "--is-inside-git-dir")
 	if err != nil || strings.TrimSpace(string(out)) != "true" {
 		return listed

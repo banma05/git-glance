@@ -34,16 +34,21 @@ const noSignature = "--no-show-signature"
 
 // RemoveFolderResult is the outcome of RemoveFolder. When OK is false and
 // Reason is a refusal (the branch's RemoveBlock value, changed, hidden-changes,
-// orphaned-commits, nested-repo, locked, backup-failed) the folder was not
-// deleted. Reasons: changed (the folder is not the one the caller saw, is no
-// longer on the branch or at the same commit, or its ignored files changed
-// during the backup; Detail says what, and this call's backup was removed),
-// hidden-changes (Files lists tracked files marked skip-worktree or
-// assume-unchanged that exist on disk), orphaned-commits (Files lists short
-// hashes of commits only the folder's own HEAD history reaches), nested-repo
-// (Files lists .git entries inside build output), locked (the folder cannot
-// be renamed, something is using it; a finished backup is kept),
-// backup-failed (the partial backup was removed) and git-failed (Detail is
+// orphaned-commits, nested-repo, in-progress, folder-is-link, locked,
+// backup-failed, links-failed) the folder was not deleted. Reasons: changed
+// (the folder is not the one the caller saw, is no longer on the branch or
+// at the same commit, or its ignored files changed during the backup; Detail
+// says what, and this call's backup was removed), hidden-changes (Files lists
+// tracked files marked skip-worktree or assume-unchanged that exist on disk),
+// orphaned-commits (Files lists short hashes of commits only the folder's own
+// HEAD history reaches), nested-repo (Files lists .git entries inside build
+// output), in-progress (a rebase, am, merge, cherry-pick, revert or bisect is
+// unfinished in the folder; Detail names it), folder-is-link (the folder
+// itself is a symlink or junction to another place), locked (the folder
+// cannot be renamed, something is using it; a finished backup is kept),
+// links-failed (a junction could not be removed before git ran; the links
+// removed until then are in SkippedLinks and the op log, the finished backup
+// is kept), backup-failed (the partial backup was removed) and git-failed (Detail is
 // git's error and says whether the folder still exists, as git may have
 // removed part of it; a finished backup is kept). Files lists the ignored
 // paths that were copied to BackupDir, DeletedBuild the build output that was
@@ -94,6 +99,9 @@ func RemoveFolder(ctx context.Context, r gitx.Runner, st settings.Store, v model
 	if !samePath(path, folder) {
 		return refusedWith("changed", "the folder of "+branch+" is "+path+", not "+folder, nil), nil
 	}
+	if link, err := folderIsLink(path); err != nil || link {
+		return refusedWith("folder-is-link", path+" is a link to another place; delete it by hand", nil), err
+	}
 	if res, done, err := checkFolder(ctx, r, v.Repo, path, branch, head); done || err != nil {
 		return res, err
 	}
@@ -127,17 +135,46 @@ func RemoveFolder(ctx context.Context, r gitx.Runner, st settings.Store, v model
 	dropped, err := dropJunctions(path)
 	res.SkippedLinks = appendNew(res.SkippedLinks, dropped)
 	if err != nil {
-		// Only links were removed, so the folder still holds every file and
-		// this call's backup is not needed.
-		return abandonBackup(res, copied.created, backupDir), err
+		return linksFailed(st, v.Repo, branch, path, head, res, dropped, err, now), nil
 	}
 	return removeWorktree(ctx, r, st, v.Repo, branch, path, head, plan, res, now), nil
 }
 
-// checkFolder refuses when the folder is no longer on branch at head, holds
-// hidden changes, or holds commits that only its own HEAD history reaches.
-// done is true when res is a refusal.
+// linksFailed reports a junction that could not be removed before git ran.
+// The links removed until then (only the links, never their targets) are
+// listed in SkippedLinks and logged; nothing else was deleted, and the
+// finished backup is kept.
+func linksFailed(st settings.Store, repoRoot, branch, path, head string, res RemoveFolderResult, dropped []string, err error, now func() time.Time) RemoveFolderResult {
+	res.Reason = "links-failed"
+	res.Detail = joinDetail(err.Error(), "the folder was not deleted")
+	if len(dropped) > 0 {
+		entry := settings.OpEntry{
+			Time: now().Unix(), Repo: repoRoot, Op: "remove-folder", Branch: branch, Folder: path,
+			Command: []string{}, Before: head, Detail: res.BackupDir,
+		}
+		res.LogError = logRan(st, entry, "links-failed: "+err.Error(), "removed links: "+strings.Join(dropped, ", "))
+	}
+	return res
+}
+
+// folderIsLink reports whether the folder itself is a symlink or junction to
+// another place: deleting through it would reach the target.
+func folderIsLink(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	return isLink(path, fs.FileInfoToDirEntry(info)), nil
+}
+
+// checkFolder refuses when an operation is unfinished in the folder, the
+// folder is no longer on branch at head, holds hidden changes, or holds
+// commits that only its own HEAD history reaches. done is true when res is a
+// refusal.
 func checkFolder(ctx context.Context, r gitx.Runner, repoRoot, path, branch, head string) (RemoveFolderResult, bool, error) {
+	if op, err := operationInProgress(ctx, r, path); err != nil || op != "" {
+		return refusedWith("in-progress", op+" is not finished in the folder", nil), true, err
+	}
 	if why, err := folderMoved(ctx, r, path, branch, head); err != nil || why != "" {
 		return refusedWith("changed", why, nil), true, err
 	}
@@ -214,6 +251,12 @@ func changedDuringBackup(ctx context.Context, r gitx.Runner, repoRoot, path, bra
 	if rel := firstDifference(copied.stamps, stamps); rel != "" {
 		return rel + " changed during the backup", nil
 	}
+	if why, err := buildOutputChanged(path, plan); err != nil || why != "" {
+		return why, err
+	}
+	if op, err := operationInProgress(ctx, r, path); err != nil || op != "" {
+		return op + " started in the folder during the backup", err
+	}
 	if why, err := folderMoved(ctx, r, path, branch, head); err != nil || why != "" {
 		return why, err
 	}
@@ -230,6 +273,24 @@ func changedDuringBackup(ctx context.Context, r gitx.Runner, repoRoot, path, bra
 	}
 	if len(orphans) > 0 {
 		return "commits only the folder's HEAD history reaches appeared during the backup: " + strings.Join(orphans, ", "), nil
+	}
+	return "", nil
+}
+
+// buildOutputChanged explains a repository that appeared inside build output,
+// or the folder turning into a link, during the backup; or returns "".
+func buildOutputChanged(path string, plan backupPlan) (string, error) {
+	for _, dir := range plan.build {
+		repoAt, err := nestedRepo(path, dir)
+		if err != nil {
+			return "", err
+		}
+		if repoAt != "" {
+			return "a repository appeared inside build output during the backup: " + repoAt, nil
+		}
+	}
+	if link, err := folderIsLink(path); err != nil || link {
+		return "the folder became a link during the backup", err
 	}
 	return "", nil
 }
@@ -261,19 +322,13 @@ const maxRevArgs = 200
 // detached HEAD there. `worktree remove` deletes that reflog with the folder,
 // so such commits would be lost. The check runs in the main folder, whose
 // --single-worktree view leaves out every other folder's HEAD and reflog.
+// Which reflog entries count is reflogCandidates.
 func orphanedCommits(ctx context.Context, r gitx.Runner, repoRoot, folder string) ([]string, error) {
-	out, err := r.Run(ctx, folder, "log", "-g", noSignature, "--format=%H", "HEAD", "--")
+	out, err := r.Run(ctx, folder, "log", "-g", noSignature, "--format=%H%x00%gs", "HEAD", "--")
 	if err != nil {
 		return nil, err
 	}
-	var hashes []string
-	seen := map[string]bool{}
-	for _, h := range strings.Fields(string(out)) {
-		if isHash(h) && !seen[h] {
-			seen[h] = true
-			hashes = append(hashes, h)
-		}
-	}
+	hashes := reflogCandidates(string(out))
 	orphans := []string{}
 	found := map[string]bool{}
 	for start := 0; start < len(hashes) && len(orphans) < maxSkipFiles; start += maxRevArgs {
@@ -290,6 +345,76 @@ func orphanedCommits(ctx context.Context, r gitx.Runner, repoRoot, folder string
 		}
 	}
 	return orphans, nil
+}
+
+// reflogCandidates reads `log -g --format=%H%x00%gs` (newest first) and
+// returns the unique hashes whose loss would matter (R55). Entries a rebase
+// wrote are its steps: each one is followed, in time order, by the next step
+// of the same run, and only the last entry of a run of rebase entries holds
+// the result. The earlier ones (the start, picks before a fixup) are exempt;
+// every other entry and the last of every rebase run stay candidates.
+func reflogCandidates(out string) []string {
+	type entry struct {
+		hash   string
+		rebase bool
+	}
+	var entries []entry // newest first
+	for _, line := range strings.Split(out, "\n") {
+		hash, subject, _ := strings.Cut(strings.TrimRight(line, "\r"), "\x00")
+		if isHash(hash) {
+			entries = append(entries, entry{hash, strings.HasPrefix(subject, "rebase")})
+		}
+	}
+	var hashes []string
+	seen := map[string]bool{}
+	for i, e := range entries {
+		// entries[i-1] is the next entry in time.
+		if e.rebase && i > 0 && entries[i-1].rebase {
+			continue
+		}
+		if !seen[e.hash] {
+			seen[e.hash] = true
+			hashes = append(hashes, e.hash)
+		}
+	}
+	return hashes
+}
+
+// inProgressMarkers are what git keeps in a folder's own git directory while
+// an operation there is unfinished.
+var inProgressMarkers = []struct{ name, op string }{
+	{"rebase-merge", "a rebase"},
+	{"rebase-apply", "a rebase or am"},
+	{"MERGE_HEAD", "a merge"},
+	{"CHERRY_PICK_HEAD", "a cherry-pick"},
+	{"REVERT_HEAD", "a revert"},
+	{"sequencer", "a cherry-pick or revert"},
+	{"BISECT_LOG", "a bisect"},
+	{"BISECT_START", "a bisect"},
+}
+
+// operationInProgress names an unfinished rebase, am, merge, cherry-pick,
+// revert or bisect in the folder, or returns "". Removing the folder would
+// throw its state away.
+func operationInProgress(ctx context.Context, r gitx.Runner, folder string) (string, error) {
+	out, err := r.Run(ctx, folder, "rev-parse", "--git-dir")
+	if err != nil {
+		return "", err
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(folder, gitDir)
+	}
+	for _, m := range inProgressMarkers {
+		_, err := os.Lstat(filepath.Join(gitDir, m.name))
+		if err == nil {
+			return m.op, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+	}
+	return "", nil
 }
 
 // isHash reports whether s is a full SHA-1 or SHA-256 object name.
@@ -369,6 +494,9 @@ func appendNew(list, add []string) []string {
 	return list
 }
 
+// removeLink removes one link; tests replace it.
+var removeLink = os.Remove
+
 // dropJunctions removes the links in the folder that are not plain symlinks:
 // junctions and other reparse points. Older Git for Windows takes a junction
 // for a directory and deletes the files of its target during `worktree
@@ -381,7 +509,9 @@ func dropJunctions(folder string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if d.Type()&fs.ModeSymlink == 0 && isLink(p, d) {
+		// The folder itself is never removed here (a linked folder is
+		// refused before).
+		if p != folder && d.Type()&fs.ModeSymlink == 0 && isLink(p, d) {
 			links = append(links, p)
 		}
 		return nil
@@ -391,7 +521,7 @@ func dropJunctions(folder string) ([]string, error) {
 	}
 	removed := []string{}
 	for _, p := range links {
-		if err := os.Remove(p); err != nil {
+		if err := removeLink(p); err != nil {
 			return removed, err
 		}
 		rel, err := filepath.Rel(folder, p)

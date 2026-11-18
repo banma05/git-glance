@@ -239,7 +239,7 @@ type slowRunner struct {
 }
 
 func (s *slowRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	if len(args) > 0 && args[0] == "rev-parse" {
+	if len(args) > 0 && args[0] == "worktree" {
 		select {
 		case s.started <- struct{}{}:
 		default:

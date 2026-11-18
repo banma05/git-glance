@@ -307,3 +307,19 @@ func TestReadBrokenWorktree(t *testing.T) {
 		t.Errorf("main worktree = %+v", w)
 	}
 }
+
+// The snapshot of a submodule lists its real folder as the main folder, not
+// the git directory git names first.
+func TestReadSubmodule(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Git(r.Dir, "-c", "protocol.file.allow=always", "submodule", "add", r.Remote, "sub")
+	sub := r.Dir + "/sub"
+	s, err := Read(context.Background(), gitx.ExecRunner{}, sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Worktrees) == 0 || !s.Worktrees[0].Main || !sameDir(t, s.Worktrees[0].Path, sub) {
+		t.Fatalf("worktrees = %+v, want the main folder %s", s.Worktrees, sub)
+	}
+}

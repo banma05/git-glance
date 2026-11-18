@@ -10,11 +10,10 @@ import (
 )
 
 func readWorktrees(ctx context.Context, r gitx.Runner, dir string) ([]Worktree, error) {
-	out, err := r.Run(ctx, dir, "worktree", "list", "--porcelain")
+	list, err := listWorktrees(ctx, r, dir)
 	if err != nil {
 		return nil, err
 	}
-	list := parseWorktrees(string(out))
 	for i := range list {
 		w := &list[i]
 		if _, err := os.Stat(w.Path); err != nil {

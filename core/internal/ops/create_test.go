@@ -253,3 +253,23 @@ func TestCreateFolderForExistingBranchRefuses(t *testing.T) {
 		t.Fatal("refusals must not be logged")
 	}
 }
+
+// submoduleFixture adds the remote as submodule "sub" of the main folder and
+// returns the submodule's folder.
+func submoduleFixture(t *testing.T, f *fixture) string {
+	t.Helper()
+	f.r.Git(f.r.Dir, "-c", "protocol.file.allow=always", "submodule", "add", f.r.Remote, "sub")
+	return f.r.Dir + "/sub"
+}
+
+func TestCreateFolderRefusesPathInsideSubmoduleFolder(t *testing.T) {
+	f := newFixture(t)
+	sub := submoduleFixture(t, f)
+	res, err := CreateFolder(context.Background(), f.run, f.st, sub, "main", "refs/remotes/origin/main", "feature/in", sub+"/inner", fixedNow)
+	if err != nil || res.OK || res.Reason != "path-inside-folder" {
+		t.Fatalf("res = %+v, err = %v, want path-inside-folder", res, err)
+	}
+	if _, err := os.Stat(sub + "/inner"); err == nil {
+		t.Fatal("a folder was created inside the submodule")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -802,5 +803,185 @@ func TestRemoveFolderBackupIsPrivate(t *testing.T) {
 		if perm := info.Mode().Perm(); perm != 0o700 {
 			t.Fatalf("%s has mode %o, want 700", d, perm)
 		}
+	}
+}
+
+// gitIn runs git in dir with extra environment and returns any error.
+func (f *removeFixture) gitIn(dir string, env []string, args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Dir, cmd.Env = dir, append(f.r.Env(), env...)
+	_, err := cmd.CombinedOutput()
+	return err
+}
+
+// `rebase -i --autosquash` onto a moved trunk leaves an intermediate commit
+// (the pick before its fixup) only in the folder's HEAD reflog. Its content
+// is in the branch, so it does not keep the folder (R55).
+func TestRemoveFolderAllowsAutosquashOntoMovedTrunk(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.r.Commit(f.wt, "feat b", map[string]string{"b.txt": "b\n"})
+	f.r.Commit(f.wt, "fixup! feat b", map[string]string{"b.txt": "b2\n"})
+	f.r.Commit(f.r.Dir, "main moves", map[string]string{"m.txt": "m\n"})
+	if err := f.gitIn(f.wt, []string{"GIT_SEQUENCE_EDITOR=true"}, "rebase", "-q", "-i", "--autosquash", "main"); err != nil {
+		t.Fatal(err)
+	}
+	f.r.Push(f.wt, "-f", "origin", "alice/done")
+	f.r.Git(f.r.Dir, "merge", "--ff-only", "alice/done")
+	f.r.Push(f.r.Dir, "origin", "main")
+	if res := f.remove(t, f.view(t), "alice/done"); !res.OK {
+		t.Fatalf("res = %+v, want ok", res)
+	}
+}
+
+// Work committed on a detached HEAD, rebased there and left at the result:
+// the result is the last entry of its rebase run and keeps the folder.
+func TestRemoveFolderRefusesDetachedRebaseResult(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.r.Git(f.wt, "checkout", "-q", "--detach")
+	f.r.Commit(f.wt, "detached work", map[string]string{"d.txt": "d\n"})
+	f.r.Commit(f.r.Dir, "main moves", map[string]string{"m.txt": "m\n"})
+	if err := f.gitIn(f.wt, nil, "rebase", "-q", "main"); err != nil {
+		t.Fatal(err)
+	}
+	result := f.r.Git(f.wt, "rev-parse", "HEAD")
+	f.r.Git(f.wt, "checkout", "-q", "alice/done")
+	res := f.remove(t, f.view(t), "alice/done")
+	if res.OK || res.Reason != "orphaned-commits" || !slices.Contains(res.Files, result[:12]) {
+		t.Fatalf("res = %+v, want orphaned-commits with %s", res, result[:12])
+	}
+}
+
+// A folder in the middle of a rebase or a bisect is not removed: their state
+// lives in the folder's own git directory.
+func TestRemoveFolderRefusesOperationInProgress(t *testing.T) {
+	t.Run("stopped rebase", func(t *testing.T) {
+		f := newRemoveFixture(t)
+		v := f.view(t)
+		if err := f.gitIn(f.wt, nil, "rebase", "-f", "-x", "false", "HEAD~1"); err == nil {
+			t.Fatal("the rebase did not stop")
+		}
+		res := f.remove(t, v, "alice/done")
+		if res.OK || res.Reason != "in-progress" || res.Detail == "" {
+			t.Fatalf("res = %+v, want in-progress", res)
+		}
+	})
+	t.Run("bisect", func(t *testing.T) {
+		f := newRemoveFixture(t)
+		f.r.Git(f.wt, "bisect", "start")
+		res := f.remove(t, f.view(t), "alice/done")
+		if res.OK || res.Reason != "in-progress" || !exists(f.wt) {
+			t.Fatalf("res = %+v, want in-progress", res)
+		}
+	})
+}
+
+// linkFolder moves the folder away and puts a link (a junction on Windows) in
+// its place, as when a folder was moved to another drive and linked back.
+func (f *removeFixture) linkFolder(t *testing.T) string {
+	t.Helper()
+	real := f.r.Root + "/real-done"
+	if err := os.Rename(f.wt, real); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		junction(t, filepath.FromSlash(f.wt), filepath.FromSlash(real))
+	} else if err := os.Symlink(real, f.wt); err != nil {
+		t.Fatal(err)
+	}
+	return real
+}
+
+func TestRemoveFolderRefusesFolderThatIsALink(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.write(t, "notes/me.txt", "n\n")
+	real := f.linkFolder(t)
+	res := f.remove(t, f.view(t), "alice/done")
+	if res.OK || res.Reason != "folder-is-link" || res.Detail == "" {
+		t.Fatalf("res = %+v, want folder-is-link", res)
+	}
+	if !exists(filepath.Join(real, "notes", "me.txt")) || !exists(f.wt) || exists(filepath.Join(f.st.Dir, "backups")) {
+		t.Fatal("the folder, its link or the backups were touched")
+	}
+}
+
+// A junction that cannot be removed stops the removal; the links already
+// removed are reported and logged.
+func TestRemoveFolderReportsLinksRemovedBeforeAFailure(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("directory junctions exist only on Windows")
+	}
+	f := newRemoveFixture(t)
+	outside := t.TempDir()
+	f.write(t, "node_modules/x.js", "x\n")
+	junction(t, filepath.Join(f.wt, "node_modules", "a"), outside)
+	junction(t, filepath.Join(f.wt, "node_modules", "b"), outside)
+	old := removeLink
+	t.Cleanup(func() { removeLink = old })
+	calls := 0
+	removeLink = func(p string) error {
+		if calls++; calls == 2 {
+			return errors.New("in use")
+		}
+		return os.Remove(p)
+	}
+	res := f.remove(t, f.view(t), "alice/done")
+	if res.OK || res.Reason != "links-failed" || !strings.Contains(res.Detail, "in use") {
+		t.Fatalf("res = %+v, want links-failed", res)
+	}
+	if !slices.Contains(res.SkippedLinks, "node_modules/a") {
+		t.Fatalf("SkippedLinks = %v, want the removed link", res.SkippedLinks)
+	}
+	ops, _ := f.st.Ops(f.r.Dir, 1)
+	if len(ops) != 1 || !strings.HasPrefix(ops[0].Result, "links-failed: ") || !strings.Contains(ops[0].Detail, "node_modules/a") {
+		t.Fatalf("ops = %+v", ops)
+	}
+	if !exists(filepath.Join(f.wt, "node_modules", "x.js")) {
+		t.Fatal("the folder was deleted")
+	}
+}
+
+// A repository that appears inside build output during the backup is caught
+// by the re-check.
+func TestRemoveFolderNestedRepoAppearsDuringBackup(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.write(t, "node_modules/x.js", "x\n")
+	f.write(t, ".env", "S=1\n")
+	v := f.view(t)
+	listings := 0
+	run := hookRunner{before: func(_ string, args []string) {
+		if len(args) > 1 && args[0] == "ls-files" && args[1] == "--others" {
+			if listings++; listings == 2 {
+				f.write(t, "node_modules/pkg/.git", "gitdir: elsewhere\n")
+			}
+		}
+	}}
+	res := f.removeWith(t, run, v, "alice/done")
+	if res.OK || res.Reason != "changed" || !strings.Contains(res.Detail, "node_modules/pkg/.git") {
+		t.Fatalf("res = %+v, want changed", res)
+	}
+	if !exists(filepath.Join(f.wt, "node_modules", "pkg", ".git")) {
+		t.Fatal("the folder was touched")
+	}
+}
+
+// R55: rebase entries are exempt except the last of each run (in time
+// order); everything else counts. Input is newest first, as `log -g` prints.
+func TestReflogCandidates(t *testing.T) {
+	h := func(c string) string { return strings.Repeat(c, 40) }
+	out := strings.Join([]string{
+		h("a") + "\x00checkout: moving from x to main",
+		h("b") + "\x00rebase (finish): returning to refs/heads/main",
+		h("c") + "\x00rebase (fixup): b",
+		h("d") + "\x00rebase (pick): b",
+		h("e") + "\x00rebase (start): checkout main",
+		h("f") + "\x00commit: work",
+		h("1") + "\x00rebase -i (pick): x",
+		h("2") + "\x00rebase -i (start): checkout y",
+		h("3") + "\x00",
+	}, "\n")
+	got := strings.Join(reflogCandidates(out), ",")
+	want := strings.Join([]string{h("a"), h("b"), h("f"), h("1"), h("3")}, ",")
+	if got != want {
+		t.Fatalf("candidates = %s\nwant %s", got, want)
 	}
 }

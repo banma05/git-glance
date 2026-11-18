@@ -597,3 +597,60 @@ func TestAlignVerifyFailedIsLogged(t *testing.T) {
 		t.Fatalf("log entry = %+v (found %v)", e, ok)
 	}
 }
+
+// In a submodule the hidden-changes guard looks at the real folder: a marked,
+// edited file stops Align and Switch.
+func TestSubmoduleHiddenChangesStopAlignAndSwitch(t *testing.T) {
+	f := newFixture(t)
+	sub := submoduleFixture(t, f)
+	f.r.Commit(f.r.Dir, "readme moves", map[string]string{"README": "theirs\n"})
+	f.r.Push(f.r.Dir, "origin", "main")
+	f.r.Git(sub, "update-index", "--assume-unchanged", "README")
+	if err := os.WriteFile(filepath.Join(sub, "README"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Align(context.Background(), f.run, f.st, sub, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hasSkip(rep, "main", "hidden-changes"); !ok {
+		t.Fatalf("report %+v", rep)
+	}
+	f.r.Git(sub, "branch", "other")
+	res, err := Switch(context.Background(), f.run, f.st, sub, sub, "other", fixedNow)
+	if err != nil || res.OK || res.Reason != "hidden-changes" {
+		t.Fatalf("switch res = %+v, err = %v", res, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(sub, "README")); string(got) != "mine\n" {
+		t.Fatalf("README = %q", got)
+	}
+}
+
+// `rebase --update-refs` also works on the branches it lists in
+// rebase-merge/update-refs: they are held like the rebased branch.
+func TestAlignSkipsBranchesHeldByUpdateRefs(t *testing.T) {
+	f := newFixture(t)
+	f.r.Git(f.r.Dir, "checkout", "-q", "x")
+	f.r.Commit(f.r.Dir, "x one", map[string]string{"x1.txt": "1\n"})
+	f.r.Push(f.r.Dir, "origin", "x")
+	f.r.Git(f.r.Dir, "checkout", "-q", "main")
+	f.r.Branch("high", "x")
+	wt := f.r.AddWorktree("high", "high")
+	f.r.Commit(wt, "high one", map[string]string{"h1.txt": "1\n"})
+	f.r.Git(f.other, "fetch", "origin")
+	f.pushOther("x", "x2.txt")
+	f.r.Commit(f.r.Dir, "main moves", map[string]string{"m.txt": "m\n"})
+	cmd := exec.Command("git", "rebase", "--update-refs", "-x", "false", "main")
+	cmd.Dir, cmd.Env = wt, f.r.Env()
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("the rebase did not stop: %s", out)
+	}
+	before := f.rev("x")
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hasSkip(rep, "x", "in-progress"); !ok || f.rev("x") != before {
+		t.Fatalf("x moved or not reported as in-progress: %+v", rep)
+	}
+}

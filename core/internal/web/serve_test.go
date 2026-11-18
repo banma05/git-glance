@@ -348,7 +348,7 @@ func TestBadJSONGivesBadParams(t *testing.T) {
 	}
 }
 
-// gateRunner blocks every rev-parse made in a "gate-" folder (addRepo makes
+// gateRunner blocks every `worktree list` made in a "gate-" folder (addRepo makes
 // one) until released, and reports which folder reached git. A run that was
 // handed a done context reports it on ctxErr.
 type gateRunner struct {
@@ -359,7 +359,7 @@ type gateRunner struct {
 }
 
 func (g *gateRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	if len(args) > 0 && args[0] == "rev-parse" && strings.Contains(dir, "gate-") {
+	if len(args) > 0 && args[0] == "worktree" && strings.Contains(dir, "gate-") {
 		g.started <- dir
 		<-g.release
 		if g.ctxErr != nil {
