@@ -61,3 +61,25 @@ export function shortDate(time: number): string {
   const two = (n: number) => String(n).padStart(2, '0');
   return `${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 }
+
+// formatBytes writes a size in bytes in the largest fitting unit, e.g. "1.5 KB".
+export function formatBytes(n: number): string {
+  if (!(n > 0)) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  const text = i === 0 || v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10);
+  return `${text} ${units[i]}`;
+}
+
+// dateTime writes a unix time (seconds) as YYYY-MM-DD HH:MM in local time; "" for an unset time.
+export function dateTime(time: number): string {
+  if (!time) return '';
+  const d = new Date(time * 1000);
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+}

@@ -1,44 +1,64 @@
-import type { T } from '../../i18n';
-import { reasonText } from '../../reasons';
+import { useEffect } from 'preact/hooks';
+import type { Host } from '../../host/types';
+import type { Key, T } from '../../i18n';
 import type { Actions, AppState, DialogName } from '../../state';
+import { AlignReport } from './AlignReport';
+import { Compare } from './Compare';
+import { CreateFolder } from './CreateFolder';
+import { OpLog } from './OpLog';
+import { RemoveFolderConfirm } from './RemoveFolderConfirm';
+import { Settings } from './Settings';
 
-const TITLES: Record<DialogName, 'toolbar.align' | 'toolbar.createFolder' | 'toolbar.compare' | 'toolbar.oplog' | 'toolbar.settings'> = {
+const TITLES: Record<DialogName, Key> = {
   align: 'toolbar.align',
   create: 'toolbar.createFolder',
   compare: 'toolbar.compare',
   oplog: 'toolbar.oplog',
   settings: 'toolbar.settings',
-  remove: 'toolbar.createFolder',
+  remove: 'dialog.remove.title',
 };
 
-// PLACEHOLDER (task 15c replaces this file with the real dialogs). It shows the
-// dialog's name and, for the align report, a short summary so the data is
-// visible while the real dialog is being built.
-export function Dialogs({ t, state, actions }: { t: T; state: AppState; actions: Actions }) {
+interface Props {
+  t: T;
+  host: Host;
+  state: AppState;
+  actions: Actions;
+}
+
+// Dialogs shows the open dialog over the page. Esc and the close button close
+// it; closing never cancels a write that is running (its result stays in the
+// state and the view is read again when it ends).
+export function Dialogs({ t, host, state, actions }: Props) {
   const name = state.dialog;
+  const { closeDialog } = actions;
+  useEffect(() => {
+    if (!name) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeDialog();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [name, closeDialog]);
   if (!name) return null;
-  const report = name === 'align' ? state.alignReport : null;
+
+  let body = null;
+  if (name === 'align') body = state.alignReport ? <AlignReport t={t} report={state.alignReport} /> : null;
+  else if (name === 'create') body = <CreateFolder t={t} host={host} state={state} actions={actions} />;
+  else if (name === 'remove') body = <RemoveFolderConfirm t={t} host={host} state={state} actions={actions} />;
+  else if (name === 'compare') body = <Compare t={t} host={host} state={state} />;
+  else if (name === 'settings') body = <Settings t={t} host={host} state={state} actions={actions} />;
+  else body = <OpLog t={t} host={host} repo={state.repo} />;
+
   return (
-    <div class="overlay" role="dialog" aria-modal="true">
-      <div class="dialog">
+    <div class="overlay" role="presentation">
+      <div class="dialog" role="dialog" aria-modal="true" aria-label={t(TITLES[name])}>
         <h3>{t(TITLES[name])}</h3>
-        {report ? (
-          <div>
-            <p>{t('dialog.align.summary', { updated: report.updated.length, skipped: report.skipped.length })}</p>
-            <ul>
-              {report.skipped.map((s) => (
-                <li>
-                  {s.branch}: {reasonText('align.skip', s.reason, t)}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : (
-          <p>{t('dialog.later')}</p>
-        )}
-        <button class="btn" onClick={actions.closeDialog}>
-          {t('app.close')}
-        </button>
+        {body}
+        <div class="dialog-actions">
+          <button class="btn" onClick={closeDialog}>
+            {t('app.close')}
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -276,6 +276,7 @@ export function mockHost(): Host {
   const theme = (): ThemeKind => (global.theme === 'light' ? 'light' : 'dark');
   const delay = <T,>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 150));
   const nowSec = () => Math.floor(Date.now() / 1000);
+  let backupBytes = 4 * 1024 * 1024 + 300 * 1024;
 
   const call = async <T,>(method: string, params?: object): Promise<T> => {
     const p = (params ?? {}) as Record<string, unknown>;
@@ -302,8 +303,71 @@ export function mockHost(): Host {
           skipped: [{ branch: 'alice/feature/login', reason: 'dirty', files: ['src/login.ts'], detail: '' }],
           logError: '',
         })) as T;
-      case 'ops':
-        return [] as T;
+      case 'ops': {
+        const entry = (ago: number, op: string, branch: string, folder: string, result: string, detail = '') => ({
+          time: nowSec() - ago,
+          repo,
+          op,
+          branch,
+          folder,
+          command: [],
+          before: '',
+          after: '',
+          result,
+          detail,
+        });
+        return (await delay([
+          entry(3600, 'align', 'bob/fix/timeout', '', 'ok'),
+          entry(7200, 'remove-folder', 'alice/fix/typo', repo + '-typo', 'ok', 'backed up 1 ignored file'),
+          entry(86400, 'create', 'alice/feature/login', repo + '-login', 'ok'),
+          entry(90000, 'switch', 'carol/feature/search', repo, 'dirty'),
+        ])) as T;
+      }
+      case 'backups':
+        return (await delay({ dir: '/home/dev/.config/git-glance/backups', bytes: backupBytes })) as T;
+      case 'clearBackups':
+        backupBytes = 0;
+        return (await delay({})) as T;
+      case 'defaultFolder':
+        return (await delay({ path: repo + '-' + String(p.branch ?? '').replace(/\//g, '-') })) as T;
+      case 'remoteBranches': {
+        const query = String(p.query ?? '').toLowerCase();
+        return (await delay(['release/2.0', 'hotfix/login-crash', 'origin-only/spike'].filter((n) => n.includes(query)))) as T;
+      }
+      case 'compare':
+        return (await delay({
+          onlyA: [{ hash: hash(11), subject: 'Add login form', time: nowSec() - DAY }],
+          onlyB: [{ hash: hash(21), subject: 'Raise request timeout', time: nowSec() - 4 * DAY }],
+          files: [
+            { path: 'src/login.ts', status: 'A' },
+            { path: 'src/config.ts', status: 'M' },
+          ],
+          filesTruncated: false,
+        })) as T;
+      case 'fileDiff':
+        return (await delay({
+          diff: ['@@ -1,2 +1,2 @@', ' const timeout = 30;', '-const retries = 1;', '+const retries = 3;'].join('\n'),
+          truncated: false,
+        })) as T;
+      case 'createFolder':
+        return (await delay({ ok: true, reason: '', files: [], path: String(p.path ?? ''), logError: '' })) as T;
+      case 'removeFolder':
+        return (await delay({
+          ok: true,
+          reason: '',
+          files: [],
+          backupDir: '/home/dev/.config/git-glance/backups/demo-typo',
+          backupBytes: 1536,
+          deletedBuild: ['node_modules'],
+          skippedLinks: [],
+          detail: '',
+          logError: '',
+        })) as T;
+      case 'discover':
+        return (await delay({ repo: String(p.path ?? '') })) as T;
+      case 'setRole':
+      case 'setRepoSettings':
+        return (await delay(mockView(String(p.repo ?? repo)).settings)) as T;
       case 'switch':
         return (await delay({ ok: true, reason: '', files: [], path: '', logError: '' })) as T;
       case 'trunkCommits':

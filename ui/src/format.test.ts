@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BranchView } from './types';
-import { blockText, chips } from './format';
+import { blockText, chips, dateTime, formatBytes } from './format';
 import { makeT } from './i18n';
 
 const base: BranchView = {
@@ -69,5 +69,18 @@ describe('blockText', () => {
       expect(blockText(b, t)).not.toBe(b);
     }
     expect(blockText('something-new', t)).toBe('something-new');
+  });
+});
+
+describe('formatBytes and dateTime', () => {
+  it('writes sizes in the largest unit', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(1536)).toBe('1.5 KB');
+    expect(formatBytes(2048)).toBe('2 KB');
+    expect(formatBytes(5 * 1024 * 1024)).toBe('5 MB');
+  });
+  it('leaves an unset time empty', () => {
+    expect(dateTime(0)).toBe('');
+    expect(dateTime(1700000000)).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d$/);
   });
 });

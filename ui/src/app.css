@@ -88,3 +88,22 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
 .g-sub { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; }
 .g-date { flex: none; align-self: center; font-size: 11px; font-variant-numeric: tabular-nums; }
 .g-expanded .g-name { font-size: 12px; }
+
+.dialog-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px; }
+.dialog h4 { margin: 10px 0 4px; }
+.dialog .form { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.dialog .field { flex-direction: column; align-items: flex-start; gap: 2px; }
+.dialog input[type='text'], .dialog input[type='number'] { background: var(--surface); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font: inherit; min-width: 280px; }
+.dialog .files { margin: 0; padding-left: 16px; }
+.dialog .rules { margin: 4px 0; padding-left: 18px; }
+.dialog .ok { color: var(--tone-ok); }
+.dialog .warn, .warn { color: var(--tone-warn); }
+.dialog pre { max-height: 40vh; overflow: auto; background: var(--surface); border: 1px solid var(--border); padding: 6px; white-space: pre-wrap; word-break: break-all; }
+.dialog .compare-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.dialog .link { background: none; border: none; color: var(--tone-info); font: inherit; cursor: pointer; padding: 0; text-align: left; }
+.dialog .link .status { display: inline-block; width: 1.2em; color: var(--fg-mute); }
+.dialog .oplog { border-collapse: collapse; }
+.dialog .oplog th, .dialog .oplog td { text-align: left; padding: 2px 8px; border-bottom: 1px solid var(--border); vertical-align: top; word-break: break-all; }
+.btn.danger { border-color: var(--tone-warn); color: var(--tone-warn); }
+.add-repo { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; }
+.add-repo input { background: var(--surface); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font: inherit; min-width: 260px; }

@@ -62,14 +62,14 @@ export function App({ host }: { host: Host }) {
         {errorLine}
         {!state.loaded && <div class="muted pad">{t('app.loading')}</div>}
         {state.loaded && state.repos.length === 0 && <div class="muted pad">{t('repo.none')}</div>}
-        <Dialogs t={t} state={state} actions={actions} />
+        <Dialogs t={t} host={host} state={state} actions={actions} />
       </div>
     );
   }
 
   return (
     <div class="app wide">
-      <RepoTabs t={t} repos={state.repos} repo={state.repo} onSelect={actions.selectRepo} onAdd={actions.addRepo} />
+      <RepoTabs t={t} host={host} repos={state.repos} repo={state.repo} onSelect={actions.selectRepo} onAdd={actions.addRepo} />
       <Toolbar
         t={t}
         actions={actions}
@@ -102,7 +102,7 @@ export function App({ host }: { host: Host }) {
         </div>
       )}
       {view && <DetailPanel t={t} branch={selected} state={state} actions={actions} />}
-      <Dialogs t={t} state={state} actions={actions} />
+      <Dialogs t={t} host={host} state={state} actions={actions} />
     </div>
   );
 }

@@ -2,10 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { rpc } from './api';
 import { HostError } from './host/types';
 import type { Host, ThemeKind } from './host/types';
-import type { AlignReport, Global, OpResult, Theme, View } from './types';
+import type { AlignReport, Global, OpResult, RemoveFolderResult, Theme, View } from './types';
 
 export type ViewMode = 'list' | 'graph';
 export type DialogName = 'align' | 'create' | 'compare' | 'oplog' | 'settings' | 'remove';
+
+// WriteOutcome is what a create or remove write ended with: the core's answer,
+// or the error of the call. It lives in the state so that a dialog closed while
+// the write runs still gets to show it.
+export interface WriteOutcome<R> {
+  branch: string;
+  result: R | null;
+  error: unknown;
+}
 
 export interface AppState {
   repos: string[];
@@ -22,6 +31,8 @@ export interface AppState {
   dialog: DialogName | null;
   alignReport: AlignReport | null;
   busy: boolean; // a write is running
+  createOutcome: WriteOutcome<OpResult> | null;
+  removeOutcome: WriteOutcome<RemoveFolderResult> | null;
   switchResult: { branch: string; result: OpResult } | null; // the last switch, shown in the detail area
   global: Global | null;
   theme: ThemeKind;
@@ -40,10 +51,14 @@ export interface Actions {
   toggleGroup(key: string): void;
   openDialog(name: DialogName): void;
   closeDialog(): void;
+  refreshView(): void; // read the view again (after a change made outside the actions)
+  createFolder(trunk: string, branch: string, path: string): void;
+  removeFolder(branch: string): void;
   align(): void;
   moveTrunk(name: string, index: number): void;
   cycleTheme(): void;
   setEditor(editor: string): void;
+  setTheme(theme: Theme): void;
   openWide(): void;
 }
 
@@ -68,6 +83,8 @@ function initial(host: Host): AppState {
     dialog: null,
     alignReport: null,
     busy: false,
+    createOutcome: null,
+    removeOutcome: null,
     switchResult: null,
     global: null,
     theme: host.theme(),
@@ -127,7 +144,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
 
     const open = async (repo: string) => {
       // fetching is reset here: a refresh of the repository left behind drops its result
-      patch({ repo, view: null, selected: '', fetchError: '', error: null, alignReport: null, switchResult: null, fetching: false });
+      patch({ repo, view: null, selected: '', fetchError: '', error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
       try {
         await loadView(repo);
         if (!current(repo)) return;
@@ -213,7 +230,59 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         host.copy(text).catch(fail);
       },
       toggleGroup: (key) => patch({ collapsed: { ...ref.current.collapsed, [key]: !ref.current.collapsed[key] } }),
-      openDialog: (dialog) => patch({ dialog }),
+      openDialog: (dialog) => {
+        // a write that is still running keeps its slot; otherwise the dialog starts clean
+        patch(ref.current.busy ? { dialog } : { dialog, createOutcome: null, removeOutcome: null });
+      },
+      refreshView: () => {
+        const repo = ref.current.repo;
+        if (repo) loadView(repo).catch((e) => failFor(repo, e));
+      },
+      createFolder: (trunk, branch, path) => {
+        const repo = ref.current.repo;
+        if (!repo || ref.current.busy) return;
+        patch({ busy: true, createOutcome: null });
+        void (async () => {
+          try {
+            let result: OpResult;
+            try {
+              result = await rpc(host, 'createFolder', { repo, trunk, branch, path });
+            } catch (error) {
+              if (current(repo)) patch({ createOutcome: { branch, result: null, error } });
+              return;
+            }
+            if (current(repo)) patch({ createOutcome: { branch, result, error: null } });
+            if (result.ok) await loadView(repo);
+          } catch (e) {
+            failFor(repo, e);
+          } finally {
+            patch({ busy: false });
+          }
+        })();
+      },
+      removeFolder: (branch) => {
+        const repo = ref.current.repo;
+        if (!repo || ref.current.busy) return;
+        patch({ busy: true, removeOutcome: null });
+        void (async () => {
+          try {
+            let result: RemoveFolderResult;
+            try {
+              result = await rpc(host, 'removeFolder', { repo, branch });
+            } catch (error) {
+              if (current(repo)) patch({ removeOutcome: { branch, result: null, error } });
+              return;
+            }
+            if (current(repo)) patch({ removeOutcome: { branch, result, error: null } });
+            // the folder may be gone even when the answer is a refusal after a partial run
+            await loadView(repo);
+          } catch (e) {
+            failFor(repo, e);
+          } finally {
+            patch({ busy: false });
+          }
+        })();
+      },
       closeDialog: () => patch({ dialog: null }),
       align: () => {
         const repo = ref.current.repo;
@@ -252,6 +321,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         void writeGlobal({ theme: THEME_ORDER[(THEME_ORDER.indexOf(now) + 1) % THEME_ORDER.length] });
       },
       setEditor: (editor) => void writeGlobal({ editor }),
+      setTheme: (theme) => void writeGlobal({ theme }),
       openWide: () => host.openWide(),
     };
     return { actions, start };
