@@ -23,7 +23,7 @@ const CODES: Record<ReasonKind, string[]> = {
   'remove.reason': [
     'not-in-folder', 'main-folder', 'folder-missing', 'dirty', 'unpushed', 'not-merged',
     'changed', 'hidden-changes', 'locked', 'backup-failed', 'git-failed',
-    'nested-repo', 'orphaned-commits', 'locked-worktree', 'error',
+    'nested-repo', 'orphaned-commits', 'locked-worktree', 'error', 'in-progress', 'folder-is-link', 'links-failed',
   ],
 };
 

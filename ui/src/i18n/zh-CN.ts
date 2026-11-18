@@ -106,6 +106,9 @@ export const zh = {
   'remove.reason.orphaned-commits': '文件夹里有已经不在任何分支上的提交，什么都没有删',
   'remove.reason.locked-worktree': '文件夹被锁定了（git worktree lock）',
   'remove.reason.error': '读不到这个分支的详情',
+  'remove.reason.in-progress': '文件夹里有正在进行的 rebase、am、merge、cherry-pick、revert 或 bisect，什么都没有删',
+  'remove.reason.folder-is-link': '这个文件夹本身是一个链接（或 junction），不删',
+  'remove.reason.links-failed': '删除文件夹里的链接时中途失败；下面列出的链接已经删掉了（只删了链接本身），其他什么都没有删',
 
   'repo.add': '添加仓库',
   'repo.addPrompt': '仓库文件夹的完整路径',
@@ -215,7 +218,7 @@ export const zh = {
   'dialog.remove.backup': '已备份到 {dir}（{size}）',
   'dialog.remove.noBackup': '没有需要备份的被忽略文件',
   'dialog.remove.build': '直接删除、没有备份的目录：{list}',
-  'dialog.remove.links': '没有跟进去的链接：{list}',
+  'dialog.remove.links': '链接（只动链接本身，从不动它指向的内容）：{list}',
   'dialog.remove.files': '相关文件：{list}',
   'dialog.remove.noBranch': '没有选中的分支',
   'dialog.remove.blocked': '这个文件夹现在不能删除：{reason}',

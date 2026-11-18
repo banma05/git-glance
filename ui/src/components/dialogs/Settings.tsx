@@ -144,7 +144,11 @@ export function Settings({ t, host, state, actions }: Props) {
         {!window.acquireVsCodeApi && (
           <label class="field">
             {t('toolbar.openWith')}
-            <select value={state.global?.editor ?? 'code'} onChange={(e) => actions.setEditor((e.target as HTMLSelectElement).value)}>
+            <select
+              disabled={!!state.gitProblem}
+              value={state.global?.editor ?? 'code'}
+              onChange={(e) => actions.setEditor((e.target as HTMLSelectElement).value)}
+            >
               {EDITORS.map((id) => (
                 <option value={id}>{id}</option>
               ))}
@@ -153,7 +157,11 @@ export function Settings({ t, host, state, actions }: Props) {
         )}
         <label class="field">
           {t('dialog.settings.theme')}
-          <select value={state.global?.theme ?? 'auto'} onChange={(e) => actions.setTheme((e.target as HTMLSelectElement).value as Theme)}>
+          <select
+            disabled={!!state.gitProblem}
+            value={state.global?.theme ?? 'auto'}
+            onChange={(e) => actions.setTheme((e.target as HTMLSelectElement).value as Theme)}
+          >
             {THEMES.map((th) => (
               <option value={th}>{t(`dialog.settings.theme.${th}`)}</option>
             ))}

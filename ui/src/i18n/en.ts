@@ -109,6 +109,9 @@ export const en: Record<Key, string> = {
   'remove.reason.orphaned-commits': 'The folder has commits that no branch holds any more; nothing was deleted',
   'remove.reason.locked-worktree': 'The folder is locked (git worktree lock)',
   'remove.reason.error': 'The details of this branch could not be read',
+  'remove.reason.in-progress': 'A rebase, am, merge, cherry-pick, revert or bisect is in progress in the folder; nothing was deleted',
+  'remove.reason.folder-is-link': 'The folder itself is a link (or junction); it is not removed',
+  'remove.reason.links-failed': 'Removing the links in the folder failed partway; the links listed below were removed (the links only), nothing else was deleted',
 
   'repo.add': 'Add repository',
   'repo.addPrompt': 'Full path of the repository folder',
@@ -218,7 +221,7 @@ export const en: Record<Key, string> = {
   'dialog.remove.backup': 'Backed up to {dir} ({size})',
   'dialog.remove.noBackup': 'No ignored files needed a backup',
   'dialog.remove.build': 'Deleted without a backup: {list}',
-  'dialog.remove.links': 'Links that were not followed: {list}',
+  'dialog.remove.links': 'Links (only the link itself was touched, never what it points to): {list}',
   'dialog.remove.files': 'Files: {list}',
   'dialog.remove.noBranch': 'No branch is selected',
   'dialog.remove.blocked': 'This folder cannot be removed now: {reason}',

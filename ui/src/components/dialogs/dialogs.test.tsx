@@ -186,6 +186,15 @@ describe('RemoveFolderConfirm', () => {
     await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain(en('remove.reason.locked')));
   });
 
+  it('lists the links already removed when removing links failed partway', async () => {
+    open({ removeFolder: { ...removeOk, ok: false, reason: 'links-failed', backupDir: '', deletedBuild: [], skippedLinks: ['node_modules/dep'], detail: 'access denied', logError: '' } });
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    const d = screen.getByRole('dialog');
+    await waitFor(() => expect(d.textContent).toContain(en('remove.reason.links-failed')));
+    expect(d.textContent).toContain('node_modules/dep');
+    expect(d.textContent).toContain('access denied');
+  });
+
   it('sends one call on a double click', async () => {
     let release: (v: unknown) => void = () => undefined;
     const slow = () => new Promise((r) => (release = r));
@@ -249,6 +258,16 @@ describe('Settings', () => {
     fireEvent.click(screen.getByRole('button', { name: en('dialog.settings.apply') }));
     await waitFor(() => expect(h.count('setRole')).toBe(1));
     expect(h.calls.find((c) => c.method === 'setRole')?.params).toEqual({ repo: REPO, branch: 'release/2.0', role: 'release', trunk: 'develop' });
+  });
+
+  it('disables every setting that is saved by the core when git is too old', async () => {
+    const h = fakeHost({ version: { core: 'x', git: '2.29', gitOK: false } });
+    render(<Harness host={h.host} open="settings" />);
+    await waitFor(() => expect((screen.getByLabelText(en('dialog.settings.theme')) as HTMLSelectElement).disabled).toBe(true));
+    expect((screen.getByLabelText(en('toolbar.openWith')) as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: en('dialog.settings.clearBackups') }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: en('dialog.settings.save') }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: en('dialog.settings.searchRemote') }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('saves the hidden prefix and old-branch days, and the editor and theme', async () => {
