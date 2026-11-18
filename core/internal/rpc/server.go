@@ -98,6 +98,10 @@ type Handler struct {
 
 	write sync.Mutex // held by every method that changes the local machine
 
+	// One FIFO queue per Handler: every transport sends its writes through it.
+	queueOnce sync.Once
+	queue     chan writeJob
+
 	fetchMu sync.Mutex
 	fetched map[string]fetchState // by repo root
 
@@ -156,6 +160,55 @@ func (h *Handler) Handle(ctx context.Context, req Request) (resp Response) {
 	return resp
 }
 
+type writeJob struct {
+	ctx  context.Context
+	req  Request
+	done func(Response)
+}
+
+func tooManyWrites(id int64) Response {
+	return Response{ID: id, Error: &RPCError{Code: "internal", Message: "too many queued writes"}}
+}
+
+// queueWrite puts a write on the handler's FIFO queue and returns false when
+// the queue is full. done is called once, from the worker, with the response.
+// A job whose ctx is done before it starts is answered without running.
+func (h *Handler) queueWrite(ctx context.Context, req Request, done func(Response)) bool {
+	h.queueOnce.Do(func() {
+		h.queue = make(chan writeJob, maxQueuedWrites)
+		go func() {
+			for j := range h.queue {
+				if j.ctx.Err() != nil {
+					j.done(Response{ID: j.req.ID, Error: &RPCError{Code: "internal", Message: "stopped before the request started"}})
+					continue
+				}
+				j.done(h.Handle(j.ctx, j.req))
+			}
+		}()
+	})
+	select {
+	case h.queue <- writeJob{ctx, req, done}:
+		return true
+	default:
+		return false
+	}
+}
+
+// Do runs one request and returns its response. Read methods run at once on
+// the caller's goroutine; write methods wait their turn on the same FIFO queue
+// ServeLines uses, so writes from every transport run one at a time in arrival
+// order. A write that has started is not abandoned when ctx is done.
+func (h *Handler) Do(ctx context.Context, req Request) Response {
+	if !h.isWrite(req.Method) {
+		return h.Handle(ctx, req)
+	}
+	res := make(chan Response, 1)
+	if !h.queueWrite(ctx, req, func(r Response) { res <- r }) {
+		return tooManyWrites(req.ID)
+	}
+	return <-res
+}
+
 // ServeLines reads one JSON request per line from in and writes one JSON
 // response per line to out. Requests run concurrently, so responses may come
 // out of order. It stops reading at EOF or when ctx is done, then waits for
@@ -181,24 +234,7 @@ func ServeLines(ctx context.Context, h *Handler, in io.Reader, out io.Writer) er
 		defer outMu.Unlock()
 		out.Write(append(b, '\n'))
 	}
-	// Writes run one at a time in arrival order on their own worker, which
-	// holds no read slot, so queued writes never stall reads.
-	writes := make(chan Request, maxQueuedWrites)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for req := range writes {
-			if ctx.Err() != nil {
-				send(Response{ID: req.ID, Error: &RPCError{Code: "internal", Message: "stopped before the request started"}})
-				continue
-			}
-			send(h.Handle(ctx, req))
-		}
-	}()
-	defer func() {
-		close(writes)
-		wg.Wait()
-	}()
+	defer wg.Wait()
 
 	for {
 		select {
@@ -224,10 +260,10 @@ func ServeLines(ctx context.Context, h *Handler, in io.Reader, out io.Writer) er
 				continue
 			}
 			if h.isWrite(req.Method) {
-				select {
-				case writes <- req:
-				default:
-					send(Response{ID: req.ID, Error: &RPCError{Code: "internal", Message: "too many queued writes"}})
+				wg.Add(1)
+				if !h.queueWrite(ctx, req, func(resp Response) { send(resp); wg.Done() }) {
+					wg.Done()
+					send(tooManyWrites(req.ID))
 				}
 				continue
 			}
