@@ -53,9 +53,10 @@ const noSignature = "--no-show-signature"
 // git's error and says whether the folder still exists, as git may have
 // removed part of it; a finished backup is kept). Files lists the ignored
 // paths that were copied to BackupDir, DeletedBuild the build output that was
-// deleted (set only on success), and SkippedLinks the links (symlinks,
-// junctions) that were neither followed nor copied; junctions are removed
-// before git runs. On success Detail says so when the folder was not fully
+// deleted (set only on success), SkippedLinks the links (symlinks, junctions)
+// the backup neither followed nor copied, and RemovedLinks the junctions
+// removed (the link only, never its target) right before git ran, on success
+// and on links-failed. On success Detail says so when the folder was not fully
 // deleted. LogError is empty unless writing the operation log failed.
 type RemoveFolderResult struct {
 	OK           bool     `json:"ok"`
@@ -65,12 +66,13 @@ type RemoveFolderResult struct {
 	BackupBytes  int64    `json:"backupBytes"`
 	DeletedBuild []string `json:"deletedBuild"`
 	SkippedLinks []string `json:"skippedLinks"`
+	RemovedLinks []string `json:"removedLinks"`
 	Detail       string   `json:"detail"`
 	LogError     string   `json:"logError"`
 }
 
 func removeRefused(reason string) RemoveFolderResult {
-	return RemoveFolderResult{Reason: reason, Files: []string{}, DeletedBuild: []string{}, SkippedLinks: []string{}}
+	return RemoveFolderResult{Reason: reason, Files: []string{}, DeletedBuild: []string{}, SkippedLinks: []string{}, RemovedLinks: []string{}}
 }
 
 func refusedWith(reason, detail string, files []string) RemoveFolderResult {
@@ -100,8 +102,10 @@ func RemoveFolder(ctx context.Context, r gitx.Runner, st settings.Store, v model
 	if !samePath(path, folder) {
 		return refusedWith("changed", "the folder of "+branch+" is "+path+", not "+folder, nil), nil
 	}
-	if link, err := folderIsLink(path); err != nil || link {
-		return refusedWith("folder-is-link", path+" is a link to another place; delete it by hand", nil), err
+	if link, err := folderIsLink(path); err != nil {
+		return removeRefused(""), err
+	} else if link {
+		return refusedWith("folder-is-link", path+" is a link to another place; delete it by hand", nil), nil
 	}
 	if res, done, err := checkFolder(ctx, r, v.Repo, path, branch, head); done || err != nil {
 		return res, err
@@ -134,7 +138,7 @@ func RemoveFolder(ctx context.Context, r gitx.Runner, st settings.Store, v model
 		return res, err
 	}
 	dropped, err := dropJunctions(path)
-	res.SkippedLinks = appendNew(res.SkippedLinks, dropped)
+	res.RemovedLinks = dropped
 	if err != nil {
 		return linksFailed(st, v.Repo, branch, path, head, res, dropped, err, now), nil
 	}
@@ -142,12 +146,12 @@ func RemoveFolder(ctx context.Context, r gitx.Runner, st settings.Store, v model
 }
 
 // linksFailed reports a junction that could not be removed before git ran.
-// The links removed until then (only the links, never their targets) are
-// listed in SkippedLinks and logged; nothing else was deleted, and the
-// finished backup is kept.
+// The links removed until then (only the links, never their targets) are in
+// RemovedLinks and the op log; nothing else was deleted, and the finished
+// backup is kept.
 func linksFailed(st settings.Store, repoRoot, branch, path, head string, res RemoveFolderResult, dropped []string, err error, now func() time.Time) RemoveFolderResult {
 	res.Reason = "links-failed"
-	res.Detail = joinDetail(err.Error(), "the folder was not deleted")
+	res.Detail = joinDetail(err.Error(), fmt.Sprintf("%d link(s) removed before the failure; the folder was not deleted", len(dropped)))
 	if len(dropped) > 0 {
 		entry := settings.OpEntry{
 			Time: now().Unix(), Repo: repoRoot, Op: "remove-folder", Branch: branch, Folder: path,
@@ -522,16 +526,6 @@ func joinDetail(parts ...string) string {
 		}
 	}
 	return strings.Join(kept, "; ")
-}
-
-// appendNew appends the entries of add that list does not hold yet.
-func appendNew(list, add []string) []string {
-	for _, a := range add {
-		if !slices.Contains(list, a) {
-			list = append(list, a)
-		}
-	}
-	return list
 }
 
 // removeLink removes one link; tests replace it.

@@ -90,7 +90,7 @@ func (f *removeFixture) removeWith(t *testing.T, r gitx.Runner, v model.View, br
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files == nil || res.DeletedBuild == nil || res.SkippedLinks == nil {
+	if res.Files == nil || res.DeletedBuild == nil || res.SkippedLinks == nil || res.RemovedLinks == nil {
 		t.Fatalf("nil slice in %+v", res)
 	}
 	return res
@@ -337,10 +337,10 @@ func TestRemoveFolderDoesNotFollowJunction(t *testing.T) {
 	if exists(f.wt) {
 		t.Fatal("folder still exists")
 	}
-	// notes/link was skipped by the backup, node_modules/link removed before
-	// git ran; each is listed once.
-	if strings.Join(res.SkippedLinks, ",") != "notes/link,node_modules/link" {
-		t.Fatalf("SkippedLinks = %v", res.SkippedLinks)
+	// notes/link was skipped by the backup; both junctions were removed (the
+	// links only) before git ran.
+	if strings.Join(res.SkippedLinks, ",") != "notes/link" || strings.Join(res.RemovedLinks, ",") != "node_modules/link,notes/link" {
+		t.Fatalf("SkippedLinks = %v, RemovedLinks = %v", res.SkippedLinks, res.RemovedLinks)
 	}
 	if readFile(t, filepath.Join(res.BackupDir, "notes", "me.txt")) != "my notes\n" {
 		t.Fatal("the plain file was not backed up")
@@ -555,12 +555,8 @@ func TestRemoveFolderDropsJunctionsBeforeGit(t *testing.T) {
 	if readFile(t, filepath.Join(outside, "keep.txt")) != "keep\n" {
 		t.Fatal("the file behind the junction was changed")
 	}
-	found := false
-	for _, s := range res.SkippedLinks {
-		found = found || s == "build/dep"
-	}
-	if !found {
-		t.Fatalf("SkippedLinks = %v, want build/dep", res.SkippedLinks)
+	if !slices.Contains(res.RemovedLinks, "build/dep") || slices.Contains(res.SkippedLinks, "build/dep") {
+		t.Fatalf("RemovedLinks = %v, SkippedLinks = %v, want build/dep removed", res.RemovedLinks, res.SkippedLinks)
 	}
 }
 
@@ -928,8 +924,8 @@ func TestRemoveFolderReportsLinksRemovedBeforeAFailure(t *testing.T) {
 	if res.OK || res.Reason != "links-failed" || !strings.Contains(res.Detail, "in use") {
 		t.Fatalf("res = %+v, want links-failed", res)
 	}
-	if !slices.Contains(res.SkippedLinks, "node_modules/a") {
-		t.Fatalf("SkippedLinks = %v, want the removed link", res.SkippedLinks)
+	if strings.Join(res.RemovedLinks, ",") != "node_modules/a" || len(res.SkippedLinks) != 0 || !strings.Contains(res.Detail, "1 link") {
+		t.Fatalf("RemovedLinks = %v, SkippedLinks = %v, Detail %q", res.RemovedLinks, res.SkippedLinks, res.Detail)
 	}
 	ops, _ := f.st.Ops(f.r.Dir, 1)
 	if len(ops) != 1 || !strings.HasPrefix(ops[0].Result, "links-failed: ") || !strings.Contains(ops[0].Detail, "node_modules/a") {
