@@ -5,6 +5,7 @@ import { coreBinaryPath } from './binpath';
 import { CoreClient } from './core';
 import { GIT_SCHEME, GitContentProvider } from './gitfs';
 import { Discovery } from './startup';
+import type { DiscoveryOutcome, DiscoveryProblem } from './startup';
 import { renderHtml } from './webview';
 
 type Mode = 'sidebar' | 'wide';
@@ -50,8 +51,12 @@ export function activate(ctx: vscode.ExtensionContext) {
   const refreshPage = (webview: vscode.Webview) => pages.get(webview)?.post({ type: 'refresh' });
   const refreshPages = () => pages.forEach((p) => p.post({ type: 'refresh' }));
 
-  const discovery = new Discovery(registerWorkspaceRepos(core, log), DISCOVERY_WAIT_MS);
+  const discovery = new Discovery(DISCOVERY_WAIT_MS, log);
+  const discover = () => discovery.run(() => registerWorkspaceRepos(core, log));
+  discover();
 
+  // setup renders a page into webview and serves its messages; disposing the
+  // result stops both and cancels the page's reads.
   const setup = (webview: vscode.Webview, mode: Mode): vscode.Disposable => {
     const gen = new Generation();
     webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(ctx.extensionUri, 'media', 'ui')] };
@@ -77,9 +82,14 @@ export function activate(ctx: vscode.ExtensionContext) {
     };
     pages.set(webview, { mode, render, post });
     render();
-    return webview.onDidReceiveMessage((m) => {
+    const listening = webview.onDidReceiveMessage((m) => {
       record(mode, 'in', m);
       handlePageMessage(m, gen, deps).catch((e) => log(`bridge: ${e}`));
+    });
+    return new vscode.Disposable(() => {
+      listening.dispose();
+      gen.dispose();
+      pages.delete(webview);
     });
   };
 
@@ -97,7 +107,6 @@ export function activate(ctx: vscode.ExtensionContext) {
     const subscription = setup(panel.webview, 'wide');
     panel.onDidDispose(() => {
       subscription.dispose();
-      pages.delete(panel.webview);
       wide = undefined;
     });
   }
@@ -105,10 +114,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   const sidebar: vscode.WebviewViewProvider = {
     resolveWebviewView(view) {
       const subscription = setup(view.webview, 'sidebar');
-      view.onDidDispose(() => {
-        subscription.dispose();
-        pages.delete(view.webview);
-      });
+      view.onDidDispose(() => subscription.dispose());
     },
   };
 
@@ -117,13 +123,17 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider('gitglance.sidebar', sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.workspace.registerTextDocumentContentProvider(GIT_SCHEME, new GitContentProvider(core)),
     vscode.commands.registerCommand('gitglance.openWide', openWide),
-    // Refresh starts every page from scratch, and lets a core that failed to
-    // start be started again.
+    // Refresh lets a core that failed to start be started again, registers the
+    // workspace repositories again (the pages' repository lists wait for it)
+    // and starts every page from scratch.
     vscode.commands.registerCommand('gitglance.refresh', () => {
       core.allowRestart();
+      discover();
       pages.forEach((p) => p.render());
     }),
-    vscode.commands.registerCommand('gitglance.alignAll', () => alignAll(core, log, refreshPages)),
+    vscode.commands.registerCommand('gitglance.alignAll', () =>
+      alignAll(core, log, refreshPages, () => discovery.beforeRepos('alignAll', () => undefined)),
+    ),
     vscode.window.onDidChangeActiveColorTheme(() => {
       pages.forEach((p) => p.post({ type: 'theme', kind: themeKind() }));
     }),
@@ -134,16 +144,22 @@ export function activate(ctx: vscode.ExtensionContext) {
 }
 
 // Each workspace folder that is inside a repository is added to the list the
-// UI shows. Failures are logged, never thrown.
-async function registerWorkspaceRepos(core: CoreClient, log: (l: string) => void): Promise<void> {
+// UI shows. A folder that cannot be added is logged and reported to the pages,
+// never thrown.
+async function registerWorkspaceRepos(core: CoreClient, log: (l: string) => void): Promise<DiscoveryOutcome> {
+  const problems: DiscoveryProblem[] = [];
+  let repos = -1;
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     try {
       const found = await core.call<{ repo: string }>('discover', { path: folder.uri.fsPath });
-      await core.call('addRepo', { path: found.repo });
+      repos = (await core.call<string[]>('addRepo', { path: found.repo })).length;
     } catch (e: any) {
-      log(`skipping ${folder.uri.fsPath}: ${e?.message ?? e}`);
+      const code = String(e?.code ?? 'error');
+      log(`skipping ${folder.uri.fsPath}: ${code}: ${e?.message ?? e}`);
+      problems.push({ folder: folder.uri.fsPath, code, message: String(e?.message ?? e) });
     }
   }
+  return { repos, problems };
 }
 
 // deactivate lets the core finish what it is writing before the host stops.

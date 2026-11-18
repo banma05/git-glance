@@ -4,6 +4,13 @@ import { mockHost } from './mock';
 
 export type ThemeKind = 'dark' | 'light';
 
+// A workspace folder the editor could not add to the list, and why (VS Code only).
+export interface DiscoveryProblem {
+  folder: string; // "" when the whole run failed
+  code: string;
+  message: string;
+}
+
 export interface Host {
   call<T>(method: string, params?: object): Promise<T>;
   openFolder(path: string): Promise<void>;
@@ -15,6 +22,7 @@ export interface Host {
   theme(): ThemeKind;
   onTheme(cb: (t: ThemeKind) => void): void;
   onRefresh?(cb: () => void): void; // the host asks the page to read the repository list and the view again
+  onDiscovery?(cb: (problems: DiscoveryProblem[]) => void): void; // what the editor could not add, sent before each repository list
 }
 
 // HostError is what a rejected call carries: the code and message of the core's

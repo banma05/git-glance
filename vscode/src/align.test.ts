@@ -48,6 +48,18 @@ describe('alignSummary', () => {
 });
 
 describe('alignAll', () => {
+  it('reads the repositories only once workspace discovery is done', async () => {
+    let discovered!: () => void;
+    const call = vi.fn(async (method: string) => (method === 'repos' ? [] : report(0, 0)));
+    h.info.mockResolvedValueOnce('Align');
+    const run = alignAll({ call } as any, () => undefined, () => undefined, () => new Promise<void>((r) => (discovered = r)));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(call).not.toHaveBeenCalled();
+    discovered();
+    await run;
+    expect(call).toHaveBeenCalledWith('repos');
+  });
+
   it('does nothing without the confirm', async () => {
     const call = vi.fn();
     const done = vi.fn();

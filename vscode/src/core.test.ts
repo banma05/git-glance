@@ -261,7 +261,7 @@ describe('CoreClient timeouts and dispose', () => {
     procs[0].reply({ id: procs[0].written[0].id, result: 'late' });
     const q = client.call('version');
     await vi.advanceTimersByTimeAsync(0);
-    procs[0].reply({ id: procs[0].written[1].id, result: 'fine' });
+    procs[0].reply({ id: procs[0].written.find((m: any) => m.method === 'version').id, result: 'fine' });
     expect(await q).toBe('fine');
   });
 
@@ -306,11 +306,82 @@ describe('CoreClient timeouts and dispose', () => {
     await vi.advanceTimersByTimeAsync(30 * MIN + 1);
     const e = await p;
     expect(e).toMatchObject({ code: 'still-running' });
-    expect(e.message).toMatch(/operation log/);
+    expect(e.message).toMatch(/Git Glance output/);
     procs[0].reply({ id: procs[0].written[0].id, result: { ok: true } });
     await vi.advanceTimersByTimeAsync(0);
     expect(lines.join('\n')).toMatch(/removeFolder.*finished after its time limit/);
     expect(lines.join('\n')).toContain('"ok":true');
+  });
+
+  it('asks the core to cancel a read that timed out and logs its late answer without the result', async () => {
+    const { client, procs } = setup();
+    const lines: string[] = [];
+    client.onLog((l) => lines.push(l));
+    const p = client.call('fileAt', { repo: '/r', ref: 'main', path: 'secret.txt' }, 1000).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    const id = procs[0].written[0].id;
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(await p).toMatchObject({ code: 'timeout' });
+    expect(procs[0].written[1]).toMatchObject({ method: 'cancel', params: { target: id } });
+    expect(lines.join('\n')).toMatch(/fileAt timed out after 1000 ms/);
+    procs[0].reply({ id: procs[0].written[1].id, result: {} }); // the answer to cancel itself
+    procs[0].reply({ id, result: { text: 'top secret content' } });
+    await vi.advanceTimersByTimeAsync(0);
+    const log = lines.join('\n');
+    expect(log).toMatch(/fileAt answered \d+ ms after its time limit: ok/);
+    expect(log).not.toContain('top secret');
+    expect(log).not.toContain('secret.txt');
+    expect(lines.filter((l) => l.includes('after its time limit'))).toHaveLength(1);
+  });
+
+  it('logs the late cancelled answer of a timed-out read by its code', async () => {
+    const { client, procs } = setup();
+    const lines: string[] = [];
+    client.onLog((l) => lines.push(l));
+    const p = client.call('view', { repo: '/r' }, 1000).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1001);
+    await p;
+    procs[0].reply({ id: procs[0].written[0].id, error: { code: 'cancelled', message: 'cancelled' } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lines.join('\n')).toMatch(/view answered \d+ ms after its time limit: cancelled/);
+  });
+
+  it('never sends cancel for a write', async () => {
+    const { client, procs } = setup();
+    const ac = new AbortController();
+    const p = client.call('removeFolder', { repo: '/r' }, 1000, ac.signal).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    ac.abort();
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(await p).toMatchObject({ code: 'still-running' });
+    expect(procs[0].written.map((m: any) => m.method)).toEqual(['removeFolder']);
+  });
+
+  it('cancels a read when its signal aborts, quietly', async () => {
+    const { client, procs } = setup();
+    const lines: string[] = [];
+    client.onLog((l) => lines.push(l));
+    const ac = new AbortController();
+    const p = client.call('view', { repo: '/r' }, undefined, ac.signal).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    const id = procs[0].written[0].id;
+    ac.abort();
+    expect(await p).toMatchObject({ code: 'cancelled' });
+    expect(procs[0].written[1]).toMatchObject({ method: 'cancel', params: { target: id } });
+    procs[0].reply({ id, error: { code: 'cancelled', message: 'cancelled' } });
+    procs[0].reply({ id: procs[0].written[1].id, result: {} });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lines).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not call the core for a read whose signal aborted before it started', async () => {
+    const { client, spawnFn } = setup();
+    const ac = new AbortController();
+    ac.abort();
+    await expect(client.call('view', {}, undefined, ac.signal)).rejects.toMatchObject({ code: 'cancelled' });
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 
   it('localizes its error messages', async () => {

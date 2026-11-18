@@ -41,7 +41,13 @@ export function alignSummary(outcomes: AlignOutcome[]): { text: string; problems
 // alignAll fast-forwards the branches of every listed repository, after the
 // user confirms. The core only moves branches that are clean and only behind.
 // done runs once the repositories were aligned, so the pages read them again.
-export async function alignAll(core: Pick<CoreClient, 'call'>, log: (l: string) => void, done: () => void): Promise<void> {
+// beforeRepos waits for the discovery of the workspace repositories.
+export async function alignAll(
+  core: Pick<CoreClient, 'call'>,
+  log: (l: string) => void,
+  done: () => void,
+  beforeRepos: () => Promise<unknown> = async () => undefined,
+): Promise<void> {
   const yes = vscode.l10n.t('Align');
   const pick = await vscode.window.showInformationMessage(
     vscode.l10n.t('Fast-forward every branch that is only behind its remote in all listed repositories?'),
@@ -51,6 +57,7 @@ export async function alignAll(core: Pick<CoreClient, 'call'>, log: (l: string) 
   if (pick !== yes) return;
   let repos: string[];
   try {
+    await beforeRepos();
     repos = await core.call<string[]>('repos');
   } catch (e: any) {
     void vscode.window.showErrorMessage(vscode.l10n.t('Git Glance: {0}', String(e?.message ?? e)));

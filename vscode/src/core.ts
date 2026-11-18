@@ -63,6 +63,7 @@ interface Pending {
   timer: ReturnType<typeof setTimeout> | undefined;
   write: boolean;
   settled: boolean; // rejected already (timeout); the entry stays while a write may still run
+  stopListening?: () => void; // removes the abort listener of the caller's signal
 }
 
 // CoreClient talks JSON lines to "<bin> rpc". Replies are matched by id and may
@@ -75,6 +76,8 @@ export class CoreClient {
   private startProblem = ''; // why the last start failed, for the core-unavailable message
   private disposed = false;
   private exitWaiters: Array<() => void> = [];
+  private lateReads = new Map<number, { method: string; at: number }>(); // reads that timed out, by id
+  private quiet = new Set<number>(); // ids whose answer is of no interest: cancels, and reads cancelled by their caller
   private log: (line: string) => void = () => {};
   private readonly platform: string;
   private readonly chmod: (path: string, mode: number) => void;
@@ -99,22 +102,43 @@ export class CoreClient {
     this.failedStarts = 0;
   }
 
-  call<T = any>(method: string, params?: object, timeoutMs?: number): Promise<T> {
+  // call runs a core method. signal lets the caller give up on a read: the
+  // core is asked to cancel it and the call rejects with code cancelled. A
+  // write is never cancelled; it runs to its end whatever the caller does.
+  call<T = any>(method: string, params?: object, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     if (this.disposed) return Promise.reject(new CoreError('core-disposed', vscode.l10n.t('The core client was shut down.')));
+    const write = WRITE_METHODS.has(method);
+    if (!write && signal?.aborted) return Promise.reject(this.cancelled());
     const proc = this.ensureProcess();
     if (!proc) return Promise.reject(this.unavailable());
     const id = this.nextId++;
     const limit = timeoutMs ?? timeoutFor(method);
     return new Promise<T>((resolve, reject) => {
-      const write = WRITE_METHODS.has(method);
       const entry: Pending = { method, resolve, reject, timer: undefined, write, settled: false };
       entry.timer = setTimeout(() => {
         // Reject the caller but keep the process: the core may still be working.
         entry.settled = true;
         entry.timer = undefined;
-        reject(write ? this.stillRunning(method, limit) : this.timedOut(method, limit));
-        if (!write) this.pending.delete(id);
+        if (write) {
+          reject(this.stillRunning(method, limit));
+          return;
+        }
+        this.finish(id);
+        this.log(`${method} timed out after ${limit} ms`);
+        this.lateReads.set(id, { method, at: Date.now() });
+        this.sendCancel(id);
+        reject(this.timedOut(method, limit));
       }, limit);
+      if (!write && signal) {
+        const onAbort = () => {
+          if (!this.finish(id)) return;
+          this.quiet.add(id);
+          this.sendCancel(id);
+          reject(this.cancelled());
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        entry.stopListening = () => signal.removeEventListener('abort', onAbort);
+      }
       this.pending.set(id, entry);
       const line = JSON.stringify({ id, method, params: params ?? {} }) + '\n';
       try {
@@ -126,6 +150,23 @@ export class CoreClient {
     });
   }
 
+  // sendCancel asks the core to stop the read with id target; its answer is ignored.
+  private sendCancel(target: number): void {
+    const proc = this.proc;
+    if (!proc) return;
+    const id = this.nextId++;
+    this.quiet.add(id);
+    try {
+      proc.stdin!.write(JSON.stringify({ id, method: 'cancel', params: { target } }) + '\n');
+    } catch {
+      this.quiet.delete(id);
+    }
+  }
+
+  private cancelled(): CoreError {
+    return new CoreError('cancelled', vscode.l10n.t('The call was cancelled.'));
+  }
+
   private timedOut(method: string, ms: number): CoreError {
     return new CoreError('timeout', vscode.l10n.t('{0} did not answer within {1} s', method, Math.round(ms / 1000)));
   }
@@ -133,7 +174,7 @@ export class CoreClient {
   private stillRunning(method: string, ms: number): CoreError {
     return new CoreError(
       'still-running',
-      vscode.l10n.t('{0} is still running after {1} min; its result will be in the operation log', method, Math.round(ms / MINUTE)),
+      vscode.l10n.t('{0} is still running after {1} min; when it ends, its answer is written to the Git Glance output', method, Math.round(ms / MINUTE)),
     );
   }
 
@@ -185,6 +226,7 @@ export class CoreClient {
     if (!p) return undefined;
     this.pending.delete(id);
     if (p.timer) clearTimeout(p.timer);
+    p.stopListening?.();
     return p;
   }
 
@@ -255,6 +297,8 @@ export class CoreClient {
         this.noteStartProblem(why);
       }
       this.log(`core exited: ${why}`);
+      this.lateReads.clear();
+      this.quiet.clear();
       for (const id of [...this.pending.keys()]) {
         const p = this.finish(id)!;
         if (!p.settled) p.reject(new CoreError('core-exited', vscode.l10n.t('The core program stopped ({0}).', why)));
@@ -285,8 +329,17 @@ export class CoreClient {
       return false;
     }
     if (!msg || typeof msg.id !== 'number') return false;
+    if (this.quiet.delete(msg.id)) return true;
+    const late = this.lateReads.get(msg.id);
+    if (late) {
+      // Only how it ended: a read's result may hold file contents.
+      this.lateReads.delete(msg.id);
+      const outcome = msg.error ? String(msg.error.code ?? 'error') : 'ok';
+      this.log(`${late.method} answered ${Date.now() - late.at} ms after its time limit: ${outcome}`);
+      return true;
+    }
     const p = this.finish(msg.id);
-    if (!p) return true; // late answer to a read that already timed out
+    if (!p) return true; // an answer nobody waits for any more
     if (p.settled) {
       // A write that outlived its wait: its caller was told it is still
       // running, so the answer goes to the log (the op log has it too).

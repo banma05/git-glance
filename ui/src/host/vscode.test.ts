@@ -73,6 +73,28 @@ describe('vscodeHost', () => {
     expect(sent.map((m) => m.page)).toEqual(['tok-1', 'tok-1', 'tok-1', 'tok-1', 'tok-1']);
   });
 
+  it('tags every message with one instance id made when the page loads', () => {
+    const a = vscodeHost();
+    void a.call('repos');
+    a.openWide();
+    const first = sent.map((m) => m.instance);
+    expect(first[0]).toMatch(/^[0-9a-f]{32}$/);
+    expect(first[1]).toBe(first[0]);
+    sent.length = 0;
+    vscodeHost(); // a page loaded again
+    const b = vscodeHost();
+    void b.call('repos');
+    expect(sent[0].instance).not.toBe(first[0]);
+  });
+
+  it('passes on the problems of workspace discovery', () => {
+    const h = vscodeHost();
+    const cb = vi.fn();
+    h.onDiscovery?.(cb);
+    deliver({ type: 'discovery', problems: [{ folder: '/w', code: 'core-unavailable', message: 'x' }, { junk: 1 }] });
+    expect(cb).toHaveBeenCalledWith([{ folder: '/w', code: 'core-unavailable', message: 'x' }]);
+  });
+
   it('tells the page to read again when the extension says refresh', () => {
     const h = vscodeHost();
     const cb = vi.fn();

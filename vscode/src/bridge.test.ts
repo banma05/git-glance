@@ -40,7 +40,7 @@ beforeEach(() => {
 describe('handleWebviewMessage', () => {
   it('forwards call and answers by id', async () => {
     await handleWebviewMessage({ type: 'call', id: 4, method: 'view', params: { repo: 'r' } }, deps);
-    expect(call).toHaveBeenCalledWith('view', { repo: 'r' });
+    expect(call).toHaveBeenCalledWith('view', { repo: 'r' }, undefined, undefined);
     expect(posted).toEqual([{ type: 'result', id: 4, result: { ok: true } }]);
   });
 
@@ -138,6 +138,8 @@ describe('openFolder path safety', () => {
 });
 
 describe('page tokens', () => {
+  const I = 'inst-1'; // the page instance: made by the page each time it loads
+
   it('gives every render a new, unguessable token', () => {
     const gen = new Generation();
     const a = gen.next();
@@ -151,34 +153,41 @@ describe('page tokens', () => {
     call.mockImplementationOnce(() => new Promise((r) => (finish = r)));
     const gen = new Generation();
     const old = gen.next();
-    const pending = handlePageMessage({ type: 'call', id: 1, method: 'view', page: old }, gen, deps);
+    const pending = handlePageMessage({ type: 'call', id: 1, method: 'view', page: old, instance: I }, gen, deps);
     const fresh = gen.next(); // the page was reloaded
     finish({ old: true });
     await pending;
     expect(posted).toEqual([]);
     // a call made after the reload is answered
-    await handlePageMessage({ type: 'call', id: 1, method: 'view', page: fresh }, gen, deps);
+    await handlePageMessage({ type: 'call', id: 1, method: 'view', page: fresh, instance: 'inst-2' }, gen, deps);
     expect(posted).toEqual([{ type: 'result', id: 1, result: { ok: true } }]);
   });
 
-  it('ignores a message of an older render that arrives after the reload', async () => {
+  it('ignores, and logs by type only, a message of an older render that arrives after the reload', async () => {
+    const lines: string[] = [];
     const gen = new Generation();
     const old = gen.next();
     gen.next();
-    await handlePageMessage({ type: 'call', id: 1, method: 'view', page: old }, gen, deps);
-    await handlePageMessage({ type: 'copy', text: 'x', page: old }, gen, deps);
-    await handlePageMessage({ type: 'openWide', page: old }, gen, deps);
+    const d = { ...deps, log: (l: string) => lines.push(l) };
+    await handlePageMessage({ type: 'call', id: 1, method: 'view', params: { repo: '/secret/path' }, page: old, instance: I }, gen, d);
+    await handlePageMessage({ type: 'copy', text: 'x', page: old, instance: I }, gen, d);
+    await handlePageMessage({ type: 'openWide', page: old, instance: I }, gen, d);
     expect(call).not.toHaveBeenCalled();
     expect(h.writeText).not.toHaveBeenCalled();
     expect(openWide).not.toHaveBeenCalled();
     expect(posted).toEqual([]);
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/ignored a call message/);
+    expect(lines.join('\n')).not.toContain('/secret/path');
+    expect(lines.join('\n')).not.toContain(old);
   });
 
-  it('ignores a message without a token', async () => {
+  it('ignores a message without a token or without an instance', async () => {
     const gen = new Generation();
-    gen.next();
-    await handlePageMessage({ type: 'call', id: 1, method: 'view' }, gen, deps);
-    await handlePageMessage({ type: 'call', id: 2, method: 'view', page: 7 }, gen, deps);
+    const page = gen.next();
+    await handlePageMessage({ type: 'call', id: 1, method: 'view', instance: I }, gen, deps);
+    await handlePageMessage({ type: 'call', id: 2, method: 'view', page: 7, instance: I }, gen, deps);
+    await handlePageMessage({ type: 'call', id: 3, method: 'view', page }, gen, deps);
     expect(call).not.toHaveBeenCalled();
     expect(posted).toEqual([]);
   });
@@ -186,30 +195,92 @@ describe('page tokens', () => {
   it('serves a message of the current render', async () => {
     const gen = new Generation();
     const page = gen.next();
-    await handlePageMessage({ type: 'call', id: 3, method: 'repos', page }, gen, deps);
-    expect(call).toHaveBeenCalledWith('repos', undefined);
+    await handlePageMessage({ type: 'call', id: 3, method: 'repos', page, instance: I }, gen, deps);
+    expect(call).toHaveBeenCalledWith('repos', undefined, undefined, expect.any(AbortSignal));
     expect(posted).toEqual([{ type: 'result', id: 3, result: { ok: true } }]);
+  });
+
+  it('never gives a page that reloaded with the same HTML a reply meant for the instance before it', async () => {
+    let finish!: (v: unknown) => void;
+    call.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const gen = new Generation();
+    const page = gen.next();
+    const pending = handlePageMessage({ type: 'call', id: 1, method: 'view', page, instance: 'first' }, gen, deps);
+    // VS Code reloaded the webview: same HTML, same token, a new instance whose ids start at 1 again
+    await handlePageMessage({ type: 'call', id: 1, method: 'repos', page, instance: 'second' }, gen, deps);
+    finish({ meantFor: 'first' });
+    await pending;
+    expect(posted).toEqual([{ type: 'result', id: 1, result: { ok: true } }]);
+    // the first instance is gone for good: its messages are ignored
+    await handlePageMessage({ type: 'call', id: 2, method: 'view', page, instance: 'first' }, gen, deps);
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels the reads in flight of a render when the page is rendered again or goes away', async () => {
+    const signals: AbortSignal[] = [];
+    call.mockImplementation((_m: string, _p: unknown, _t: unknown, signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise(() => undefined);
+    });
+    const gen = new Generation();
+    const page = gen.next();
+    void handlePageMessage({ type: 'call', id: 1, method: 'view', page, instance: I }, gen, deps);
+    await Promise.resolve();
+    expect(signals[0].aborted).toBe(false);
+    const next = gen.next();
+    expect(signals[0].aborted).toBe(true);
+    void handlePageMessage({ type: 'call', id: 1, method: 'view', page: next, instance: 'b' }, gen, deps);
+    await Promise.resolve();
+    expect(signals[1].aborted).toBe(false);
+    void handlePageMessage({ type: 'call', id: 2, method: 'view', page: next, instance: 'c' }, gen, deps);
+    await Promise.resolve();
+    expect(signals[1].aborted).toBe(true); // instance b was replaced by c
+    gen.dispose();
+    expect(signals[2].aborted).toBe(true);
+  });
+});
+
+describe('logging calls that failed for a page', () => {
+  it('logs method, code and elapsed time, never the params', async () => {
+    const lines: string[] = [];
+    call.mockRejectedValueOnce(Object.assign(new Error('view did not answer within 300 s'), { code: 'timeout' }));
+    await handleWebviewMessage({ type: 'call', id: 1, method: 'view', params: { repo: '/private/repo' } }, { ...deps, log: (l) => lines.push(l) });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^view failed: timeout after \d+ ms$/);
+    expect(posted[0]).toMatchObject({ id: 1, error: { code: 'timeout' } });
+  });
+
+  it('says nothing and answers nothing for a call cancelled because its page went away', async () => {
+    const lines: string[] = [];
+    call.mockRejectedValueOnce(Object.assign(new Error('cancelled'), { code: 'cancelled' }));
+    await handleWebviewMessage({ type: 'call', id: 1, method: 'view' }, { ...deps, log: (l) => lines.push(l) });
+    expect(lines).toEqual([]);
+    expect(posted).toEqual([]);
   });
 });
 
 describe('repository list during startup discovery', () => {
-  it('asks the core for repos only after beforeRepos settles', async () => {
-    let open!: () => void;
-    const beforeRepos = vi.fn(() => new Promise<void>((r) => (open = r)));
+  it('asks the core for repos only after beforeRepos settles, and sends the discovery problems first', async () => {
+    let open!: (p: unknown[]) => void;
+    const problems = [{ folder: '/w', code: 'core-unavailable', message: 'x' }];
+    const beforeRepos = vi.fn(() => new Promise<any[]>((r) => (open = r)));
     const pending = handleWebviewMessage({ type: 'call', id: 1, method: 'repos' }, { ...deps, beforeRepos });
     await Promise.resolve();
     expect(beforeRepos).toHaveBeenCalledTimes(1);
     expect(call).not.toHaveBeenCalled();
-    open();
+    open(problems);
     await pending;
-    expect(call).toHaveBeenCalledWith('repos', undefined);
-    expect(posted).toEqual([{ type: 'result', id: 1, result: { ok: true } }]);
+    expect(call).toHaveBeenCalledWith('repos', undefined, undefined, undefined);
+    expect(posted).toEqual([
+      { type: 'discovery', problems },
+      { type: 'result', id: 1, result: { ok: true } },
+    ]);
   });
 
   it('does not hold other methods', async () => {
-    const beforeRepos = vi.fn(() => new Promise<void>(() => undefined));
+    const beforeRepos = vi.fn(() => new Promise<any[]>(() => undefined));
     await handleWebviewMessage({ type: 'call', id: 1, method: 'view', params: { repo: '/r' } }, { ...deps, beforeRepos });
     expect(beforeRepos).not.toHaveBeenCalled();
-    expect(call).toHaveBeenCalledWith('view', { repo: '/r' });
+    expect(call).toHaveBeenCalledWith('view', { repo: '/r' }, undefined, undefined);
   });
 });
