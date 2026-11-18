@@ -9,8 +9,12 @@ import (
 	"github.com/banma05/git-glance/core/internal/gitx"
 )
 
-const refFormat = "%(refname)%00%(objectname)%00%(upstream:short)%00" +
+// refFormat uses full upstream names: %(upstream:short) is ambiguous when a
+// local branch is named like the remote-tracking one.
+const refFormat = "%(refname)%00%(objectname)%00%(upstream)%00%(upstream:remoteref)%00" +
 	"%(upstream:track)%00%(committerdate:unix)%00%(subject)"
+
+const refFields = 7
 
 func readRefs(ctx context.Context, r gitx.Runner, dir string) (local, remote []Ref, err error) {
 	out, err := r.Run(ctx, dir, "for-each-ref", "--format="+refFormat, "refs/heads", "refs/remotes")
@@ -42,13 +46,13 @@ func readRefs(ctx context.Context, r gitx.Runner, dir string) (local, remote []R
 }
 
 func parseRef(line string) (Ref, string, error) {
-	f := strings.SplitN(line, "\x00", 6)
-	if len(f) != 6 {
+	f := strings.SplitN(line, "\x00", refFields)
+	if len(f) != refFields {
 		return Ref{}, "", fmt.Errorf("unexpected for-each-ref line %q", line)
 	}
-	ref := Ref{Hash: f[1], Upstream: f[2], Subject: f[5]}
-	ref.Time, _ = strconv.ParseInt(f[4], 10, 64)
-	ref.Ahead, ref.Behind, ref.UpstreamGone = parseTrack(f[3])
+	ref := Ref{Hash: f[1], Upstream: f[2], UpstreamRemoteRef: f[3], Subject: f[6]}
+	ref.Time, _ = strconv.ParseInt(f[5], 10, 64)
+	ref.Ahead, ref.Behind, ref.UpstreamGone = parseTrack(f[4])
 	return ref, f[0], nil
 }
 

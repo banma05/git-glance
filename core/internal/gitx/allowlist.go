@@ -56,7 +56,7 @@ func Allowed(args []string) error {
 	case "fetch":
 		ok = allowedFetch(args)
 	case "merge":
-		ok = len(args) == 4 && args[1] == "--ff-only" && args[2] == "--no-overwrite-ignore" && plain(args[3])
+		ok = len(args) == 5 && eq(args[:4], "merge", "--ff-only", "--no-overwrite-ignore", "--no-autostash") && plain(args[4])
 	case "switch":
 		ok = len(args) == 4 && args[1] == "--no-guess" && args[2] == "--no-overwrite-ignore" && plain(args[3])
 	case "worktree":

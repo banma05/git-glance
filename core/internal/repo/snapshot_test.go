@@ -78,8 +78,21 @@ func TestReadBasics(t *testing.T) {
 		t.Fatal(err)
 	}
 	fa, _ = findRef(s.Local, "feature/a")
-	if fa.Upstream != "origin/feature/a" || fa.Ahead != 0 || fa.Behind != 0 {
+	if fa.Upstream != "refs/remotes/origin/feature/a" || fa.UpstreamRemoteRef != "refs/heads/feature/a" || fa.Ahead != 0 || fa.Behind != 0 {
 		t.Errorf("after push feature/a = %+v", fa)
+	}
+	// A local branch named like the remote-tracking one makes the short
+	// upstream name ambiguous; the full name is not.
+	r.Branch("origin/feature/a", "main")
+	s, _ = Read(ctx, gitx.ExecRunner{}, r.Dir)
+	if fa, _ = findRef(s.Local, "feature/a"); fa.Upstream != "refs/remotes/origin/feature/a" {
+		t.Errorf("with a shadowing local branch feature/a = %+v", fa)
+	}
+	r.Git(r.Dir, "branch", "-D", "origin/feature/a")
+	r.Git(r.Dir, "branch", "--track", "alice/x", "origin/main")
+	s, _ = Read(ctx, gitx.ExecRunner{}, r.Dir)
+	if ax, _ := findRef(s.Local, "alice/x"); ax.Upstream != "refs/remotes/origin/main" || ax.UpstreamRemoteRef != "refs/heads/main" {
+		t.Errorf("alice/x = %+v", ax)
 	}
 	r.Commit(wt, "more", map[string]string{"more.txt": "x\n"})
 	s, _ = Read(ctx, gitx.ExecRunner{}, r.Dir)

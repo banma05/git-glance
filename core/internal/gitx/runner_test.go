@@ -205,7 +205,7 @@ func TestLocalMutationsIgnoreCancellation(t *testing.T) {
 
 func TestRunCappedRefusesMutations(t *testing.T) {
 	r := ExecRunner{Git: "definitely-not-a-binary"}
-	for _, a := range [][]string{{"push"}, {"fetch", "--all", "--prune", "--no-prune-tags"}, {"merge", "--ff-only", "--no-overwrite-ignore", "x"}, {"worktree", "remove", "x"}, {"symbolic-ref", "-q", "--short", "HEAD"}} {
+	for _, a := range [][]string{{"push"}, {"fetch", "--all", "--prune", "--no-prune-tags"}, {"merge", "--ff-only", "--no-overwrite-ignore", "--no-autostash", "x"}, {"worktree", "remove", "x"}, {"symbolic-ref", "-q", "--short", "HEAD"}} {
 		_, _, err := r.RunCapped(context.Background(), t.TempDir(), 10, a...)
 		if !errors.Is(err, ErrNotAllowed) {
 			t.Fatalf("RunCapped(%q) err = %v, want ErrNotAllowed", a, err)

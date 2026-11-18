@@ -2,6 +2,10 @@ package ops
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,7 +25,9 @@ type AlignItem struct {
 // AlignSkip is a branch that was left alone. Reason is one of dirty, ahead,
 // diverged, upstream-gone, hidden-changes (tracked files marked skip-worktree or
 // assume-unchanged exist on disk), folder-missing (its folder was deleted from disk),
-// checked-out-twice (several folders hold the branch) or git-failed.
+// checked-out-twice (several folders hold the branch), tracks-other-branch
+// (its upstream is a branch of another name, such as a trunk; Detail names
+// it), in-progress (a stopped rebase or a bisect works on it) or git-failed.
 type AlignSkip struct {
 	Branch string   `json:"branch"`
 	Reason string   `json:"reason"`
@@ -41,42 +47,44 @@ type AlignReport struct {
 const maxSkipFiles = 50
 
 // Align fetches, then fast-forwards every local branch that is only behind its
-// remote-tracking upstream. Anything that is not a pure fast-forward of a clean
-// branch is left untouched and reported.
+// remote-tracking upstream of the same name. Anything that is not a pure
+// fast-forward of a clean branch is left untouched and reported. A failed
+// fetch (one remote unreachable, or offline) does not stop it: the
+// remote-tracking refs that are there are still safe targets, and the report
+// carries the fetch error.
 func Align(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot string, now func() time.Time) (AlignReport, error) {
 	fetch := Fetch(ctx, r, repoRoot, now)
-	if !fetch.OK {
-		return AlignReport{Fetch: fetch, Updated: []AlignItem{}, Skipped: []AlignSkip{}}, nil
-	}
 	snap, err := repo.Read(ctx, r, repoRoot)
 	if err != nil {
 		return AlignReport{Fetch: fetch, Updated: []AlignItem{}, Skipped: []AlignSkip{}}, err
 	}
-	rep := alignSnapshot(ctx, r, st, repoRoot, snap, now)
+	rep, err := alignSnapshot(ctx, r, st, repoRoot, snap, now)
 	rep.Fetch = fetch
-	return rep, nil
+	return rep, err
 }
 
 // alignSnapshot aligns the branches of snap. Every update re-checks that the
 // repository still matches the snapshot.
-func alignSnapshot(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot string, snap repo.Snapshot, now func() time.Time) AlignReport {
+func alignSnapshot(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot string, snap repo.Snapshot, now func() time.Time) (AlignReport, error) {
 	rep := AlignReport{Updated: []AlignItem{}, Skipped: []AlignSkip{}}
+	held, err := heldBranches(ctx, r, repoRoot)
+	if err != nil {
+		return rep, err
+	}
 	remotes := map[string]bool{}
 	for _, rr := range snap.Remote {
-		remotes[rr.Name] = true
+		remotes["refs/remotes/"+rr.Name] = true
 	}
 	for _, b := range snap.Local {
-		if b.Upstream == "" || (!b.UpstreamGone && !remotes[b.Upstream]) {
+		// Only upstreams that are remote-tracking refs present now; branches
+		// tracking a local branch are not listed.
+		if !strings.HasPrefix(b.Upstream, "refs/remotes/") || (!b.UpstreamGone && !remotes[b.Upstream]) {
 			continue
 		}
-		if b.UpstreamGone {
-			rep.Skipped = append(rep.Skipped, AlignSkip{Branch: b.Name, Reason: "upstream-gone", Files: []string{}})
+		if !b.UpstreamGone && b.Behind == 0 {
 			continue
 		}
-		if b.Behind == 0 {
-			continue
-		}
-		if skip, ok := checkAhead(b); ok {
+		if skip, ok := checkBranch(b, held); ok {
 			rep.Skipped = append(rep.Skipped, skip)
 			continue
 		}
@@ -110,17 +118,69 @@ func alignSnapshot(ctx context.Context, r gitx.Runner, st settings.Store, repoRo
 			rep.Skipped = append(rep.Skipped, skip)
 		}
 	}
-	return rep
+	return rep, nil
 }
 
-func checkAhead(b repo.Ref) (AlignSkip, bool) {
+// checkBranch skips a branch whose upstream is gone or is a branch of another
+// name (following a trunk would carry it into this branch), a branch a
+// rebase or bisect works on, and one with commits of its own.
+func checkBranch(b repo.Ref, held map[string]bool) (AlignSkip, bool) {
+	skip := func(reason, detail string) (AlignSkip, bool) {
+		return AlignSkip{Branch: b.Name, Reason: reason, Files: []string{}, Detail: detail}, true
+	}
 	switch {
+	case b.UpstreamGone:
+		return skip("upstream-gone", "")
+	case b.UpstreamRemoteRef != "refs/heads/"+b.Name:
+		return skip("tracks-other-branch", strings.TrimPrefix(b.Upstream, "refs/remotes/"))
+	case held[b.Name]:
+		return skip("in-progress", "")
 	case b.Ahead > 0 && b.Behind > 0:
-		return AlignSkip{Branch: b.Name, Reason: "diverged", Files: []string{}}, true
+		return skip("diverged", "")
 	case b.Ahead > 0:
-		return AlignSkip{Branch: b.Name, Reason: "ahead", Files: []string{}}, true
+		return skip("ahead", "")
 	}
 	return AlignSkip{}, false
+}
+
+// heldBranches returns the branches that a stopped rebase or a bisect in any
+// folder of the repository works on, from the state files git keeps in each
+// folder's own git directory. Missing folders count too.
+func heldBranches(ctx context.Context, r gitx.Runner, repoRoot string) (map[string]bool, error) {
+	out, err := r.Run(ctx, repoRoot, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return nil, err
+	}
+	common := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(repoRoot, common)
+	}
+	gitDirs := []string{common}
+	entries, err := os.ReadDir(filepath.Join(common, "worktrees"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			gitDirs = append(gitDirs, filepath.Join(common, "worktrees", e.Name()))
+		}
+	}
+	held := map[string]bool{}
+	for _, dir := range gitDirs {
+		for _, name := range []string{"rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"} {
+			data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if b := strings.TrimPrefix(strings.TrimSpace(string(data)), "refs/heads/"); b != "" {
+				held[b] = true
+			}
+		}
+	}
+	return held, nil
 }
 
 // holdersOf returns every non-detached worktree that has branch checked out.
@@ -188,12 +248,12 @@ func update(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot stri
 		return AlignItem{}, AlignSkip{Branch: b.Name, Reason: "git-failed", Files: []string{}, Detail: detail}, "", false
 	}
 	failErr := func(err error) (AlignItem, AlignSkip, string, bool) { return fail(lastLine(err)) }
-	branchRef, upRef := "refs/heads/"+b.Name, "refs/remotes/"+b.Upstream
+	branchRef, upRef := "refs/heads/"+b.Name, b.Upstream
 	dir, folder := repoRoot, ""
 	cmd := []string{"fetch", ".", upRef + ":" + branchRef}
 	if wt != nil {
 		dir, folder = wt.Path, wt.Path
-		cmd = []string{"merge", "--ff-only", "--no-overwrite-ignore", upRef}
+		cmd = []string{"merge", "--ff-only", "--no-overwrite-ignore", "--no-autostash", upRef}
 		head, err := headRef(ctx, r, dir)
 		if err != nil {
 			return failErr(err)

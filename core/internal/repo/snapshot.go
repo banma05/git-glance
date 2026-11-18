@@ -18,16 +18,20 @@ type CommitInfo struct {
 	Time    int64  `json:"time"`
 }
 
-// Ref is a local or remote branch.
+// Ref is a local or remote branch. Upstream is the full name of a local
+// branch's upstream ("refs/remotes/origin/main", or "refs/heads/main" for a
+// local one; "" for none) and UpstreamRemoteRef the branch it follows on that
+// remote ("refs/heads/main").
 type Ref struct {
-	Name         string `json:"name"`
-	Hash         string `json:"hash"`
-	Upstream     string `json:"upstream"`
-	Subject      string `json:"subject"`
-	Time         int64  `json:"time"`
-	Ahead        int    `json:"ahead"`
-	Behind       int    `json:"behind"`
-	UpstreamGone bool   `json:"upstreamGone"`
+	Name              string `json:"name"`
+	Hash              string `json:"hash"`
+	Upstream          string `json:"upstream"`
+	UpstreamRemoteRef string `json:"upstreamRemoteRef"`
+	Subject           string `json:"subject"`
+	Time              int64  `json:"time"`
+	Ahead             int    `json:"ahead"`
+	Behind            int    `json:"behind"`
+	UpstreamGone      bool   `json:"upstreamGone"`
 }
 
 // DirtyCounts summarizes uncommitted changes of one worktree.

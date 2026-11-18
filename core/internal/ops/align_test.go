@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -148,7 +149,7 @@ func TestAlign(t *testing.T) {
 			case "x":
 				want = "git fetch . refs/remotes/origin/x:refs/heads/x"
 			case "y":
-				want = "git merge --ff-only --no-overwrite-ignore refs/remotes/origin/y"
+				want = "git merge --ff-only --no-overwrite-ignore --no-autostash refs/remotes/origin/y"
 				folder = yWT
 			}
 			if strings.Join(o.Command, " ") != want || o.Folder != folder {
@@ -282,7 +283,11 @@ func (f *fixture) staleSnapshot(t *testing.T) repo.Snapshot {
 
 func (f *fixture) alignStale(t *testing.T, snap repo.Snapshot) AlignReport {
 	t.Helper()
-	return alignSnapshot(context.Background(), f.run, f.st, f.r.Dir, snap, time.Now)
+	rep, err := alignSnapshot(context.Background(), f.run, f.st, f.r.Dir, snap, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rep
 }
 
 func TestAlignFolderSwitchedAfterSnapshot(t *testing.T) {
@@ -466,5 +471,74 @@ func TestAlignSparseEntryIsNotHidden(t *testing.T) {
 	}
 	if got := updatedNames(rep); len(got) != 1 || got[0] != "y" {
 		t.Fatalf("report = %+v", rep)
+	}
+}
+
+// A feature branch set to follow a trunk (origin/main) must never be moved by
+// Align: that would carry the trunk into it.
+func TestAlignOnlyBranchesTrackingThemselves(t *testing.T) {
+	f := newFixture(t)
+	f.r.Git(f.r.Dir, "branch", "--track", "alice/x", "origin/main")
+	f.pushOther("main", "m.txt")
+	before := f.rev("alice/x")
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hasSkip(rep, "alice/x", "tracks-other-branch"); !ok || f.rev("alice/x") != before {
+		t.Fatalf("alice/x moved or not reported: %+v", rep)
+	}
+	if got := strings.Join(updatedNames(rep), ","); got != "main" || f.rev("main") != f.rev("origin/main") {
+		t.Fatalf("updated = %q, want main aligned: %+v", got, rep)
+	}
+}
+
+// A branch that a stopped rebase or a bisect works on belongs to that
+// operation: moving it would be overwritten or confuse it.
+func TestAlignSkipsBranchesHeldByRebaseOrBisect(t *testing.T) {
+	f := newFixture(t)
+	f.r.Commit(f.r.Dir, "second", map[string]string{"s.txt": "s\n"})
+	f.r.Push(f.r.Dir, "origin", "main")
+	for _, b := range []string{"rb", "bs"} {
+		f.r.Branch(b, "main")
+		f.r.Push(f.r.Dir, "-u", "origin", b)
+	}
+	f.r.Git(f.other, "fetch", "origin")
+	f.pushOther("rb", "rb.txt")
+	f.pushOther("bs", "bs.txt")
+	rbWT := f.r.AddWorktree("rb", "rb")
+	cmd := exec.Command("git", "rebase", "-f", "-x", "false", "HEAD~1")
+	cmd.Dir, cmd.Env = rbWT, f.r.Env()
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("the rebase did not stop: %s", out)
+	}
+	bsWT := f.r.AddWorktree("bs", "bs")
+	f.r.Git(bsWT, "bisect", "start")
+	before := map[string]string{"rb": f.rev("rb"), "bs": f.rev("bs")}
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for b, h := range before {
+		if _, ok := hasSkip(rep, b, "in-progress"); !ok || f.rev(b) != h {
+			t.Fatalf("%s moved or not reported as in-progress: %+v", b, rep)
+		}
+	}
+}
+
+// One remote that cannot be reached must not keep the others from aligning.
+func TestAlignAfterOneRemoteFailed(t *testing.T) {
+	f := newFixture(t)
+	f.r.Git(f.r.Dir, "remote", "add", "broken", f.r.Root+"/no-such.git")
+	f.pushOther("x", "x.txt")
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Fetch.OK || rep.Fetch.Error == "" {
+		t.Fatalf("fetch = %+v, want the failure reported", rep.Fetch)
+	}
+	if got := strings.Join(updatedNames(rep), ","); got != "x" || f.rev("x") != f.rev("origin/x") {
+		t.Fatalf("updated = %q, want x: %+v", got, rep)
 	}
 }
