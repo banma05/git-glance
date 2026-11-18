@@ -21,12 +21,12 @@ function opText(op: string, t: T): string {
   return key in en ? t(key as Key) : op;
 }
 
-// resultText writes "ok", a refusal reason, or a failure that ran git
-// ("git-failed: <what git said>", "verify-failed: <what>") as text.
+// resultText writes "ok", a refusal reason, or a failure after a change began
+// ("git-failed: <what git said>", "verify-failed: <what>", "links-failed: <error>") as text.
 function resultText(e: OpEntry, t: T): string {
   if (e.result === 'ok') return t('oplog.result.ok');
   const kind = RESULT_KIND[e.op] ?? 'code';
-  const m = /^(git-failed|verify-failed): ?(.*)$/s.exec(e.result);
+  const m = /^(git-failed|verify-failed|links-failed): ?(.*)$/s.exec(e.result);
   if (m) return m[2] ? `${reasonText(kind, m[1], t)}: ${m[2]}` : reasonText(kind, m[1], t);
   return reasonText(kind, e.result, t);
 }

@@ -43,6 +43,75 @@ const core = (calls: string[]) => calls.filter((c) => c !== 'repos' && c !== 'ge
 
 afterEach(cleanup);
 
+// once returns the given values in turn, the last one for good; an Error is thrown.
+const once = (...values: unknown[]) => {
+  let n = 0;
+  return () => {
+    const v = values[Math.min(n++, values.length - 1)];
+    if (v instanceof Error) throw v;
+    return v;
+  };
+};
+
+describe('the repository list', () => {
+  it('shows a failed list as an error with Retry, not as "no repository"', async () => {
+    const { host, calls } = fakeHost({ repos: once(new HostError('timeout', 'repos did not answer within 60 s'), ['/demo/repo']) });
+    render(<App host={host} />);
+    expect(await screen.findByText(/The core did not answer in time/)).toBeTruthy();
+    expect(screen.queryByText(/No repository yet/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(calls.filter((c) => c === 'repos')).toHaveLength(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows "no repository" only when the list answered empty', async () => {
+    const { host } = fakeHost({ repos: [] });
+    render(<App host={host} />);
+    expect(await screen.findByText('No repository yet; click + to add one')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('says why a workspace folder could not be added instead of the plain empty state', async () => {
+    let tell: (p: unknown) => void = () => undefined;
+    const { host } = fakeHost({ repos: [] });
+    host.onDiscovery = (cb) => (tell = cb as (p: unknown) => void);
+    const realCall = host.call.bind(host);
+    host.call = async <T,>(method: string, params?: object): Promise<T> => {
+      if (method === 'repos') tell([{ folder: '/w/project', code: 'core-unavailable', message: 'it stopped right after starting' }]);
+      return realCall<T>(method, params);
+    };
+    render(<App host={host} />);
+    const line = await screen.findByText(/\/w\/project/);
+    expect(line.textContent).toContain('The core program could not be started');
+    expect(line.textContent).toContain('Git Glance: Refresh');
+    expect(screen.queryByText(/No repository yet/)).toBeNull();
+  });
+
+  it('does not point to a disabled "+" when git is too old', async () => {
+    const { host } = fakeHost({ repos: [], version: { core: 'x', git: '2.29', gitOK: false } });
+    render(<App host={host} />);
+    expect(await screen.findByText(/needs git 2\.30 or newer to add one/)).toBeTruthy();
+    expect(screen.queryByText(/click \+/)).toBeNull();
+    expect(screen.queryByText(/Reading still works/)).toBeNull();
+  });
+
+  it('never shows a cancelled call', async () => {
+    const { host } = fakeHost({ view: once(new HostError('cancelled', 'cancelled'), mockView('/demo/repo')) });
+    render(<App host={host} />);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/cancelled/i)).toBeNull();
+  });
+
+  it('says a read of the remote that ran out of time goes on, not that it failed', async () => {
+    const { host } = fakeHost({ fetch: new HostError('still-running', 'fetch is still running after 20 min') });
+    render(<App host={host} />);
+    expect(await screen.findByText(/Reading the remote takes long/)).toBeTruthy();
+    expect(screen.queryByText(/Could not read the remote/)).toBeNull();
+  });
+});
+
 describe('git too old', () => {
   const byName = (name: string) => screen.getByRole('button', { name: new RegExp(name) }) as HTMLButtonElement;
 
@@ -317,6 +386,39 @@ describe('App failures and repo switching', () => {
     await act(async () => refresh());
     await screen.findByText('feature/search');
     expect(screen.queryByRole('button', { name: 'Switch here' })).toBeNull();
+  });
+
+  it('lets the latest read of the list win: a late empty answer never clears what a later read opened', async () => {
+    let refresh: () => void = () => undefined;
+    let first!: (v: unknown) => void;
+    let n = 0;
+    const host: Host = {
+      async call<T>(method: string, params?: object): Promise<T> {
+        const repo = String((params as { repo?: string } | undefined)?.repo ?? '');
+        if (method === 'repos') return (++n === 1 ? new Promise((r) => (first = r as (v: unknown) => void)) : ['/a']) as Promise<T>;
+        if (method === 'view') return mockView(repo) as T;
+        if (method === 'getGlobal') return { repos: ['/a'], editor: 'code', theme: 'auto' } as T;
+        if (method === 'version') return { core: 'x', git: '2.45', gitOK: true } as T;
+        return okFetch as T;
+      },
+      openFolder: async () => undefined,
+      copy: async () => undefined,
+      openDiff: async () => false,
+      openWide: () => undefined,
+      mode: 'wide',
+      locale: 'en',
+      theme: () => 'dark',
+      onTheme: () => undefined,
+      onRefresh: (cb) => (refresh = cb),
+    };
+    render(<App host={host} />);
+    await waitFor(() => expect(n).toBe(1));
+    await act(async () => refresh());
+    expect(await screen.findByText('feature/login')).toBeTruthy();
+    await act(async () => first([]));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.getByText('feature/login')).toBeTruthy();
+    expect(screen.queryByText(/No repository yet/)).toBeNull();
   });
 
   it('makes no further calls once the opening sequence has settled', async () => {

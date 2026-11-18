@@ -16,7 +16,7 @@ code --install-extension git-glance-win32-x64-0.1.0.vsix
 
 ## 环境要求
 
-- Git 2.30 或更新的版本。git 版本更旧或没有装时，Git Glance 仍会显示能读到的内容，但不做任何改动，并在工具栏下方说明原因。
+- 需要 Git 2.30 或更新的版本。git 版本更旧或没有装时，Git Glance 不做任何改动：不能添加仓库、不能读线上、不能对齐、不动文件夹，并在工具栏下方说明原因。
 - 带工作文件夹的仓库。暂不支持裸仓库（bare repository）。
 
 ## 浏览器模式
@@ -49,7 +49,7 @@ node scripts/build.mjs all --targets host
 
 ## 安全说明
 
-- **删除文件夹**（删除工作树文件夹）会先把被忽略的文件备份，构建产物文件夹除外：`node_modules`、`target`、`build`、`dist`、`out`、`.gradle`、`__pycache__`、`.pytest_cache`、`.mypy_cache`、`.tox`、`.next`、`.nuxt`、`coverage`、`.venv`、`venv`；备份成功后才删除。如果其中某个构建产物文件夹里有独立的 git 仓库、文件夹里有已经不在任何分支上的提交、文件夹里现在是和确认弹窗显示的不一样的分支或提交，或者备份被忽略文件的过程中里面有了变化，就整个不删。备份放在 `<Git Glance 主目录>/backups/` 下：主目录是环境变量 `GITGLANCE_HOME`（若设置），否则是用户配置目录里的 `git-glance`（Linux 上如 `~/.config/git-glance`，macOS 上 `~/Library/Application Support/git-glance`，Windows 上 `%AppData%\git-glance`）。要清理备份，删掉这个 `backups` 文件夹即可。
+- **删除文件夹**（删除工作树文件夹）会先把被忽略的文件备份，构建产物文件夹除外：`node_modules`、`target`、`build`、`dist`、`out`、`.gradle`、`__pycache__`、`.pytest_cache`、`.mypy_cache`、`.tox`、`.next`、`.nuxt`、`coverage`、`.venv`、`venv`；备份成功后才删除。删除前会再检查一遍：分支和提交和确认弹窗显示的一样、没有未提交的改动、没有进行中的操作（rebase、merge、cherry-pick、revert、bisect）、构建产物文件夹里没有独立的 git 仓库、没有只在这个文件夹里的提交、文件夹本身不是链接。备份之后再检查一次：被忽略文件的清单和每个备份文件的大小与修改时间、分支和提交、进行中的操作、“忽略改动”标记、只在这个文件夹里的提交、构建产物里有没有 git 仓库、文件夹是不是变成了链接；有任何变化就什么都不删。构建产物文件夹里的改动不检查（反正会删掉）。就在这一刻被改动的已跟踪或未跟踪文件会让 git 拒绝删除，这时文件夹里的链接可能已经删掉了（只删链接本身，从不动它指向的内容）。备份放在 `<Git Glance 主目录>/backups/` 下：主目录是环境变量 `GITGLANCE_HOME`（若设置），否则是用户配置目录里的 `git-glance`（Linux 上如 `~/.config/git-glance`，macOS 上 `~/Library/Application Support/git-glance`，Windows 上 `%AppData%\git-glance`）。要清理备份，删掉这个 `backups` 文件夹即可。
 - 你仓库自己的钩子（hooks）和 fsmonitor 会和你自己用 git 时一样运行。
 - Git Glance 把自己的设置、操作记录和备份放在上面的主目录里，不会在你的仓库里写它自己的文件。它对仓库做的改动，只有你点击的那些 git 操作。
 

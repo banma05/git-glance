@@ -44,7 +44,7 @@ describe('reason texts', () => {
   it('says a write that ran out of time is still running', () => {
     const text = errorText(new HostError('still-running', 'removeFolder is still running after 30 min'), makeT('en'));
     expect(text).toMatch(/still running/i);
-    expect(text).toMatch(/operation log/i);
+    expect(text).toMatch(/Git Glance output/i);
   });
 
   it('describes a host error by its code and message', () => {

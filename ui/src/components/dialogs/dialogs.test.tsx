@@ -195,6 +195,23 @@ describe('RemoveFolderConfirm', () => {
     expect(d.textContent).toContain('access denied');
   });
 
+  it('names links removed before a failure as removed (link only), and the others as skipped', async () => {
+    open({
+      removeFolder: { ...removeOk, ok: false, reason: 'links-failed', backupDir: '', deletedBuild: [], skippedLinks: ['notes/link'], removedLinks: ['build/dep'], detail: '', logError: '' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    const d = screen.getByRole('dialog');
+    await waitFor(() => expect(d.textContent).toContain(en('dialog.remove.removedLinks', { list: 'build/dep' })));
+    expect(d.textContent).toContain(en('dialog.remove.linksRefused', { list: 'notes/link' }));
+  });
+
+  it('says the skipped links of a refusal were not touched', async () => {
+    open({ removeFolder: { ...removeOk, ok: false, reason: 'locked', backupDir: '', deletedBuild: [], skippedLinks: ['notes/link'], detail: '', logError: '' } });
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain(en('dialog.remove.linksRefused', { list: 'notes/link' })));
+    expect(en('dialog.remove.linksRefused', { list: 'x' })).toMatch(/nothing was touched/);
+  });
+
   it('sends one call on a double click', async () => {
     let release: (v: unknown) => void = () => undefined;
     const slow = () => new Promise((r) => (release = r));
@@ -466,6 +483,47 @@ describe('New folder for an existing branch', () => {
   });
 });
 
+describe('dialogs keep the repository they were opened for', () => {
+  // A harness whose host can move the page to another repository while a dialog is open.
+  function moving(open: DialogName, select: string, over: Record<string, unknown> = {}) {
+    let refresh: () => void = () => undefined;
+    let list = [REPO];
+    const h = fakeHost({ repos: () => list, ...over });
+    h.host.onRefresh = (cb) => (refresh = cb);
+    render(<Harness host={h.host} open={open} select={select} />);
+    const moveAway = async () => {
+      list = ['/other/repo'];
+      await act(async () => refresh());
+      await waitFor(() => expect(h.calls.some((c) => c.method === 'view' && c.params.repo === '/other/repo')).toBe(true));
+    };
+    return { h, moveAway };
+  }
+
+  it('remove: the confirm is disabled once the page shows another repository', async () => {
+    const { h, moveAway } = moving('remove', 'alice/fix/typo', { removeFolder: removeOk });
+    const confirm = (await screen.findByRole('button', { name: en('dialog.remove.confirm') })) as HTMLButtonElement;
+    await moveAway();
+    await waitFor(() => expect(confirm.disabled).toBe(true));
+    expect(screen.getByRole('dialog').textContent).toContain(en('dialog.repoChanged'));
+    fireEvent.click(confirm);
+    expect(h.count('removeFolder')).toBe(0);
+  });
+
+  it('new folder for a branch: the submit is disabled once the page shows another repository', async () => {
+    const { h, moveAway } = moving('createExisting', 'carol/feature/search', {
+      createFolder: { ok: true, reason: '', files: [], path: '/x', detail: '', logError: '' },
+    });
+    const path = (await screen.findByLabelText(en('dialog.create.path'))) as HTMLInputElement;
+    await waitFor(() => expect(path.value).not.toBe(''));
+    await moveAway();
+    const submit = screen.getByRole('button', { name: en('dialog.create.submit') }) as HTMLButtonElement;
+    await waitFor(() => expect(submit.disabled).toBe(true));
+    expect(screen.getByRole('dialog').textContent).toContain(en('dialog.repoChanged'));
+    fireEvent.click(submit);
+    expect(h.count('createFolder')).toBe(0);
+  });
+});
+
 describe('Assign to a trunk', () => {
   it('calls assign with the branch and trunk, then reads the view again', async () => {
     const h = fakeHost({ assign: () => mockView(REPO).settings });
@@ -532,6 +590,25 @@ describe('OpLog', () => {
     expect(within(rows[0]).getByText('new/one')).toBeTruthy();
     expect(within(rows[1]).getByText('old/one')).toBeTruthy();
     expect(screen.getByText('d-new/one')).toBeTruthy();
+  });
+
+  it('writes a links-failed result as the reason text followed by the error', async () => {
+    const entry = {
+      time: 5,
+      repo: REPO,
+      op: 'remove-folder',
+      branch: 'x',
+      folder: '/f',
+      command: [],
+      before: '',
+      after: '',
+      result: 'links-failed: access denied',
+      detail: '',
+    };
+    const h = fakeHost({ ops: [entry] });
+    render(<Harness host={h.host} open="oplog" />);
+    await screen.findByText('x');
+    expect(screen.getByRole('dialog').textContent).toContain(en('remove.reason.links-failed') + ': access denied');
   });
 
   it('writes a failed git step as the reason text followed by what git said', async () => {
@@ -611,6 +688,19 @@ describe('repository tabs "+"', () => {
 describe('results after the dialog closed (page notice)', () => {
   const closeNow = () => fireEvent.keyDown(document, { key: 'Escape' });
   const notice = () => screen.getByTestId('notice').textContent ?? '';
+
+  it('says a remove that ran out of time is still running, not that it was not done', async () => {
+    let fail: (e: unknown) => void = () => undefined;
+    const h = fakeHost({ removeFolder: () => new Promise((_ok, bad) => (fail = bad)) });
+    render(<Harness host={h.host} open="remove" select="alice/fix/typo" />);
+    fireEvent.click(await screen.findByRole('button', { name: en('dialog.remove.confirm') }));
+    await waitFor(() => expect(h.count('removeFolder')).toBe(1));
+    closeNow();
+    await act(async () => fail(new HostError('still-running', 'removeFolder is still running after 30 min')));
+    await waitFor(() => expect(screen.getByTestId('notice')).toBeTruthy());
+    expect(notice()).toMatch(/still running/i);
+    expect(notice()).not.toMatch(/not done/);
+  });
 
   it('shows a failed remove that ended after the dialog was closed', async () => {
     let fail: (e: unknown) => void = () => undefined;

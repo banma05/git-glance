@@ -211,7 +211,8 @@ export interface RemoveFolderResult {
   backupDir: string;
   backupBytes: number;
   deletedBuild: string[];
-  skippedLinks: string[];
+  skippedLinks: string[]; // links the backup did not follow
+  removedLinks: string[]; // links removed (the link only) before the folder went, or before links-failed
   detail: string;
   logError: string;
 }

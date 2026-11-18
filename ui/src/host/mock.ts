@@ -378,6 +378,7 @@ export function mockHost(): Host {
           backupBytes: 1536,
           deletedBuild: ['node_modules'],
           skippedLinks: [],
+          removedLinks: [],
           detail: '',
           logError: '',
         })) as T;

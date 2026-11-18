@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { rpc } from './api';
 import { HostError } from './host/types';
-import type { Host, ThemeKind } from './host/types';
+import type { DiscoveryProblem, Host, ThemeKind } from './host/types';
 import { baseName } from './reasons';
 import type { AlignReport, Global, OpResult, RemoveFolderResult, Theme, View } from './types';
 
@@ -51,9 +51,12 @@ export interface AppState {
   repos: string[];
   repo: string;
   view: View | null;
-  loaded: boolean; // the repository list (and the first view when there is a repository) arrived
+  loaded: boolean; // the repository list (and the first view when there is a repository) arrived, or failed
+  listed: boolean; // the repository list has answered at least once (false: it failed or is pending)
+  discoveryProblems: DiscoveryProblem[]; // workspace folders the editor could not add, and why
   fetching: boolean;
   fetchError: string; // "" when the last read of the remote worked
+  fetchSlow: boolean; // the last read of the remote ran out of time and goes on in the core
   error: unknown; // a failed call other than the remote read; null when none
   noToken: boolean;
   mode: ViewMode;
@@ -78,6 +81,7 @@ export interface Actions {
   selectRepo(repo: string): void;
   addRepo(path: string): void;
   reload(): void; // open the current repository again (after a failed first view)
+  reloadRepos(): void; // read the repository list again (after it failed)
   refresh(): void; // read the remote again, then the view (the retry button)
   setMode(mode: ViewMode): void;
   select(branch: string): void;
@@ -90,9 +94,11 @@ export interface Actions {
   openDialog(name: DialogName): void;
   closeDialog(): void;
   refreshView(): void; // read the view again (after a change made outside the actions)
-  createFolder(trunk: string, branch: string, path: string, existing?: boolean): void; // existing: a folder for a local branch; trunk is unused
+  // repo is the repository the dialog was opened for; nothing is sent when the page has moved on.
+  // existing: a folder for a local branch; trunk is unused.
+  createFolder(repo: string, trunk: string, branch: string, path: string, existing?: boolean): void;
   assign(branch: string, trunk: string): void; // trunk "" goes back to deciding by the commits
-  removeFolder(branch: string, folder: string, head: string): void; // folder and head as the confirm dialog showed them
+  removeFolder(repo: string, branch: string, folder: string, head: string): void; // as the confirm dialog showed them
   setRole(branch: string, role: string, trunk: string): void;
   setRepoSettings(hidePrefix: string, oldDays: number): void;
   clearBackups(): void;
@@ -116,8 +122,11 @@ function initial(host: Host): AppState {
     repo: '',
     view: null,
     loaded: false,
+    listed: false,
+    discoveryProblems: [],
     fetching: false,
     fetchError: '',
+    fetchSlow: false,
     error: null,
     noToken: false,
     mode: 'list',
@@ -146,7 +155,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
   const [state, setState] = useState<AppState>(() => initial(host));
   const ref = useRef(state);
 
-  const { actions, start, reread } = useMemo(() => {
+  const { actions, start, reread, discovered } = useMemo(() => {
     // patch updates the latest state at once, so the next step of a running
     // action reads what the previous step wrote.
     const patch = (p: Partial<AppState>) => {
@@ -160,6 +169,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       return true;
     };
     const fail = (e: unknown) => {
+      if (e instanceof HostError && e.code === 'cancelled') return; // the host dropped it on purpose
       if (noteGit(e)) patch({ loaded: true });
       else if (e instanceof HostError && e.code === 'no-token') patch({ noToken: true, loaded: true });
       else patch({ error: e, loaded: true });
@@ -204,7 +214,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     const refresh = async (repo: string) => {
       // the core counts fetch as a change, so with too old a git there is none
       if (ref.current.gitProblem) return;
-      patch({ fetching: true });
+      patch({ fetching: true, fetchSlow: false });
       try {
         const f = await rpc(host, 'fetch', { repo });
         const view = await rpc(host, 'view', { repo });
@@ -213,9 +223,10 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         patch({ view, fetching: false, fetchError: failed, error: null, ...stale(view) });
       } catch (e) {
         if (!current(repo)) return;
-        if (noteGit(e)) {
-          // the git line says why
-        } else if (e instanceof HostError && e.code === 'no-token') fail(e);
+        if (noteGit(e) || (e instanceof HostError && e.code === 'cancelled')) {
+          // the git line says why, or the host dropped it on purpose
+        } else if (e instanceof HostError && e.code === 'still-running') patch({ fetchSlow: true });
+        else if (e instanceof HostError && e.code === 'no-token') fail(e);
         else patch({ fetchError: reasonOf(e) });
         patch({ fetching: false });
       }
@@ -223,7 +234,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
 
     const open = async (repo: string) => {
       // fetching is reset here: a refresh of the repository left behind drops its result
-      patch({ repo, view: null, selected: '', pick: null, fetchError: '', error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
+      patch({ repo, view: null, selected: '', pick: null, fetchError: '', fetchSlow: false, error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
       try {
         await loadView(repo);
         if (!current(repo)) return;
@@ -262,11 +273,28 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       }
     };
 
+    // readList reads the repository list. Only the latest read has the say:
+    // an older one that ends later gives null, so a late answer never undoes
+    // what a newer one opened.
+    let lists = 0;
+    const readList = async (): Promise<string[] | null> => {
+      const mine = ++lists;
+      try {
+        const repos = await rpc(host, 'repos');
+        if (mine !== lists) return null;
+        patch({ repos, listed: true, error: null });
+        return repos;
+      } catch (e) {
+        if (mine === lists) throw e;
+        return null;
+      }
+    };
+
     const start = async () => {
       void checkGit();
       try {
-        const repos = await rpc(host, 'repos');
-        patch({ repos });
+        const repos = await readList();
+        if (!repos) return;
         if (repos.length === 0) patch({ loaded: true });
         else await open(repos[0]);
       } catch (e) {
@@ -274,13 +302,13 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       }
     };
 
-    // reread answers the host's "refresh": the repository list is read again;
-    // the open repository keeps its place and only its view is read again,
-    // and with none open the first one opens.
+    // reread answers the host's "refresh" and the Retry of a failed list: the
+    // repository list is read again; the open repository keeps its place and
+    // only its view is read again, and with none open the first one opens.
     const reread = async () => {
       try {
-        const repos = await rpc(host, 'repos');
-        patch({ repos });
+        const repos = await readList();
+        if (!repos) return;
         const cur = ref.current.repo;
         if (cur && repos.includes(cur)) {
           await loadView(cur).catch((e) => failFor(cur, e));
@@ -293,6 +321,15 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         fail(e);
       }
     };
+    // discovered takes what the editor could not add to the list. Too old a git
+    // refuses addRepo, and the git line says that already.
+    const discovered = (problems: DiscoveryProblem[]) => {
+      if (problems.some((p) => p.code === 'git-too-old') && !ref.current.gitProblem) {
+        patch({ gitProblem: { kind: 'refused', version: '' } });
+      }
+      patch({ discoveryProblems: problems.filter((p) => p.code !== 'git-too-old') });
+    };
+
     const actions: Actions = {
       selectRepo: (repo) => {
         if (repo !== ref.current.repo) void open(repo);
@@ -313,6 +350,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       reload: () => {
         if (ref.current.repo) void open(ref.current.repo);
       },
+      reloadRepos: () => void reread(),
       refresh: () => {
         if (ref.current.repo && !ref.current.fetching) void refresh(ref.current.repo);
       },
@@ -427,9 +465,8 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
           patch({ busy: false });
         })();
       },
-      createFolder: (trunk, branch, path, existing = false) => {
-        const repo = ref.current.repo;
-        if (!repo || !canWrite()) return;
+      createFolder: (repo, trunk, branch, path, existing = false) => {
+        if (!repo || repo !== ref.current.repo || !canWrite()) return;
         patch({ busy: true, createOutcome: null });
         void (async () => {
           try {
@@ -453,9 +490,8 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
           }
         })();
       },
-      removeFolder: (branch, folder, head) => {
-        const repo = ref.current.repo;
-        if (!repo || !canWrite()) return;
+      removeFolder: (repo, branch, folder, head) => {
+        if (!repo || repo !== ref.current.repo || !canWrite()) return;
         patch({ busy: true, removeOutcome: null });
         void (async () => {
           try {
@@ -548,7 +584,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       setTheme: (theme) => void writeGlobal({ theme }),
       openWide: () => host.openWide(),
     };
-    return { actions, start, reread };
+    return { actions, start, reread, discovered };
   }, [host]);
 
   useEffect(() => {
@@ -557,8 +593,9 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       setState(ref.current);
     });
     host.onRefresh?.(() => void reread());
+    host.onDiscovery?.(discovered);
     void start();
-  }, [host, start, reread]);
+  }, [host, start, reread, discovered]);
 
   return { state, actions };
 }

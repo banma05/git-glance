@@ -22,33 +22,40 @@ export function CreateFolder({ t, host, state, actions, existing = false }: Prop
   const selectedTrunk = view && state.selected ? (view.branches[state.selected]?.trunk ?? '') : '';
   const [trunk, setTrunk] = useState(trunks.includes(selectedTrunk) ? selectedTrunk : (trunks[0] ?? ''));
   const [branch, setBranch] = useState(() => (existing ? state.selected : ''));
+  const [repo] = useState(state.repo); // the repository the dialog was opened for
+  const moved = repo !== state.repo;
   const [path, setPath] = useState('');
   const edited = useRef(false); // the user typed in the path: stop replacing it
   const seq = useRef(0);
 
   const name = branch.trim();
   useEffect(() => {
-    if (!name || !state.repo) return;
+    if (!name || !repo) return;
     const mine = ++seq.current;
-    rpc(host, 'defaultFolder', { repo: state.repo, branch: name })
+    rpc(host, 'defaultFolder', { repo, branch: name })
       .then((r) => {
         if (mine === seq.current && !edited.current) setPath(r.path);
       })
       .catch(() => {
         // a name the core rejects shows its reason when the folder is created
       });
-  }, [name, state.repo, host]);
+  }, [name, repo, host]);
 
   const out = existing && state.createOutcome?.branch !== name ? null : state.createOutcome;
-  const ready = (existing || !!trunk) && !!name && !!path.trim();
+  const ready = (existing || !!trunk) && !!name && !!path.trim() && !moved;
   return (
     <form
       class="form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready && !state.busy && !state.gitProblem) actions.createFolder(trunk, name, path.trim(), existing);
+        if (ready && !state.busy && !state.gitProblem) actions.createFolder(repo, trunk, name, path.trim(), existing);
       }}
     >
+      {moved && (
+        <p class="warn" role="status">
+          {t('dialog.repoChanged')}
+        </p>
+      )}
       {existing ? (
         <p>{t('dialog.createExisting.branch', { branch: name })}</p>
       ) : (

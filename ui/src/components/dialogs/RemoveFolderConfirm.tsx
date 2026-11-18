@@ -18,6 +18,7 @@ interface Props {
 // What the dialog showed when it opened. The folder and its HEAD go with the
 // removal, and the core refuses (changed) when either is no longer true.
 interface Shown {
+  repo: string;
   name: string;
   folder: string;
   head: string;
@@ -26,7 +27,8 @@ interface Shown {
 // whyNot is why the confirm is disabled, "" when it is not: the view read
 // since the dialog opened must still allow the removal of the same folder at
 // the same commit.
-function whyNot(shown: Shown, now: BranchView | null, t: T): string {
+function whyNot(shown: Shown, repo: string, now: BranchView | null, t: T): string {
+  if (repo !== shown.repo) return t('dialog.repoChanged');
   if (!now) return t('dialog.remove.noBranch');
   if (!now.canRemoveFolder) return t('dialog.remove.blocked', { reason: blockText(now.removeBlock, t) });
   if (!shown.head || now.folder !== shown.folder || now.folderHead !== shown.head) return t('dialog.remove.reopen');
@@ -38,7 +40,7 @@ function whyNot(shown: Shown, now: BranchView | null, t: T): string {
 export function RemoveFolderConfirm({ t, host, state, actions }: Props) {
   const [shown] = useState<Shown | null>(() => {
     const b = state.view && state.selected ? state.view.branches[state.selected] : undefined;
-    return b ? { name: b.name, folder: b.folder, head: b.folderHead } : null;
+    return b ? { repo: state.repo, name: b.name, folder: b.folder, head: b.folderHead } : null;
   });
   const [backups, setBackups] = useState<BackupsInfo | null>(null);
   useEffect(() => {
@@ -49,10 +51,10 @@ export function RemoveFolderConfirm({ t, host, state, actions }: Props) {
 
   const out = shown && state.removeOutcome && state.removeOutcome.branch === shown.name ? state.removeOutcome : null;
   if (!shown) return <p class="muted">{t('dialog.remove.noBranch')}</p>;
-  const now = state.view?.branches[shown.name] ?? null;
+  const now = state.repo === shown.repo ? (state.view?.branches[shown.name] ?? null) : null;
   const r = out?.result ?? null;
   const done = !!r?.ok;
-  const blocked = whyNot(shown, now, t);
+  const blocked = whyNot(shown, state.repo, now, t);
   return (
     <div>
       {!done && (
@@ -75,7 +77,7 @@ export function RemoveFolderConfirm({ t, host, state, actions }: Props) {
               class="btn danger"
               disabled={state.busy || !!state.gitProblem || !!blocked}
               onClick={() => {
-                if (!blocked) actions.removeFolder(shown.name, shown.folder, shown.head);
+                if (!blocked) actions.removeFolder(shown.repo, shown.name, shown.folder, shown.head);
               }}
             >
               {t('dialog.remove.confirm')}
@@ -99,7 +101,10 @@ export function RemoveFolderConfirm({ t, host, state, actions }: Props) {
                 r.ok && <p class="muted">{t('dialog.remove.noBackup')}</p>
               )}
               {r.deletedBuild.length > 0 && <p>{t('dialog.remove.build', { list: r.deletedBuild.join(', ') })}</p>}
-              {r.skippedLinks.length > 0 && <p>{t('dialog.remove.links', { list: r.skippedLinks.join(', ') })}</p>}
+              {(r.removedLinks ?? []).length > 0 && <p>{t('dialog.remove.removedLinks', { list: r.removedLinks.join(', ') })}</p>}
+              {r.skippedLinks.length > 0 && (
+                <p>{t(r.ok ? 'dialog.remove.links' : 'dialog.remove.linksRefused', { list: r.skippedLinks.join(', ') })}</p>
+              )}
               <ResultNotes t={t} detail={r.detail} logError={r.logError} />
             </>
           ) : null}

@@ -16,7 +16,7 @@ Open the Git Glance icon in the activity bar. To remove it, uninstall the extens
 
 ## Requirements
 
-- Git 2.30 or newer. With an older git, or none, Git Glance still shows what it can read but changes nothing, and says so under the toolbar.
+- Git 2.30 or newer is required. With an older git, or none, Git Glance changes nothing: it cannot add a repository, read the remote, align or touch folders, and it says so under the toolbar.
 - A repository with a working folder. Bare repositories are not supported yet.
 
 ## Browser mode
@@ -49,7 +49,7 @@ node scripts/build.mjs all --targets host
 
 ## Safety notes
 
-- **Delete folder** (removing a worktree folder) copies ignored files to a backup first, except build-output folders: `node_modules`, `target`, `build`, `dist`, `out`, `.gradle`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.tox`, `.next`, `.nuxt`, `coverage`, `.venv` and `venv`. The folder is deleted only after the copy succeeded. It is not deleted at all when a build-output folder in it holds a git repository of its own, when the folder has commits no branch holds any more, when it now holds another branch or commit than the confirm dialog showed, or when anything in it changes while its ignored files are being backed up. Backups live in `<Git Glance home>/backups/`, where the home is `$GITGLANCE_HOME` if set, otherwise `git-glance` inside your user config directory (for example `~/.config/git-glance` on Linux, `~/Library/Application Support/git-glance` on macOS, `%AppData%\git-glance` on Windows). To clear them, delete that `backups` folder.
+- **Delete folder** (removing a worktree folder) copies ignored files to a backup first, except build-output folders: `node_modules`, `target`, `build`, `dist`, `out`, `.gradle`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.tox`, `.next`, `.nuxt`, `coverage`, `.venv` and `venv`. The folder is deleted only after the copy succeeded. Right before the removal the folder is checked again: the same branch and commit as the confirm dialog showed, no uncommitted changes, nothing in progress (rebase, merge, cherry-pick, revert, bisect), no build-output folder holding a git repository of its own, no commits that only this folder holds, the folder itself not a link. After the backup it checks again the list of ignored files and the size and time of every copied file, the branch and commit, operations in progress, hidden-change flags, commits only this folder holds, git repositories inside build output, and whether the folder became a link; if anything changed, nothing is deleted. Changes inside build-output folders are not checked (they are deleted anyway). A tracked or untracked file changed at that very moment makes git refuse the removal; links inside the folder may already have been removed by then (only the links, never what they point to). Backups live in `<Git Glance home>/backups/`, where the home is `$GITGLANCE_HOME` if set, otherwise `git-glance` inside your user config directory (for example `~/.config/git-glance` on Linux, `~/Library/Application Support/git-glance` on macOS, `%AppData%\git-glance` on Windows). To clear them, delete that `backups` folder.
 - Your repository's own hooks and fsmonitor run as they would with your own git.
 - Git Glance keeps its own settings, operation log and backups in the home directory above, and never writes files of its own into your repositories. The only changes it makes to a repository are the git operations you click.
 

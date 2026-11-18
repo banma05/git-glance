@@ -3,8 +3,9 @@ import type { Host } from '../host/types';
 import { makeT } from '../i18n';
 import type { T } from '../i18n';
 import { errorText } from '../reasons';
+import { HostError } from '../host/types';
 import { useApp } from '../state';
-import type { GitProblem } from '../state';
+import type { AppState, GitProblem } from '../state';
 import { Dialogs } from './dialogs/Dialogs';
 import { NoticeLine } from './NoticeLine';
 import { Details } from './Details';
@@ -34,6 +35,25 @@ function GitLine({ t, problem }: { t: T; problem: GitProblem }) {
   );
 }
 
+// Status lists what the page knows about its repository list: loading, the
+// workspace folders the editor could not add, or that the list is empty.
+// "No repository yet" shows only when the list answered empty and nothing
+// else explains it.
+function Status({ t, state }: { t: T; state: AppState }) {
+  if (!state.loaded) return <div class="muted pad">{t('app.loading')}</div>;
+  const problems = state.discoveryProblems.map((p) => {
+    const reason = errorText(new HostError(p.code, p.message), t);
+    return (
+      <div class="fetch-error" role="alert">
+        <span>{p.folder ? t('discovery.failed', { folder: p.folder, reason }) : t('discovery.failedAll', { reason })}</span>
+      </div>
+    );
+  });
+  if (problems.length > 0) return <>{problems}</>;
+  if (!state.listed || state.repos.length > 0) return null;
+  return <div class="muted pad">{t(state.gitProblem ? 'repo.noneNoGit' : 'repo.none')}</div>;
+}
+
 export function App({ host }: { host: Host }) {
   const { state, actions } = useApp(host);
   const t = useMemo(() => makeT(host.locale), [host]);
@@ -53,13 +73,20 @@ export function App({ host }: { host: Host }) {
     </div>
   ) : state.fetching ? (
     <div class="fetch-note muted">{t('fetch.running')}</div>
+  ) : state.fetchSlow ? (
+    <div class="fetch-note muted" role="status">
+      <span>{t('fetch.slow')}</span>
+      <button class="btn" onClick={actions.refresh}>
+        {t('app.retry')}
+      </button>
+    </div>
   ) : null;
   const view = state.view;
   const errorLine = state.error ? (
     <div class="fetch-error" role="alert">
       <span>{errorText(state.error, t)}</span>
-      {!view && state.repo && (
-        <button class="btn" onClick={actions.reload}>
+      {!view && (state.repo || !state.listed) && (
+        <button class="btn" onClick={state.repo ? actions.reload : actions.reloadRepos}>
           {t('app.retry')}
         </button>
       )}
@@ -76,8 +103,7 @@ export function App({ host }: { host: Host }) {
           {fetchLine}
           {errorLine}
           {noticeLine}
-          {!state.loaded && <div class="muted pad">{t('app.loading')}</div>}
-          {state.loaded && state.repos.length === 0 && <div class="muted pad">{t('repo.none')}</div>}
+          <Status t={t} state={state} />
         </Sidebar>
         <Dialogs t={t} host={host} state={state} actions={actions} />
       </div>
@@ -109,8 +135,7 @@ export function App({ host }: { host: Host }) {
       {fetchLine}
       {errorLine}
       {noticeLine}
-      {!state.loaded && <div class="muted pad">{t('app.loading')}</div>}
-      {state.loaded && state.repos.length === 0 && <div class="muted pad">{t('repo.none')}</div>}
+      <Status t={t} state={state} />
       {view && (
         <div class="main">
           {state.mode === 'graph' ? (
