@@ -1,11 +1,15 @@
 package web
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,13 +25,18 @@ import (
 
 const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-func newHandler(t *testing.T, r gitx.Runner) *rpc.Handler {
+func newHandlerAt(t *testing.T, r gitx.Runner, dir string) *rpc.Handler {
 	t.Helper()
-	h, err := rpc.NewHandler(r, settings.Store{Dir: t.TempDir()})
+	h, err := rpc.NewHandler(r, settings.Store{Dir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return h
+}
+
+func newHandler(t *testing.T, r gitx.Runner) *rpc.Handler {
+	t.Helper()
+	return newHandlerAt(t, r, t.TempDir())
 }
 
 func startWeb(t *testing.T, h *rpc.Handler) *httptest.Server {
@@ -36,7 +45,9 @@ func startWeb(t *testing.T, h *rpc.Handler) *httptest.Server {
 		"index.html": {Data: []byte("<html>index</html>")},
 		"app.js":     {Data: []byte("console.log(1)")},
 	}
-	ts := httptest.NewServer(NewServer(h, ui, testToken))
+	ts := httptest.NewUnstartedServer(NewServer(h, ui, testToken))
+	hardenServer(ts.Config)
+	ts.Start()
 	t.Cleanup(ts.Close)
 	return ts
 }
@@ -45,10 +56,15 @@ func plain(t *testing.T) *httptest.Server {
 	return startWeb(t, newHandler(t, gitx.ExecRunner{}))
 }
 
+func portOf(ts *httptest.Server) string {
+	addr := ts.Listener.Addr().String()
+	return addr[strings.LastIndex(addr, ":")+1:]
+}
+
 type opt func(*http.Request)
 
-func withCookie(tok string) opt {
-	return func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "gg_token", Value: tok}) }
+func withToken(tok string) opt {
+	return func(r *http.Request) { r.Header.Set("X-GitGlance-Token", tok) }
 }
 func withHeader(k, v string) opt { return func(r *http.Request) { r.Header.Set(k, v) } }
 func withHost(h string) opt      { return func(r *http.Request) { r.Host = h } }
@@ -70,157 +86,167 @@ func do(t *testing.T, ts *httptest.Server, method, path, body string, opts ...op
 	return resp
 }
 
+// rpcPost sends a well-formed rpc call; opts may override any header.
 func rpcPost(t *testing.T, ts *httptest.Server, body string, opts ...opt) *http.Response {
 	t.Helper()
-	all := append([]opt{withCookie(testToken), withHeader("Content-Type", "application/json")}, opts...)
+	all := append([]opt{withToken(testToken), withHeader("Content-Type", "application/json")}, opts...)
 	return do(t, ts, "POST", "/rpc", body, all...)
+}
+
+// rawExchange sends raw bytes and reads one response.
+func rawExchange(t *testing.T, addr, raw string) *http.Response {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	io.WriteString(conn, raw)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
 }
 
 const versionReq = `{"id":1,"method":"version"}`
 
-func TestNoTokenForbidden(t *testing.T) {
+func TestRPCNeedsToken(t *testing.T) {
 	ts := plain(t)
-	if c := do(t, ts, "GET", "/", "").StatusCode; c != 403 {
-		t.Fatalf("GET / = %d", c)
+	ct := withHeader("Content-Type", "application/json")
+	if c := do(t, ts, "POST", "/rpc", versionReq, ct).StatusCode; c != 403 {
+		t.Fatalf("POST /rpc without token = %d", c)
 	}
-	if c := do(t, ts, "POST", "/rpc", versionReq, withHeader("Content-Type", "application/json")).StatusCode; c != 403 {
-		t.Fatalf("POST /rpc = %d", c)
+	if c := do(t, ts, "POST", "/rpc", versionReq, ct, withToken("")).StatusCode; c != 403 {
+		t.Fatalf("POST /rpc with empty token = %d", c)
 	}
 }
 
 func TestTokenFlow(t *testing.T) {
 	ts := plain(t)
-	resp := do(t, ts, "GET", "/?token="+testToken, "")
-	if resp.StatusCode != 200 {
-		t.Fatalf("GET /?token = %d", resp.StatusCode)
-	}
-	var cookie *http.Cookie
-	for _, c := range resp.Cookies() {
-		if c.Name == "gg_token" {
-			cookie = c
-		}
-	}
-	if cookie == nil || cookie.Value != testToken || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Path != "/" {
-		t.Fatalf("bad cookie: %+v", cookie)
-	}
+	resp := do(t, ts, "GET", "/", "")
 	b, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(b), "index") {
-		t.Fatalf("body = %q", b)
+	if resp.StatusCode != 200 || !strings.Contains(string(b), "index") {
+		t.Fatalf("GET / = %d %q", resp.StatusCode, b)
 	}
-	r := rpcPost(t, ts, versionReq, withCookie(cookie.Value))
+	r := rpcPost(t, ts, versionReq)
 	rb, _ := io.ReadAll(r.Body)
 	if r.StatusCode != 200 || !strings.Contains(string(rb), `"gitOK":true`) {
 		t.Fatalf("rpc = %d %s", r.StatusCode, rb)
 	}
-	// The header works in place of the cookie.
-	req, _ := http.NewRequest("POST", ts.URL+"/rpc", strings.NewReader(versionReq))
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("X-GitGlance-Token", testToken)
-	r2, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r2.Body.Close()
+	r2 := rpcPost(t, ts, versionReq, withHeader("Content-Type", "application/json; charset=utf-8"))
 	if r2.StatusCode != 200 {
-		t.Fatalf("header token rpc = %d", r2.StatusCode)
+		t.Fatalf("json with charset = %d", r2.StatusCode)
+	}
+}
+
+func TestStaticNeedsNoTokenButAllowedHost(t *testing.T) {
+	ts := plain(t)
+	if c := do(t, ts, "GET", "/app.js", "").StatusCode; c != 200 {
+		t.Fatalf("static without token = %d", c)
+	}
+	if c := do(t, ts, "HEAD", "/app.js", "").StatusCode; c != 200 {
+		t.Fatalf("HEAD = %d", c)
+	}
+	if c := do(t, ts, "GET", "/app.js", "", withHost("evil.example:1")).StatusCode; c != 403 {
+		t.Fatalf("static with bad host = %d", c)
+	}
+	if c := do(t, ts, "POST", "/app.js", "x").StatusCode; c != 405 {
+		t.Fatalf("POST static = %d", c)
+	}
+	if c := do(t, ts, "GET", "/missing.js", "").StatusCode; c != 404 {
+		t.Fatalf("missing = %d", c)
+	}
+	// ?token= is not special any more: no cookie, same answer.
+	r := do(t, ts, "GET", "/?token="+testToken, "")
+	if r.StatusCode != 200 || len(r.Header.Values("Set-Cookie")) != 0 {
+		t.Fatalf("query token: %d, cookies %v", r.StatusCode, r.Header.Values("Set-Cookie"))
 	}
 }
 
 func TestBadHost(t *testing.T) {
 	ts := plain(t)
-	if c := do(t, ts, "GET", "/?token="+testToken, "", withHost("evil.example:1234")).StatusCode; c != 403 {
-		t.Fatalf("evil host = %d", c)
+	port := portOf(ts)
+	for _, h := range []string{"evil.example:1234", "evil.example", "127.0.0.1", "127.0.0.1:1",
+		"LOCALHOST:" + port, "localhost.:" + port, "[::1]:" + port, "127.0.0.1:" + port + ".evil.example"} {
+		if c := do(t, ts, "GET", "/", "", withHost(h)).StatusCode; c != 403 {
+			t.Errorf("static, host %q = %d", h, c)
+		}
+		if c := rpcPost(t, ts, versionReq, withHost(h)).StatusCode; c != 403 {
+			t.Errorf("rpc, host %q = %d", h, c)
+		}
 	}
-	if c := rpcPost(t, ts, versionReq, withHost("evil.example")).StatusCode; c != 403 {
-		t.Fatalf("host without port = %d", c)
-	}
-	addr := ts.Listener.Addr().String()
-	port := addr[strings.LastIndex(addr, ":")+1:]
-	if c := do(t, ts, "GET", "/?token="+testToken, "", withHost("localhost:"+port)).StatusCode; c != 200 {
-		t.Fatalf("localhost host = %d", c)
-	}
-	if c := do(t, ts, "GET", "/?token="+testToken, "", withHost("127.0.0.1:1")).StatusCode; c != 403 {
-		t.Fatalf("wrong port = %d", c)
+	for _, h := range []string{"localhost:" + port, "127.0.0.1:" + port} {
+		if c := do(t, ts, "GET", "/", "", withHost(h)).StatusCode; c != 200 {
+			t.Errorf("host %q = %d", h, c)
+		}
 	}
 }
 
-func TestForeignOriginForbidden(t *testing.T) {
+func TestOriginRules(t *testing.T) {
 	ts := plain(t)
-	if c := rpcPost(t, ts, versionReq, withHeader("Origin", "http://evil.example")).StatusCode; c != 403 {
-		t.Fatalf("foreign origin = %d", c)
+	port := portOf(ts)
+	for _, o := range []string{"http://evil.example", "null", "http://127.0.0.1:1", "https://127.0.0.1:" + port,
+		"http://LOCALHOST:" + port, "http://[::1]:" + port} {
+		if c := rpcPost(t, ts, versionReq, withHeader("Origin", o)).StatusCode; c != 403 {
+			t.Errorf("origin %q = %d", o, c)
+		}
 	}
-	if c := rpcPost(t, ts, versionReq, withHeader("Origin", "http://"+ts.Listener.Addr().String())).StatusCode; c != 200 {
-		t.Fatalf("own origin = %d", c)
+	for _, o := range []string{"http://127.0.0.1:" + port, "http://localhost:" + port} {
+		if c := rpcPost(t, ts, versionReq, withHeader("Origin", o)).StatusCode; c != 200 {
+			t.Errorf("origin %q = %d", o, c)
+		}
 	}
 }
 
 func TestContentTypeRequired(t *testing.T) {
 	ts := plain(t)
-	resp := do(t, ts, "POST", "/rpc", versionReq, withCookie(testToken), withHeader("Content-Type", "text/plain"))
-	if resp.StatusCode != 403 && resp.StatusCode != 415 {
-		t.Fatalf("text/plain = %d", resp.StatusCode)
-	}
-	resp = do(t, ts, "POST", "/rpc", versionReq, withCookie(testToken))
-	if resp.StatusCode != 403 && resp.StatusCode != 415 {
-		t.Fatalf("no content type = %d", resp.StatusCode)
+	for _, ct := range []string{"text/plain", "application/x-www-form-urlencoded", "multipart/form-data", ""} {
+		resp := do(t, ts, "POST", "/rpc", versionReq, withToken(testToken), withHeader("Content-Type", ct))
+		if resp.StatusCode != 415 {
+			t.Errorf("content type %q = %d", ct, resp.StatusCode)
+		}
 	}
 }
 
 func TestWrongTokens(t *testing.T) {
 	ts := plain(t)
 	off := testToken[:len(testToken)-1] + "0"
-	for _, tok := range []string{"nope", off, ""} {
-		if c := do(t, ts, "POST", "/rpc", versionReq, withCookie(tok), withHeader("Content-Type", "application/json")).StatusCode; c != 403 {
-			t.Fatalf("cookie %q = %d", tok, c)
-		}
-		if c := do(t, ts, "GET", "/?token="+tok, "").StatusCode; c != 403 {
-			t.Fatalf("query %q = %d", tok, c)
+	for _, tok := range []string{"nope", off, testToken + "0", testToken[:10]} {
+		if c := rpcPost(t, ts, versionReq, withToken(tok)).StatusCode; c != 403 {
+			t.Errorf("token %q = %d", tok, c)
 		}
 	}
-	resp := do(t, ts, "POST", "/rpc", versionReq, withHeader("Content-Type", "application/json"), withHeader("X-GitGlance-Token", off))
-	if resp.StatusCode != 403 {
-		t.Fatalf("header off by one = %d", resp.StatusCode)
-	}
-}
-
-func TestStaticNeedsCookie(t *testing.T) {
-	ts := plain(t)
-	if c := do(t, ts, "GET", "/app.js", "").StatusCode; c != 403 {
-		t.Fatalf("no cookie = %d", c)
-	}
-	if c := do(t, ts, "GET", "/app.js", "", withCookie(testToken)).StatusCode; c != 200 {
-		t.Fatalf("cookie = %d", c)
-	}
-	if c := do(t, ts, "HEAD", "/app.js", "", withCookie(testToken)).StatusCode; c != 200 {
-		t.Fatalf("HEAD = %d", c)
-	}
-	if c := do(t, ts, "POST", "/app.js", "x", withCookie(testToken)).StatusCode; c != 405 {
-		t.Fatalf("POST static = %d", c)
-	}
-	if c := do(t, ts, "GET", "/missing.js", "", withCookie(testToken)).StatusCode; c != 404 {
-		t.Fatalf("missing = %d", c)
+	// A cookie or a query parameter never works as a token.
+	r := do(t, ts, "POST", "/rpc?token="+testToken, versionReq, withHeader("Content-Type", "application/json"),
+		withHeader("Cookie", "gg_token="+testToken))
+	if r.StatusCode != 403 {
+		t.Fatalf("cookie+query token = %d", r.StatusCode)
 	}
 }
 
 func TestMethodsOnRPC(t *testing.T) {
 	ts := plain(t)
 	for _, m := range []string{"GET", "PUT", "DELETE", "OPTIONS"} {
-		if c := do(t, ts, m, "/rpc", "", withCookie(testToken)).StatusCode; c != 405 {
+		if c := do(t, ts, m, "/rpc", "", withToken(testToken)).StatusCode; c != 405 {
 			t.Fatalf("%s /rpc = %d", m, c)
 		}
 	}
 }
 
-func TestSecurityHeadersAndNoCORS(t *testing.T) {
+func TestSecurityHeadersNoCORSNoCookies(t *testing.T) {
 	ts := plain(t)
 	resps := []*http.Response{
-		do(t, ts, "GET", "/", ""),
 		do(t, ts, "GET", "/", "", withHost("evil.example:1")),
+		do(t, ts, "GET", "/", ""),
 		do(t, ts, "GET", "/?token="+testToken, ""),
 		rpcPost(t, ts, versionReq),
+		rpcPost(t, ts, versionReq, withToken("x")),
 		do(t, ts, "GET", "/rpc", ""),
 		do(t, ts, "OPTIONS", "/rpc", "", withHeader("Origin", "http://evil")),
-		do(t, ts, "GET", "/nothing", "", withCookie(testToken)),
+		do(t, ts, "GET", "/nothing", ""),
+		rawExchange(t, ts.Listener.Addr().String(), "OPTIONS * HTTP/1.1\r\nHost: "+ts.Listener.Addr().String()+"\r\n\r\n"),
 	}
 	want := map[string]string{
 		"Referrer-Policy":         "no-referrer",
@@ -239,18 +265,61 @@ func TestSecurityHeadersAndNoCORS(t *testing.T) {
 				t.Errorf("response %d has CORS header %s", i, k)
 			}
 		}
+		if len(r.Header.Values("Set-Cookie")) != 0 {
+			t.Errorf("response %d sets a cookie", i)
+		}
 	}
-	if resps[0].StatusCode != 403 || resps[2].StatusCode != 200 {
-		t.Fatalf("unexpected statuses %d %d", resps[0].StatusCode, resps[2].StatusCode)
+	if resps[0].StatusCode != 403 || resps[1].StatusCode != 200 {
+		t.Fatalf("unexpected statuses %d %d", resps[0].StatusCode, resps[1].StatusCode)
 	}
+}
+
+func TestOptionsStarIsNotAnswered200(t *testing.T) {
+	ts := plain(t)
+	good := rawExchange(t, ts.Listener.Addr().String(), "OPTIONS * HTTP/1.1\r\nHost: "+ts.Listener.Addr().String()+"\r\n\r\n")
+	if good.StatusCode == 200 {
+		t.Fatalf("OPTIONS * = 200")
+	}
+	bad := rawExchange(t, ts.Listener.Addr().String(), "OPTIONS * HTTP/1.1\r\nHost: evil.example\r\n\r\n")
+	if bad.StatusCode != 403 {
+		t.Fatalf("OPTIONS * with bad host = %d", bad.StatusCode)
+	}
+}
+
+func TestRefusalsCloseTheConnection(t *testing.T) {
+	ts := plain(t)
+	big := `{"id":1,"method":"version","params":"` + strings.Repeat("a", 1<<20) + `"}`
+	cases := map[string]*http.Response{
+		"403 host":  do(t, ts, "GET", "/", "", withHost("evil.example:1")),
+		"403 token": rpcPost(t, ts, versionReq, withToken("x")),
+		"405 rpc":   do(t, ts, "GET", "/rpc", ""),
+		"405 file":  do(t, ts, "POST", "/app.js", "x"),
+		"413":       rpcPost(t, ts, big),
+		"415":       rpcPost(t, ts, versionReq, withHeader("Content-Type", "text/plain")),
+	}
+	for name, r := range cases {
+		if !r.Close {
+			t.Errorf("%s did not send Connection: close", name)
+		}
+	}
+}
+
+func TestNewServerRefusesEmptyToken(t *testing.T) {
+	defer func() {
+		p := recover()
+		if p == nil || !strings.Contains(p.(string), "empty token") {
+			t.Fatalf("recovered %v", p)
+		}
+	}()
+	NewServer(newHandler(t, gitx.ExecRunner{}), fstest.MapFS{}, "")
 }
 
 func TestTokenNeverEchoed(t *testing.T) {
 	ts := plain(t)
 	for _, r := range []*http.Response{
-		do(t, ts, "GET", "/?token="+testToken[:10], ""),
+		rpcPost(t, ts, versionReq, withToken(testToken[:10])),
 		rpcPost(t, ts, versionReq, withHeader("Origin", "http://evil.example")),
-		do(t, ts, "POST", "/rpc", `{"bad`, withCookie(testToken[:20]), withHeader("Content-Type", "application/json")),
+		rpcPost(t, ts, `{"bad`),
 	} {
 		b, _ := io.ReadAll(r.Body)
 		if strings.Contains(string(b), testToken[:10]) || strings.Contains(strings.Join(r.Header.Values("Set-Cookie"), ""), testToken[:10]) {
@@ -280,17 +349,22 @@ func TestBadJSONGivesBadParams(t *testing.T) {
 }
 
 // gateRunner blocks every rev-parse made in a "gate-" folder (addRepo makes
-// one) until released, and reports which folder reached git.
+// one) until released, and reports which folder reached git. A run that was
+// handed a done context reports it on ctxErr.
 type gateRunner struct {
 	gitx.Runner
 	started chan string
 	release chan struct{}
+	ctxErr  chan error
 }
 
 func (g *gateRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	if len(args) > 0 && args[0] == "rev-parse" && strings.Contains(dir, "gate-") {
 		g.started <- dir
 		<-g.release
+		if g.ctxErr != nil {
+			g.ctxErr <- ctx.Err()
+		}
 	}
 	return g.Runner.Run(ctx, dir, args...)
 }
@@ -300,7 +374,7 @@ func addRepoReq(id int, dir string) string {
 }
 
 func gatedRunner() *gateRunner {
-	return &gateRunner{Runner: gitx.ExecRunner{}, started: make(chan string, 8), release: make(chan struct{}, 8)}
+	return &gateRunner{Runner: gitx.ExecRunner{}, started: make(chan string, 8), release: make(chan struct{}, 8), ctxErr: make(chan error, 8)}
 }
 
 func gateDirs(t *testing.T) []string {
@@ -409,35 +483,110 @@ func TestHTTPAndLineWritesShareOneQueue(t *testing.T) {
 	}
 }
 
+// A write that has started is finished even when the client leaves: the
+// repo is added and git's context was never cancelled.
+func TestWriteSurvivesClientDisconnect(t *testing.T) {
+	dirs := gateDirs(t)
+	g := gatedRunner()
+	store := t.TempDir()
+	ts := startWeb(t, newHandlerAt(t, g, store))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", ts.URL+"/rpc", strings.NewReader(addRepoReq(1, dirs[0])))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitGlance-Token", testToken)
+	clientDone := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		clientDone <- err
+	}()
+	waitStart(t, g)
+	cancel()
+	if err := <-clientDone; err == nil {
+		t.Fatal("client was not cancelled")
+	}
+	time.Sleep(200 * time.Millisecond) // let the server notice the disconnect
+	g.release <- struct{}{}
+	select {
+	case err := <-g.ctxErr:
+		if err != nil {
+			t.Fatalf("git ran with a cancelled context: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("write never reached the end of git")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		gl, err := settings.Store{Dir: store}.Global()
+		if err == nil && len(gl.Repos) == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("repo was not added: %+v %v", gl, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+type served struct {
+	url, base, tok string
+	port           string
+	cancel         context.CancelFunc
+	done           chan error
+}
+
+func startServe(t *testing.T, h *rpc.Handler, open bool) *served {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &served{cancel: cancel, done: make(chan error, 1)}
+	urlCh := make(chan string, 1)
+	go func() { s.done <- Serve(ctx, 0, h, open, func(u string) { urlCh <- u }) }()
+	s.url = <-urlCh
+	if !strings.HasPrefix(s.url, "http://127.0.0.1:") || !strings.Contains(s.url, "/#token=") || strings.Contains(s.url, "?") {
+		t.Fatalf("url = %q", s.url)
+	}
+	s.tok = s.url[strings.Index(s.url, "#token=")+7:]
+	if len(s.tok) != 64 {
+		t.Fatalf("token length %d", len(s.tok))
+	}
+	s.base = s.url[:strings.Index(s.url, "/#")]
+	s.port = s.base[strings.LastIndex(s.base, ":")+1:]
+	t.Cleanup(cancel)
+	return s
+}
+
+func (s *served) waitReturn(t *testing.T, within time.Duration) {
+	t.Helper()
+	select {
+	case err := <-s.done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(within):
+		t.Fatal("Serve did not return")
+	}
+}
+
 func TestServeShutdownLetsWriteFinish(t *testing.T) {
 	dirs := gateDirs(t)
 	g := gatedRunner()
-	h := newHandler(t, g)
+	store := t.TempDir()
+	h := newHandlerAt(t, g, store)
 
 	openCalls := 0
 	old := openBrowser
 	openBrowser = func(string) error { openCalls++; return nil }
 	defer func() { openBrowser = old }()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	urlCh := make(chan string, 1)
-	served := make(chan error, 1)
-	go func() { served <- Serve(ctx, 0, h, false, func(u string) { urlCh <- u }) }()
-	u := <-urlCh
-	if !strings.HasPrefix(u, "http://127.0.0.1:") || !strings.Contains(u, "/?token=") {
-		t.Fatalf("url = %q", u)
-	}
-	tok := u[strings.Index(u, "token=")+6:]
-	if len(tok) != 64 {
-		t.Fatalf("token length %d", len(tok))
-	}
-	base := u[:strings.Index(u, "/?")]
-
+	s := startServe(t, h, false)
 	status := make(chan int, 1)
 	go func() {
-		req, _ := http.NewRequest("POST", base+"/rpc", strings.NewReader(addRepoReq(1, dirs[0])))
+		req, _ := http.NewRequest("POST", s.base+"/rpc", strings.NewReader(addRepoReq(1, dirs[0])))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-GitGlance-Token", tok)
+		req.Header.Set("X-GitGlance-Token", s.tok)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			status <- -1
@@ -447,9 +596,9 @@ func TestServeShutdownLetsWriteFinish(t *testing.T) {
 		status <- resp.StatusCode
 	}()
 	waitStart(t, g)
-	cancel()
+	s.cancel()
 	select {
-	case <-served:
+	case <-s.done:
 		t.Fatal("Serve returned while a write was running")
 	case <-time.After(200 * time.Millisecond):
 	}
@@ -457,32 +606,71 @@ func TestServeShutdownLetsWriteFinish(t *testing.T) {
 	if c := <-status; c != 200 {
 		t.Fatalf("write status %d", c)
 	}
-	select {
-	case err := <-served:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Serve did not return")
-	}
+	s.waitReturn(t, 5*time.Second)
 	if openCalls != 0 {
 		t.Fatal("browser opened with open=false")
 	}
+	gl, err := settings.Store{Dir: store}.Global()
+	if err != nil || len(gl.Repos) != 1 {
+		t.Fatalf("write did not take effect: %+v %v", gl, err)
+	}
 }
 
-func TestServeOpensBrowserWhenAsked(t *testing.T) {
-	var opened string
+func TestShutdownNotBlockedByUnsentBody(t *testing.T) {
+	old := rpcReadTimeout
+	rpcReadTimeout = 400 * time.Millisecond
+	defer func() { rpcReadTimeout = old }()
+
+	for name, tokenLine := range map[string]string{"no token": "", "valid token": "X-GitGlance-Token: %s\r\n"} {
+		t.Run(name, func(t *testing.T) {
+			s := startServe(t, newHandler(t, gitx.ExecRunner{}), false)
+			conn, err := net.Dial("tcp", "127.0.0.1:"+s.port)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			line := ""
+			if tokenLine != "" {
+				line = strings.Replace(tokenLine, "%s", s.tok, 1)
+			}
+			io.WriteString(conn, "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:"+s.port+"\r\nContent-Type: application/json\r\n"+line+"Content-Length: 100\r\n\r\n")
+			time.Sleep(100 * time.Millisecond)
+			s.cancel()
+			s.waitReturn(t, 3*time.Second)
+		})
+	}
+}
+
+func TestServeOpensBrowserThroughLaunchFile(t *testing.T) {
+	var arg string
+	var page []byte
 	old := openBrowser
-	openBrowser = func(u string) error { opened = u; return nil }
+	openBrowser = func(a string) error {
+		arg = a
+		page, _ = os.ReadFile(a)
+		if fi, err := os.Stat(a); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
+			t.Errorf("launch file mode %v %v", fi, err)
+		}
+		return nil
+	}
 	defer func() { openBrowser = old }()
-	ctx, cancel := context.WithCancel(context.Background())
-	urlCh := make(chan string, 1)
-	served := make(chan error, 1)
-	go func() { served <- Serve(ctx, 0, newHandler(t, gitx.ExecRunner{}), true, func(u string) { urlCh <- u }) }()
-	u := <-urlCh
-	cancel()
-	<-served
-	if opened != u {
-		t.Fatalf("opened %q, want %q", opened, u)
+	s := startServe(t, newHandler(t, gitx.ExecRunner{}), true)
+	s.cancel()
+	s.waitReturn(t, 5*time.Second)
+	if arg == "" {
+		t.Fatal("opener was not called")
+	}
+	if strings.Contains(arg, s.tok) {
+		t.Fatalf("opener argument contains the token: %q", arg)
+	}
+	ps := string(page)
+	if !strings.Contains(ps, s.url) || !strings.Contains(ps, "http-equiv=\"refresh\"") || !strings.Contains(ps, "location.replace(") {
+		t.Fatalf("launch file: %q", ps)
+	}
+	if _, err := os.Stat(arg); !os.IsNotExist(err) {
+		t.Fatalf("launch file still there: %v", err)
+	}
+	if _, err := os.Stat(arg[:strings.LastIndexAny(arg, `/\`)]); !os.IsNotExist(err) {
+		t.Fatalf("launch dir still there: %v", err)
 	}
 }

@@ -1,8 +1,9 @@
 // Package web serves the UI and the rpc methods to the user's own browser on
 // 127.0.0.1. Every web page the user visits can reach a local port (through
 // cross-site requests and DNS rebinding), so each request is refused unless it
-// proves it holds the token, comes to a known host name and, for rpc, was sent
-// by this page and not by a form or another site.
+// comes to a known host name and, for rpc, proves it holds the token and was
+// sent by this page and not by a form or another site. There are no cookies:
+// the token lives in the URL fragment, which no request ever carries.
 package web
 
 import (
@@ -14,11 +15,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -31,21 +35,21 @@ import (
 var distFS embed.FS
 
 const (
-	cookieName  = "gg_token"
 	tokenHeader = "X-GitGlance-Token"
 	maxBody     = 1 << 20
 )
 
-// openBrowser starts the system browser without a shell. Tests replace it.
-var openBrowser = func(url string) error {
+// openBrowser starts the system browser on a local file, without a shell.
+// The token is never an argument. Tests replace it.
+var openBrowser = func(target string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 	case "darwin":
-		cmd = exec.Command("open", url)
+		cmd = exec.Command("open", target)
 	default:
-		cmd = exec.Command("xdg-open", url)
+		cmd = exec.Command("xdg-open", target)
 	}
 	if err := cmd.Start(); err != nil {
 		return err
@@ -54,10 +58,19 @@ var openBrowser = func(url string) error {
 	return nil
 }
 
+// rpcReadTimeout bounds how long a client may take to send a request body.
+var rpcReadTimeout = 10 * time.Second
+
 // NewServer returns the HTTP handler: static files from ui and POST /rpc.
+// Static files hold no data, so they need only an allowed Host. POST /rpc
+// needs the token in the X-GitGlance-Token header.
 // The port every host and origin check uses is the port the request really
 // arrived on, so it also holds when the OS picked the port.
+// NewServer panics on an empty token, which would let every caller in.
 func NewServer(h *rpc.Handler, ui fs.FS, token string) http.Handler {
+	if token == "" {
+		panic("web.NewServer: empty token")
+	}
 	s := &server{h: h, token: token, static: http.FileServerFS(ui)}
 	return http.HandlerFunc(s.serve)
 }
@@ -69,12 +82,11 @@ type server struct {
 }
 
 func (s *server) serve(w http.ResponseWriter, r *http.Request) {
-	hd := w.Header()
-	setSecurityHeaders(hd)
+	setSecurityHeaders(w.Header())
 
 	port, ok := localPort(r)
 	if !ok || !hostAllowed(r.Host, port) {
-		forbid(w)
+		refuse(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if r.URL.Path == "/rpc" {
@@ -82,21 +94,8 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		hd.Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if q := r.URL.Query().Get("token"); q != "" {
-		if !s.valid(q) {
-			forbid(w)
-			return
-		}
-		http.SetCookie(w, &http.Cookie{
-			Name: cookieName, Value: s.token, Path: "/",
-			HttpOnly: true, SameSite: http.SameSiteStrictMode,
-		})
-	} else if !s.authorized(r) {
-		forbid(w)
+		w.Header().Set("Allow", "GET, HEAD")
+		refuse(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	s.static.ServeHTTP(&headerGuard{ResponseWriter: w}, r)
@@ -118,32 +117,41 @@ func (g *headerGuard) WriteHeader(code int) {
 	g.ResponseWriter.WriteHeader(code)
 }
 
+// refuse answers and closes the connection, so a client that announced a body
+// and never sends it cannot keep the connection (or a shutdown) waiting.
+func refuse(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Connection", "close")
+	http.Error(w, msg, code)
+}
+
 func (s *server) serveRPC(w http.ResponseWriter, r *http.Request, port string) {
+	// Bound every read of this request, including the drain after a refusal.
+	http.NewResponseController(w).SetReadDeadline(time.Now().Add(rpcReadTimeout))
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		refuse(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !s.authorized(r) {
-		forbid(w)
+	if !s.valid(r.Header.Get(tokenHeader)) {
+		refuse(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if !isJSON(r.Header.Get("Content-Type")) {
-		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
+		refuse(w, http.StatusUnsupportedMediaType, "content type must be application/json")
 		return
 	}
 	if o := r.Header.Get("Origin"); o != "" && !originAllowed(o, port) {
-		forbid(w)
+		refuse(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			http.Error(w, "request body is larger than 1 MiB", http.StatusRequestEntityTooLarge)
+			refuse(w, http.StatusRequestEntityTooLarge, "request body is larger than 1 MiB")
 			return
 		}
-		http.Error(w, "cannot read the request body", http.StatusBadRequest)
+		refuse(w, http.StatusBadRequest, "cannot read the request body")
 		return
 	}
 	var req rpc.Request
@@ -151,11 +159,9 @@ func (s *server) serveRPC(w http.ResponseWriter, r *http.Request, port string) {
 		writeJSON(w, http.StatusBadRequest, rpc.Response{Error: &rpc.RPCError{Code: "bad-params", Message: "request is not valid JSON"}})
 		return
 	}
-	ctx := r.Context()
-	// A write that was accepted runs to its end even if the client leaves or
-	// the server is shutting down.
-	ctx = context.WithoutCancel(ctx)
-	writeJSON(w, http.StatusOK, s.h.Do(ctx, req))
+	// Reads stop with the client. A write that has started is finished by the
+	// handler's worker whatever happens to the client.
+	writeJSON(w, http.StatusOK, s.h.Do(r.Context(), req))
 }
 
 func writeJSON(w http.ResponseWriter, status int, resp rpc.Response) {
@@ -169,21 +175,8 @@ func writeJSON(w http.ResponseWriter, status int, resp rpc.Response) {
 	w.Write(b)
 }
 
-func forbid(w http.ResponseWriter) { http.Error(w, "forbidden", http.StatusForbidden) }
-
 func (s *server) valid(candidate string) bool {
-	return subtle.ConstantTimeCompare([]byte(candidate), []byte(s.token)) == 1
-}
-
-// authorized accepts the cookie or the header.
-func (s *server) authorized(r *http.Request) bool {
-	if c, err := r.Cookie(cookieName); err == nil && s.valid(c.Value) {
-		return true
-	}
-	if v := r.Header.Get(tokenHeader); v != "" && s.valid(v) {
-		return true
-	}
-	return false
+	return candidate != "" && subtle.ConstantTimeCompare([]byte(candidate), []byte(s.token)) == 1
 }
 
 func localPort(r *http.Request) (string, bool) {
@@ -216,9 +209,39 @@ func newToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// hardenServer sets the http.Server options every listener of ours needs:
+// OPTIONS * must reach the handler (and its Host check) instead of being
+// answered 200 by net/http, and slow headers are cut off.
+func hardenServer(srv *http.Server) {
+	srv.DisableGeneralOptionsHandler = true
+	srv.ReadHeaderTimeout = 10 * time.Second
+}
+
+// launchFile writes an HTML page that sends the browser to url, in a private
+// temp dir. The opener gets the page's path, so the token is never on a
+// command line. The returned function removes the page and its dir.
+func launchFile(url string) (path string, cleanup func(), err error) {
+	dir, err := os.MkdirTemp("", "gitglance-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { os.RemoveAll(dir) }
+	js, _ := json.Marshal(url)
+	page := fmt.Sprintf("<!doctype html>\n<meta charset=\"utf-8\">\n"+
+		"<meta http-equiv=\"refresh\" content=\"0; url=%s\">\n"+
+		"<script>location.replace(%s)</script>\n", html.EscapeString(url), js)
+	path = filepath.Join(dir, "open.html")
+	if err := os.WriteFile(path, []byte(page), 0o600); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
+}
+
 // Serve listens on 127.0.0.1:port (0 lets the OS choose), calls ready once with
-// the address that carries the token, optionally opens the browser, and blocks
-// until ctx is done. It then stops accepting and waits for requests in flight.
+// the address that carries the token in its fragment, optionally opens the
+// browser, and blocks until ctx is done. It then stops accepting and waits for
+// requests in flight.
 func Serve(ctx context.Context, port int, h *rpc.Handler, open bool, ready func(url string)) error {
 	token, err := newToken()
 	if err != nil {
@@ -232,18 +255,23 @@ func Serve(ctx context.Context, port int, h *rpc.Handler, open bool, ready func(
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{
-		Handler:           NewServer(h, ui, token),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/?token=%s", ln.Addr().(*net.TCPAddr).Port, token)
+	srv := &http.Server{Handler: NewServer(h, ui, token)}
+	hardenServer(srv)
+	url := fmt.Sprintf("http://127.0.0.1:%d/#token=%s", ln.Addr().(*net.TCPAddr).Port, token)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 	if ready != nil {
 		ready(url)
 	}
 	if open {
-		openBrowser(url) // the printed address still works when this fails
+		path, cleanup, err := launchFile(url)
+		if err == nil {
+			defer cleanup()
+			err = openBrowser(path)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "gitglance: could not open the browser; open the printed address yourself")
+		}
 	}
 	select {
 	case err := <-errc:

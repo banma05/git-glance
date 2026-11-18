@@ -182,7 +182,9 @@ func (h *Handler) queueWrite(ctx context.Context, req Request, done func(Respons
 					j.done(Response{ID: j.req.ID, Error: &RPCError{Code: "internal", Message: "stopped before the request started"}})
 					continue
 				}
-				j.done(h.Handle(j.ctx, j.req))
+				// Once started, a write finishes (verification and op log
+				// included) even if its caller has gone away.
+				j.done(h.Handle(context.WithoutCancel(j.ctx), j.req))
 			}
 		}()
 	})
