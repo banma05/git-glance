@@ -1,7 +1,20 @@
 import { EventEmitter } from 'node:events';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CoreClient } from './core';
+
+const l10n = vi.hoisted(() => ({ calls: [] as string[] }));
+vi.mock('vscode', () => ({
+  l10n: {
+    t: (s: string, ...a: unknown[]) => {
+      l10n.calls.push(s);
+      return s.replace(/\{(\d+)\}/g, (_m, i) => String(a[Number(i)]));
+    },
+  },
+}));
+
+import { CoreClient, WRITE_METHODS } from './core';
 
 class FakeProc extends EventEmitter {
   stdin = new PassThrough();
@@ -154,6 +167,79 @@ describe('CoreClient', () => {
     await expect(client.call('version')).rejects.toMatchObject({ code: 'core-unavailable' });
     expect(spawnFn).toHaveBeenCalledTimes(2);
   });
+
+  it('starts afresh after allowRestart, once it had given up', async () => {
+    const { client, procs, spawnFn } = setup();
+    for (let i = 0; i < 2; i++) {
+      const c = client.call('version');
+      await tick();
+      procs[i].exit(1);
+      await expect(c).rejects.toBeTruthy();
+    }
+    await expect(client.call('version')).rejects.toMatchObject({ code: 'core-unavailable' });
+    client.allowRestart();
+    const next = client.call('version');
+    await tick();
+    expect(spawnFn).toHaveBeenCalledTimes(3);
+    procs[2].reply({ id: procs[2].written[0].id, result: 'back' });
+    expect(await next).toBe('back');
+  });
+
+  it('marks the core executable before starting it outside Windows', async () => {
+    const order: string[] = [];
+    const chmod = vi.fn((p: string, mode: number) => void order.push(`chmod ${p} ${mode.toString(8)}`));
+    const spawnFn: any = vi.fn(() => {
+      order.push('spawn');
+      return new FakeProc();
+    });
+    const client = new CoreClient('/ext/bin/gitglance', spawnFn, undefined, { platform: 'linux', chmod });
+    void client.call('version').catch(() => undefined);
+    await tick();
+    expect(order).toEqual(['chmod /ext/bin/gitglance 755', 'spawn']);
+  });
+
+  it('does not chmod on Windows', async () => {
+    const chmod = vi.fn();
+    const spawnFn: any = vi.fn(() => new FakeProc());
+    const client = new CoreClient('C:/ext/bin/gitglance.exe', spawnFn, undefined, { platform: 'win32', chmod });
+    void client.call('version').catch(() => undefined);
+    await tick();
+    expect(chmod).not.toHaveBeenCalled();
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('still tries to start when chmod fails and names the chmod error when the start fails', async () => {
+    const chmod = vi.fn(() => {
+      throw new Error('EROFS: read-only file system');
+    });
+    const spawnFn: any = vi.fn(() => {
+      const p = new FakeProc();
+      queueMicrotask(() => p.emit('error', new Error('EACCES')));
+      return p;
+    });
+    const lines: string[] = [];
+    const client = new CoreClient('/ext/bin/gitglance', spawnFn, undefined, { platform: 'darwin', chmod });
+    client.onLog((l) => lines.push(l));
+    await expect(client.call('version')).rejects.toBeTruthy();
+    await expect(client.call('version')).rejects.toBeTruthy();
+    const e = await client.call('version').catch((x) => x);
+    expect(spawnFn).toHaveBeenCalledTimes(2);
+    expect(e).toMatchObject({ code: 'core-unavailable' });
+    expect(e.message).toContain('EROFS');
+    expect(lines.join('\n')).toMatch(/executable.*EROFS/);
+  });
+});
+
+describe('write methods', () => {
+  it('match the write set of the core method table', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../../core/internal/rpc/methods.go'), 'utf8');
+    const table = src.slice(src.indexOf('func (h *Handler) table()'));
+    const body = table.slice(0, table.indexOf('\n}\n'));
+    const entries = [...body.matchAll(/"(\w+)":\s*(read|write)\(/g)].map((m) => [m[1], m[2]] as const);
+    expect(entries.length).toBeGreaterThan(20);
+    const writes = entries.filter(([, kind]) => kind === 'write').map(([name]) => name).sort();
+    expect([...WRITE_METHODS].sort()).toEqual(writes);
+  });
 });
 
 describe('CoreClient timeouts and dispose', () => {
@@ -179,16 +265,62 @@ describe('CoreClient timeouts and dispose', () => {
     expect(await q).toBe('fine');
   });
 
-  it('uses 180 s for align and fetch', async () => {
+  const MIN = 60_000;
+  // limitOf measures after how long a call of `method` gives up.
+  const limitOf = async (method: string, within: number[]) => {
     const { client } = setup();
-    const p = client.call('align', { repo: 'r' }).catch((e) => e);
+    const p = client.call(method, { repo: 'r' }).catch((e) => e);
     let settled = false;
-    p.then(() => (settled = true));
+    void p.then(() => (settled = true));
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(179_000);
-    expect(settled).toBe(false);
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(await p).toMatchObject({ code: 'timeout' });
+    await vi.advanceTimersByTimeAsync(within[0] - 1000);
+    const before = settled;
+    await vi.advanceTimersByTimeAsync(within[1] - within[0] + 2000);
+    return { before, error: await p };
+  };
+
+  for (const [method, ms, code] of [
+    ['align', 20 * MIN, 'still-running'],
+    ['fetch', 20 * MIN, 'still-running'],
+    ['removeFolder', 30 * MIN, 'still-running'],
+    ['createFolder', 30 * MIN, 'still-running'],
+    ['switch', 30 * MIN, 'still-running'],
+    ['view', 5 * MIN, 'timeout'],
+    ['compare', 5 * MIN, 'timeout'],
+    ['repos', 60_000, 'timeout'],
+    ['ops', 60_000, 'timeout'],
+  ] as const) {
+    it(`gives ${method} ${ms / 1000} s and then answers ${code}`, async () => {
+      const { before, error } = await limitOf(method, [ms, ms]);
+      expect(before).toBe(false);
+      expect(error).toMatchObject({ code });
+    });
+  }
+
+  it('says a timed-out write is still running and logs its late answer', async () => {
+    const { client, procs } = setup();
+    const lines: string[] = [];
+    client.onLog((l) => lines.push(l));
+    const p = client.call('removeFolder', { repo: 'r' }).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(30 * MIN + 1);
+    const e = await p;
+    expect(e).toMatchObject({ code: 'still-running' });
+    expect(e.message).toMatch(/operation log/);
+    procs[0].reply({ id: procs[0].written[0].id, result: { ok: true } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lines.join('\n')).toMatch(/removeFolder.*finished after its time limit/);
+    expect(lines.join('\n')).toContain('"ok":true');
+  });
+
+  it('localizes its error messages', async () => {
+    l10n.calls.length = 0;
+    const { client } = setup();
+    const p = client.call('view', {}, 1000).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1001);
+    expect((await p).message).toBe('view did not answer within 1 s');
+    expect(l10n.calls).toContain('{0} did not answer within {1} s');
   });
 
   it('dispose closes stdin and never kills while a write is pending', async () => {

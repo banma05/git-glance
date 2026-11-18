@@ -13,5 +13,14 @@
   "Fast-forward every branch that is only behind its remote in all listed repositories?": "Fast-forward every branch that is only behind its remote in all listed repositories?",
   "Branches with local changes or commits of their own are left alone.": "Branches with local changes or commits of their own are left alone.",
   "Git Glance: {0} branches updated, {1} left alone.": "Git Glance: {0} branches updated, {1} left alone.",
-  "Git Glance: {0}": "Git Glance: {0}"
+  "Git Glance: {0}": "Git Glance: {0}",
+  "Not aligned: {0}.": "Not aligned: {0}.",
+  "Could not read the remote of {0}; their branches were aligned to what had been fetched before.": "Could not read the remote of {0}; their branches were aligned to what had been fetched before.",
+  "The core client was shut down.": "The core client was shut down.",
+  "The core program could not be started: {0}": "The core program could not be started: {0}",
+  "The core program stopped ({0}).": "The core program stopped ({0}).",
+  "cannot make {0} executable: {1}": "cannot make {0} executable: {1}",
+  "it stopped right after starting": "it stopped right after starting",
+  "{0} did not answer within {1} s": "{0} did not answer within {1} s",
+  "{0} is still running after {1} min; its result will be in the operation log": "{0} is still running after {1} min; its result will be in the operation log"
 }

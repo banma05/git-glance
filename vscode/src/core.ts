@@ -1,5 +1,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { chmodSync } from 'node:fs';
+import * as vscode from 'vscode';
 
 export class CoreError extends Error {
   code: string;
@@ -10,9 +12,10 @@ export class CoreError extends Error {
   }
 }
 
-// Core methods that change the machine. dispose() never kills the core while
-// one of these is still running.
-const WRITE_METHODS = new Set([
+// Core methods that change the machine: the "write" entries of the method table
+// in core/internal/rpc/methods.go (a test compares the two). dispose() never
+// kills the core while one of these is still running.
+export const WRITE_METHODS: ReadonlySet<string> = new Set([
   'align',
   'switch',
   'createFolder',
@@ -28,15 +31,33 @@ const WRITE_METHODS = new Set([
   'clearBackups',
 ]);
 
-const DEFAULT_TIMEOUT = 60_000;
-const LONG_TIMEOUT = 180_000;
-const LONG_METHODS = new Set(['align', 'fetch']);
+const MINUTE = 60_000;
+const READ_TIMEOUT = MINUTE;
+const LONG_READ_TIMEOUT = 5 * MINUTE; // view and compare walk the history
+const WRITE_TIMEOUT = 30 * MINUTE;
+const NETWORK_TIMEOUT = 20 * MINUTE; // fetch and align read the remote
+const LONG_READS = new Set(['view', 'compare']);
+const NETWORK_WRITES = new Set(['fetch', 'align']);
 const MAX_FAILED_STARTS = 2;
 const KILL_GRACE_MS = 3000;
 
+// timeoutFor is how long a call of method may take before its caller gives up.
+// The core keeps running a write that took longer; only the wait ends.
+export function timeoutFor(method: string): number {
+  if (NETWORK_WRITES.has(method)) return NETWORK_TIMEOUT;
+  if (WRITE_METHODS.has(method)) return WRITE_TIMEOUT;
+  return LONG_READS.has(method) ? LONG_READ_TIMEOUT : READ_TIMEOUT;
+}
+
 type SpawnFn = typeof nodeSpawn;
 
+export interface CoreOptions {
+  platform?: string; // process.platform by default
+  chmod?: (path: string, mode: number) => void; // makes the packaged core executable
+}
+
 interface Pending {
+  method: string;
   resolve: (v: any) => void;
   reject: (e: Error) => void;
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -51,34 +72,48 @@ export class CoreClient {
   private pending = new Map<number, Pending>();
   private nextId = 1;
   private failedStarts = 0;
+  private startProblem = ''; // why the last start failed, for the core-unavailable message
   private disposed = false;
   private exitWaiters: Array<() => void> = [];
   private log: (line: string) => void = () => {};
+  private readonly platform: string;
+  private readonly chmod: (path: string, mode: number) => void;
 
   constructor(
     private readonly binPath: string,
     private readonly spawnFn: SpawnFn = nodeSpawn,
     private readonly cwd?: string,
-  ) {}
+    opts: CoreOptions = {},
+  ) {
+    this.platform = opts.platform ?? process.platform;
+    this.chmod = opts.chmod ?? chmodSync;
+  }
 
   onLog(fn: (line: string) => void): void {
     this.log = fn;
   }
 
+  // allowRestart lets the next call start the core again after it gave up
+  // (core-unavailable), for example when the user asks for a refresh.
+  allowRestart(): void {
+    this.failedStarts = 0;
+  }
+
   call<T = any>(method: string, params?: object, timeoutMs?: number): Promise<T> {
-    if (this.disposed) return Promise.reject(new CoreError('core-disposed', 'the core client was shut down'));
+    if (this.disposed) return Promise.reject(new CoreError('core-disposed', vscode.l10n.t('The core client was shut down.')));
     const proc = this.ensureProcess();
-    if (!proc) return Promise.reject(new CoreError('core-unavailable', 'the core program could not be started'));
+    if (!proc) return Promise.reject(this.unavailable());
     const id = this.nextId++;
-    const limit = timeoutMs ?? (LONG_METHODS.has(method) ? LONG_TIMEOUT : DEFAULT_TIMEOUT);
+    const limit = timeoutMs ?? timeoutFor(method);
     return new Promise<T>((resolve, reject) => {
-      const entry: Pending = { resolve, reject, timer: undefined, write: WRITE_METHODS.has(method), settled: false };
+      const write = WRITE_METHODS.has(method);
+      const entry: Pending = { method, resolve, reject, timer: undefined, write, settled: false };
       entry.timer = setTimeout(() => {
         // Reject the caller but keep the process: the core may still be working.
         entry.settled = true;
         entry.timer = undefined;
-        reject(new CoreError('timeout', `${method} did not answer within ${Math.round(limit / 1000)} s`));
-        if (!entry.write) this.pending.delete(id);
+        reject(write ? this.stillRunning(method, limit) : this.timedOut(method, limit));
+        if (!write) this.pending.delete(id);
       }, limit);
       this.pending.set(id, entry);
       const line = JSON.stringify({ id, method, params: params ?? {} }) + '\n';
@@ -86,9 +121,25 @@ export class CoreClient {
         proc.stdin!.write(line);
       } catch (e) {
         this.finish(id);
-        reject(new CoreError('core-exited', String(e)));
+        reject(new CoreError('core-exited', vscode.l10n.t('The core program stopped ({0}).', String(e))));
       }
     });
+  }
+
+  private timedOut(method: string, ms: number): CoreError {
+    return new CoreError('timeout', vscode.l10n.t('{0} did not answer within {1} s', method, Math.round(ms / 1000)));
+  }
+
+  private stillRunning(method: string, ms: number): CoreError {
+    return new CoreError(
+      'still-running',
+      vscode.l10n.t('{0} is still running after {1} min; its result will be in the operation log', method, Math.round(ms / MINUTE)),
+    );
+  }
+
+  private unavailable(): CoreError {
+    const why = this.startProblem || vscode.l10n.t('it stopped right after starting');
+    return new CoreError('core-unavailable', vscode.l10n.t('The core program could not be started: {0}', why));
   }
 
   // dispose closes the core's input and waits for it to finish. It kills the
@@ -101,7 +152,7 @@ export class CoreClient {
     for (const [id, p] of [...this.pending]) {
       if (!p.write && !p.settled) {
         this.finish(id);
-        p.reject(new CoreError('core-disposed', 'the core client was shut down'));
+        p.reject(new CoreError('core-disposed', vscode.l10n.t('The core client was shut down.')));
       }
     }
     return new Promise<void>((resolve) => {
@@ -137,9 +188,24 @@ export class CoreClient {
     return p;
   }
 
+  // makeExecutable sets the executable bits of the packaged core outside
+  // Windows: a VSIX does not keep file modes. A failure is logged and kept for
+  // the error message; starting is still tried, the bits may be set already.
+  private makeExecutable(): void {
+    if (this.platform === 'win32') return;
+    try {
+      this.chmod(this.binPath, 0o755);
+    } catch (e) {
+      this.startProblem = vscode.l10n.t('cannot make {0} executable: {1}', this.binPath, String(e));
+      this.log(`cannot make the core executable (${this.binPath}): ${e}`);
+    }
+  }
+
   private ensureProcess(): ChildProcess | null {
     if (this.proc) return this.proc;
     if (this.failedStarts >= MAX_FAILED_STARTS) return null;
+    this.startProblem = '';
+    this.makeExecutable();
     let proc: ChildProcess;
     try {
       // detached: on Windows a non-detached child is tied to the parent's job
@@ -156,6 +222,7 @@ export class CoreClient {
       });
     } catch (e) {
       this.failedStarts++;
+      this.noteStartProblem(String(e));
       this.log(`core start failed: ${e}`);
       return this.ensureProcess();
     }
@@ -183,11 +250,14 @@ export class CoreClient {
     const gone = (why: string) => {
       if (this.proc !== proc) return;
       this.proc = null;
-      if (!answered) this.failedStarts++;
+      if (!answered) {
+        this.failedStarts++;
+        this.noteStartProblem(why);
+      }
       this.log(`core exited: ${why}`);
       for (const id of [...this.pending.keys()]) {
         const p = this.finish(id)!;
-        if (!p.settled) p.reject(new CoreError('core-exited', `the core program stopped (${why})`));
+        if (!p.settled) p.reject(new CoreError('core-exited', vscode.l10n.t('The core program stopped ({0}).', why)));
       }
       const waiters = this.exitWaiters;
       this.exitWaiters = [];
@@ -196,6 +266,12 @@ export class CoreClient {
     proc.on('error', (e) => gone(String(e)));
     proc.on('close', (code, signal) => gone(`code ${code} signal ${signal}`));
     return proc;
+  }
+
+  // noteStartProblem keeps the first reason a start failed (a chmod failure
+  // explains a later EACCES better than the EACCES itself).
+  private noteStartProblem(why: string): void {
+    if (!this.startProblem) this.startProblem = why;
   }
 
   // onLine handles one reply line; true when it answered a request.
@@ -210,8 +286,14 @@ export class CoreClient {
     }
     if (!msg || typeof msg.id !== 'number') return false;
     const p = this.finish(msg.id);
-    if (!p) return true; // late answer to a call that already timed out
-    if (p.settled) return true;
+    if (!p) return true; // late answer to a read that already timed out
+    if (p.settled) {
+      // A write that outlived its wait: its caller was told it is still
+      // running, so the answer goes to the log (the op log has it too).
+      const outcome = msg.error ? `error ${JSON.stringify(msg.error)}` : JSON.stringify(msg.result);
+      this.log(`${p.method} finished after its time limit: ${outcome}`);
+      return true;
+    }
     if (msg.error) p.reject(new CoreError(String(msg.error.code ?? 'error'), String(msg.error.message ?? '')));
     else p.resolve(msg.result);
     return true;
