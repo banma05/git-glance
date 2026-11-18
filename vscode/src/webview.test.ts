@@ -32,3 +32,9 @@ describe('transformHtml', () => {
     expect(JSON.parse(json)).toEqual({ mode: 'wide', locale: 'en', theme: 'dark' });
   });
 });
+
+describe('transformHtml without a head', () => {
+  it('throws instead of producing a page without a CSP', () => {
+    expect(() => transformHtml('<html><body></body></html>', (p) => p, 'x', {})).toThrow(/CSP/);
+  });
+});

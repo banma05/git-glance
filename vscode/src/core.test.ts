@@ -28,7 +28,6 @@ class FakeProc extends EventEmitter {
     this.stdout.write(JSON.stringify(msg) + '\n');
   }
   exit(code = 1) {
-    this.emit('exit', code, null);
     this.emit('close', code, null);
   }
   kill() {
@@ -106,6 +105,41 @@ describe('CoreClient', () => {
     await expect(c2).rejects.toBeTruthy();
     await expect(client.call('version')).rejects.toMatchObject({ code: 'core-unavailable' });
     expect(spawnFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('spawns detached, hidden, with its own cwd and without ELECTRON_RUN_AS_NODE', async () => {
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    const procs: FakeProc[] = [];
+    const spawnFn: any = vi.fn(() => {
+      const p = new FakeProc();
+      procs.push(p);
+      return p;
+    });
+    const client = new CoreClient('/bin/gitglance', spawnFn, '/ext');
+    void client.call('version').catch(() => {});
+    await tick();
+    delete process.env.ELECTRON_RUN_AS_NODE;
+    const opts = spawnFn.mock.calls[0][2];
+    expect(opts).toMatchObject({ detached: true, windowsHide: true, cwd: '/ext' });
+    expect(opts.stdio).toEqual(['pipe', 'pipe', 'pipe']);
+    expect(opts.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+  });
+
+  it('ignores a late line from a process that is no longer current', async () => {
+    const { client, procs } = setup();
+    const first = client.call('view').catch((e) => e);
+    await tick();
+    const oldId = procs[0].written[0].id;
+    procs[0].exit(1);
+    await first;
+    const second = client.call('view');
+    await tick();
+    expect(procs[1].written[0].id).not.toBe(oldId); // ids keep counting
+    // the dead process speaks late, using the id of the live call
+    procs[0].reply({ id: procs[1].written[0].id, result: 'stale' });
+    await tick();
+    procs[1].reply({ id: procs[1].written[0].id, result: 'fresh' });
+    expect(await second).toBe('fresh');
   });
 
   it('counts a spawn error as a failed start', async () => {

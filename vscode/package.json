@@ -13,6 +13,7 @@
     "Visualization"
   ],
   "main": "./dist/extension.js",
+  "l10n": "./l10n",
   "activationEvents": [
     "onView:gitglance.sidebar",
     "onCommand:gitglance.openWide"

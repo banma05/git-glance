@@ -13,13 +13,14 @@ vi.mock('vscode', () => ({
   commands: { executeCommand: h.executeCommand },
   env: { clipboard: { writeText: h.writeText } },
   window: { showErrorMessage: h.showErrorMessage },
+  l10n: { t: (s: string, ...a: unknown[]) => s.replace(/\{(\d+)\}/g, (_m, i) => String(a[Number(i)])) },
   Uri: {
     file: (p: string) => ({ scheme: 'file', fsPath: p }),
     from: (c: object) => ({ ...c }),
   },
 }));
 
-import { handleWebviewMessage, type BridgeDeps } from './bridge';
+import { Generation, handleWebviewMessage, unsafeFolderPath, type BridgeDeps } from './bridge';
 
 let posted: any[];
 let call: ReturnType<typeof vi.fn>;
@@ -115,5 +116,39 @@ describe('handleWebviewMessage', () => {
     await handleWebviewMessage({ type: 'openDiff', id: 9, repo: '/r', a: 'main' }, deps);
     expect(h.executeCommand).not.toHaveBeenCalled();
     expect(posted[0]).toMatchObject({ type: 'result', id: 9, error: { code: 'bad-message' } });
+  });
+});
+
+describe('openFolder path safety', () => {
+  it('flags UNC and root-relative paths', () => {
+    expect(unsafeFolderPath(String.raw`\\host\share`, 'win32')).toBe(true);
+    expect(unsafeFolderPath('//host/share', 'linux')).toBe(true);
+    expect(unsafeFolderPath(String.raw`\foo`, 'win32')).toBe(true);
+    expect(unsafeFolderPath('/foo', 'win32')).toBe(true);
+    expect(unsafeFolderPath('/home/a', 'linux')).toBe(false);
+    expect(unsafeFolderPath(String.raw`C:\work\repo`, 'win32')).toBe(false);
+  });
+
+  it('refuses a UNC path without touching the file system', async () => {
+    await handleWebviewMessage({ type: 'openFolder', path: String.raw`\\server\share\x` }, deps);
+    await handleWebviewMessage({ type: 'openFolder', path: '//server/share/x' }, deps);
+    expect(h.executeCommand).not.toHaveBeenCalled();
+    expect(h.showErrorMessage).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Generation', () => {
+  it('drops a reply for a render that was replaced while the call was pending', async () => {
+    let finish!: (v: unknown) => void;
+    call.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const gen = new Generation();
+    const pending = handleWebviewMessage({ type: 'call', id: 1, method: 'view' }, { ...deps, post: gen.guard(deps.post) });
+    gen.bump(); // the page was reloaded
+    finish({ old: true });
+    await pending;
+    expect(posted).toEqual([]);
+    // a call made after the reload is answered
+    await handleWebviewMessage({ type: 'call', id: 1, method: 'view' }, { ...deps, post: gen.guard(deps.post) });
+    expect(posted).toEqual([{ type: 'result', id: 1, result: { ok: true } }]);
   });
 });

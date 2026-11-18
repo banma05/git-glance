@@ -1,0 +1,17 @@
+{
+  "Invalid method.": "方法名无效。",
+  "Invalid parameters.": "参数无效。",
+  "The folder path is not absolute.": "文件夹路径不是绝对路径。",
+  "The folder path is not allowed.": "不允许使用这个文件夹路径。",
+  "The folder does not exist.": "文件夹不存在。",
+  "Invalid diff request.": "对比请求无效。",
+  "Binary file: content is not shown.": "二进制文件：不显示内容。",
+  "This file is too large to show here.": "文件太大，这里不显示。",
+  "Cannot read this file: {0}": "无法读取这个文件：{0}",
+  "Git Glance could not load its page.": "Git Glance 无法加载页面。",
+  "Align": "对齐",
+  "Fast-forward every branch that is only behind its remote in all listed repositories?": "要把所有已列出仓库里只落后于远程的分支快进吗？",
+  "Branches with local changes or commits of their own are left alone.": "有本地改动或自己提交的分支不会动。",
+  "Git Glance: {0} branches updated, {1} left alone.": "Git Glance：更新了 {0} 个分支，{1} 个未动。",
+  "Git Glance: {0}": "Git Glance：{0}"
+}

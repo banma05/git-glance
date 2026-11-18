@@ -1,0 +1,17 @@
+{
+  "Invalid method.": "Invalid method.",
+  "Invalid parameters.": "Invalid parameters.",
+  "The folder path is not absolute.": "The folder path is not absolute.",
+  "The folder path is not allowed.": "The folder path is not allowed.",
+  "The folder does not exist.": "The folder does not exist.",
+  "Invalid diff request.": "Invalid diff request.",
+  "Binary file: content is not shown.": "Binary file: content is not shown.",
+  "This file is too large to show here.": "This file is too large to show here.",
+  "Cannot read this file: {0}": "Cannot read this file: {0}",
+  "Git Glance could not load its page.": "Git Glance could not load its page.",
+  "Align": "Align",
+  "Fast-forward every branch that is only behind its remote in all listed repositories?": "Fast-forward every branch that is only behind its remote in all listed repositories?",
+  "Branches with local changes or commits of their own are left alone.": "Branches with local changes or commits of their own are left alone.",
+  "Git Glance: {0} branches updated, {1} left alone.": "Git Glance: {0} branches updated, {1} left alone.",
+  "Git Glance: {0}": "Git Glance: {0}"
+}

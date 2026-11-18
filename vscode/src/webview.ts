@@ -16,6 +16,7 @@ export function transformHtml(html: string, toUri: (relative: string) => string,
   const head =
     `<meta http-equiv="Content-Security-Policy" content="${escapeAttr(csp)}">` +
     `<meta name="gg-init" content="${escapeAttr(JSON.stringify(init))}">`;
+  if (!/<head>/i.test(rewritten)) throw new Error('index.html has no <head>: refusing to build a page without a CSP');
   return rewritten.replace(/<head>/i, (m) => m + head);
 }
 

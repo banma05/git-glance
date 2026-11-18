@@ -8,7 +8,11 @@ import { runTests } from '@vscode/test-electron';
 // .vscode-test, with its own user data and extensions folders. It opens a
 // throw-away repository, never a real one.
 async function main() {
-  delete process.env.ELECTRON_RUN_AS_NODE; // set by some hosts; it would make Code run as plain node
+  // Start from a clean environment: nothing of the host editor's VSCODE_* or
+  // ELECTRON_* settings may reach the test instance.
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('VSCODE_') || key.startsWith('ELECTRON_')) delete process.env[key];
+  }
   const root = path.resolve(__dirname, '..');
   const sandbox = path.join(root, '.vscode-test');
   fs.mkdirSync(sandbox, { recursive: true });

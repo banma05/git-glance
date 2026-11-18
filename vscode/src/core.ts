@@ -58,6 +58,7 @@ export class CoreClient {
   constructor(
     private readonly binPath: string,
     private readonly spawnFn: SpawnFn = nodeSpawn,
+    private readonly cwd?: string,
   ) {}
 
   onLog(fn: (line: string) => void): void {
@@ -141,7 +142,18 @@ export class CoreClient {
     if (this.failedStarts >= MAX_FAILED_STARTS) return null;
     let proc: ChildProcess;
     try {
-      proc = this.spawnFn(this.binPath, ['rpc'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      // detached: on Windows a non-detached child is tied to the parent's job
+      // object and is killed when the extension host exits, even mid-write.
+      // The core ends by itself once stdin closes and its running work is done.
+      const env = { ...process.env };
+      delete env.ELECTRON_RUN_AS_NODE;
+      proc = this.spawnFn(this.binPath, ['rpc'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: true,
+        windowsHide: true,
+        cwd: this.cwd,
+        env,
+      });
     } catch (e) {
       this.failedStarts++;
       this.log(`core start failed: ${e}`);
@@ -157,7 +169,7 @@ export class CoreClient {
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);
         buf = buf.slice(i + 1);
-        if (this.onLine(line)) {
+        if (this.proc === proc && this.onLine(line)) {
           answered = true;
           this.failedStarts = 0;
         }
@@ -182,7 +194,7 @@ export class CoreClient {
       waiters.forEach((w) => w());
     };
     proc.on('error', (e) => gone(String(e)));
-    proc.on('exit', (code, signal) => gone(`code ${code} signal ${signal}`));
+    proc.on('close', (code, signal) => gone(`code ${code} signal ${signal}`));
     return proc;
   }
 

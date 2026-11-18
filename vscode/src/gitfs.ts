@@ -27,14 +27,14 @@ export class GitContentProvider implements vscode.TextDocumentContentProvider {
     const path = q.get('path') ?? '';
     try {
       const f = await this.core.call<FileText>('fileAt', { repo, ref, path });
-      if (f.binary) return 'Binary file: content is not shown.\n';
-      if (f.truncated) return 'This file is too large to show here.\n';
+      if (f.binary) return vscode.l10n.t('Binary file: content is not shown.') + '\n';
+      if (f.truncated) return vscode.l10n.t('This file is too large to show here.') + '\n';
       return f.text;
     } catch (e: any) {
       // A file that does not exist on one side of a diff is shown as empty.
       const msg = String(e?.message ?? e);
       if (/does not exist|exists on disk, but not in|not in the tree|bad object|path .* not/i.test(msg)) return '';
-      return `Cannot read this file: ${msg}\n`;
+      return vscode.l10n.t('Cannot read this file: {0}', msg) + '\n';
     }
   }
 }

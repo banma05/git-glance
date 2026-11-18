@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { handleWebviewMessage } from './bridge';
+import { Generation, handleWebviewMessage } from './bridge';
 import { coreBinaryPath } from './binpath';
 import { CoreClient } from './core';
 import { GIT_SCHEME, GitContentProvider } from './gitfs';
@@ -16,7 +16,7 @@ let activeCore: CoreClient | undefined;
 
 export function activate(ctx: vscode.ExtensionContext) {
   const out = vscode.window.createOutputChannel('Git Glance');
-  const core = new CoreClient(coreBinaryPath(ctx.extensionPath));
+  const core = new CoreClient(coreBinaryPath(ctx.extensionPath), undefined, ctx.extensionPath);
   activeCore = core;
   core.onLog((l) => out.appendLine(l));
   const log = (l: string) => out.appendLine(l);
@@ -27,13 +27,15 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   const initFor = () => ({ locale: vscode.env.language, theme: themeKind(), reload: reloads });
   const setup = (webview: vscode.Webview, mode: Mode) => {
+    const gen = new Generation();
     webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(ctx.extensionUri, 'media', 'ui')] };
     const render = () => {
+      gen.bump();
       try {
         webview.html = renderHtml(webview, ctx.extensionUri, mode, initFor());
       } catch (e) {
         log(`cannot render the page: ${e}`);
-        webview.html = '<!doctype html><body>Git Glance could not load its page.</body>';
+        webview.html = `<!doctype html><body>${vscode.l10n.t('Git Glance could not load its page.')}</body>`;
       }
     };
     render();
@@ -41,7 +43,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     return {
       render,
       subscription: webview.onDidReceiveMessage((m) =>
-        handleWebviewMessage(m, { core, post: (x) => void webview.postMessage(x), openWide, log }).catch((e) => log(`bridge: ${e}`)),
+        handleWebviewMessage(m, { core, post: gen.guard((x) => void webview.postMessage(x)), openWide, log }).catch((e) => log(`bridge: ${e}`)),
       ),
     };
   };
@@ -98,7 +100,8 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   void registerWorkspaceRepos(core, log);
 
-  return { CoreClient, core: () => core };
+  // Only the test host may reach the core client.
+  return ctx.extensionMode === vscode.ExtensionMode.Test ? { CoreClient, core: () => core } : undefined;
 }
 
 // Each workspace folder that is inside a repository is added to the list the
@@ -117,10 +120,10 @@ async function registerWorkspaceRepos(core: CoreClient, log: (l: string) => void
 // alignAll fast-forwards the branches of every listed repository, after the
 // user confirms. The core only moves branches that are clean and only behind.
 async function alignAll(core: CoreClient, log: (l: string) => void): Promise<void> {
-  const yes = 'Align';
+  const yes = vscode.l10n.t('Align');
   const pick = await vscode.window.showInformationMessage(
-    'Fast-forward every branch that is only behind its remote in all listed repositories?',
-    { modal: true, detail: 'Branches with local changes or commits of their own are left alone.' },
+    vscode.l10n.t('Fast-forward every branch that is only behind its remote in all listed repositories?'),
+    { modal: true, detail: vscode.l10n.t('Branches with local changes or commits of their own are left alone.') },
     yes,
   );
   if (pick !== yes) return;
@@ -137,9 +140,9 @@ async function alignAll(core: CoreClient, log: (l: string) => void): Promise<voi
         log(`align failed for ${repo}: ${e?.message ?? e}`);
       }
     }
-    void vscode.window.showInformationMessage(`Git Glance: ${updated} branches updated, ${skipped} left alone.`);
+    void vscode.window.showInformationMessage(vscode.l10n.t('Git Glance: {0} branches updated, {1} left alone.', updated, skipped));
   } catch (e: any) {
-    void vscode.window.showErrorMessage(`Git Glance: ${e?.message ?? e}`);
+    void vscode.window.showErrorMessage(vscode.l10n.t('Git Glance: {0}', String(e?.message ?? e)));
   }
 }
 
