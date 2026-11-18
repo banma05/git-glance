@@ -21,6 +21,20 @@ describe('vscodeHost', () => {
     expect([h.mode, h.locale, h.theme()]).toEqual(['wide', 'zh-cn', 'light']);
   });
 
+  it('falls back to the gg-init meta tag when no init object is set', () => {
+    delete (window as any).__GG_INIT__;
+    const meta = document.createElement('meta');
+    meta.name = 'gg-init';
+    meta.content = JSON.stringify({ mode: 'wide', locale: 'zh-cn', theme: 'light' });
+    document.head.appendChild(meta);
+    try {
+      const h = vscodeHost();
+      expect([h.mode, h.locale, h.theme()]).toEqual(['wide', 'zh-cn', 'light']);
+    } finally {
+      meta.remove();
+    }
+  });
+
   it('matches results to calls by id', async () => {
     const h = vscodeHost();
     const p = h.call<number>('version', { a: 1 });

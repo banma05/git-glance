@@ -1,5 +1,74 @@
 {
-  "name": "git-glance-vscode",
-  "private": true,
-  "version": "0.1.0"
+  "name": "git-glance",
+  "displayName": "Git Glance",
+  "description": "See every branch of a repository at a glance: trunks, merge state and what is safe to align.",
+  "version": "0.1.0",
+  "publisher": "banma05",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Visualization"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:gitglance.sidebar",
+    "onCommand:gitglance.openWide"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gitglance",
+          "title": "Git Glance",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "gitglance": [
+        {
+          "type": "webview",
+          "id": "gitglance.sidebar",
+          "name": "Git Glance"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "gitglance.openWide",
+        "title": "%gitglance.openWide.title%",
+        "category": "Git Glance"
+      },
+      {
+        "command": "gitglance.refresh",
+        "title": "%gitglance.refresh.title%",
+        "category": "Git Glance"
+      },
+      {
+        "command": "gitglance.alignAll",
+        "title": "%gitglance.alignAll.title%",
+        "category": "Git Glance"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node scripts/copy-ui.mjs && node esbuild.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "pretest:smoke": "node scripts/copy-ui.mjs && node esbuild.mjs --smoke",
+    "test:smoke": "node dist-test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "10.0.10",
+    "@types/node": "24.19.1",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-electron": "3.1.0",
+    "esbuild": "0.28.2",
+    "mocha": "12.0.3",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  }
 }

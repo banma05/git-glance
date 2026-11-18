@@ -7,3 +7,6 @@ vscode/bin/
 vscode/media/ui/
 *.vsix
 .superpowers/
+
+.vscode-test/
+dist-test/

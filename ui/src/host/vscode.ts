@@ -3,11 +3,24 @@ import type { Host, ThemeKind } from './types';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
+// readInit finds the init object: window.__GG_INIT__ if a script set it, else the
+// JSON in <meta name="gg-init"> (the extension cannot use inline scripts under its CSP).
+function readInit(): NonNullable<Window['__GG_INIT__']> {
+  if (window.__GG_INIT__) return window.__GG_INIT__;
+  try {
+    const raw = document.querySelector('meta[name="gg-init"]')?.getAttribute('content');
+    if (raw) return JSON.parse(raw);
+  } catch {
+    // fall through to the defaults
+  }
+  return {};
+}
+
 // vscodeHost talks to the extension through webview postMessage. The extension
 // forwards calls to the core and answers with {type:'result', id, result|error}.
 export function vscodeHost(): Host {
   const api = window.acquireVsCodeApi!();
-  const init = window.__GG_INIT__ ?? {};
+  const init = readInit();
   const pending = new Map<number, Pending>();
   const listeners: Array<(t: ThemeKind) => void> = [];
   let current: ThemeKind = init.theme ?? 'dark';

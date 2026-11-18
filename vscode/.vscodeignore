@@ -1,0 +1,11 @@
+src/**
+test/**
+dist-test/**
+scripts/**
+.vscode-test/**
+node_modules/**
+tsconfig.json
+vitest.config.ts
+esbuild.mjs
+**/*.map
+bin/**/*.exe.bak
