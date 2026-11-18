@@ -97,7 +97,7 @@ export const zh = {
   'remove.reason.dirty': '文件夹里有没提交的改动',
   'remove.reason.unpushed': '有还没推送的提交',
   'remove.reason.not-merged': '还没有合入主干',
-  'remove.reason.changed': '确认期间文件夹里的内容变了，请重新确认',
+  'remove.reason.changed': '文件夹已经和显示的不一样，或者在备份过程中有了变化，什么都没有删。请关掉对话框再打开一次，按文件夹现在的样子确认。',
   'remove.reason.hidden-changes': '有被标记为“忽略改动”的文件，无法确认是否干净',
   'remove.reason.locked': '文件夹正被别的程序占用，请先关掉打开它的编辑器窗口',
   'remove.reason.backup-failed': '备份被忽略的文件失败，什么都没有删',

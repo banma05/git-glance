@@ -100,7 +100,7 @@ export const en: Record<Key, string> = {
   'remove.reason.dirty': 'The folder has uncommitted changes',
   'remove.reason.unpushed': 'There are commits that were not pushed',
   'remove.reason.not-merged': 'Not merged into the trunk yet',
-  'remove.reason.changed': 'The folder changed while you were confirming; please confirm again',
+  'remove.reason.changed': 'The folder is no longer as shown, or it changed during the backup; nothing was removed. Close this dialog and open it again to confirm the folder as it is now.',
   'remove.reason.hidden-changes': 'Files are marked as "assume unchanged", so it cannot be told whether the folder is clean',
   'remove.reason.locked': 'Another program is using the folder; close the editor window that has it open',
   'remove.reason.backup-failed': 'Backing up the ignored files failed; nothing was deleted',
