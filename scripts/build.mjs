@@ -34,12 +34,12 @@ function run(cmd, args, opts = {}) {
 }
 
 function findGo() {
-  const candidates = [process.env.GO_BIN, 'go', 'D:/dev/go/bin/go.exe'].filter(Boolean);
+  const candidates = [process.env.GO_BIN, 'go'].filter(Boolean);
   for (const c of candidates) {
     const r = spawnSync(c, ['version'], { stdio: 'ignore' });
     if (!r.error && r.status === 0) return c;
   }
-  throw new Error('go not found: put it on PATH or set GO_BIN');
+  throw new Error('go not found: install Go and put it on PATH, or set GO_BIN to the go executable');
 }
 
 function version() {

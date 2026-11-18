@@ -24,7 +24,7 @@ The core starts a local web server and prints a link such as `http://127.0.0.1:<
 
 ## Build from source
 
-Requirements: Go (see `core/go.mod`), Node.js 20 or newer.
+Requirements: Go (see `core/go.mod`), Node.js 22 or newer.
 
 ```
 cd ui && npm ci
@@ -46,7 +46,7 @@ node scripts/build.mjs all --targets host
 
 - **Delete folder** (removing a worktree folder) copies ignored files to a backup first, except build output such as `node_modules`, `dist` and `target`. The folder is deleted only after the copy succeeded. Backups live in `<Git Glance home>/backups/`, where the home is `$GITGLANCE_HOME` if set, otherwise `git-glance` inside your user config directory (for example `~/.config/git-glance` on Linux, `~/Library/Application Support/git-glance` on macOS, `%AppData%\git-glance` on Windows). To clear them, delete that `backups` folder.
 - Your repository's own hooks and fsmonitor run as they would with your own git.
-- Git Glance writes nothing inside your repositories; its settings and operation log live in the home directory above.
+- Git Glance keeps its own settings, operation log and backups in the home directory above, and never writes files of its own into your repositories. The only changes it makes to a repository are the git operations you click.
 
 ## License
 

@@ -24,7 +24,7 @@ gitglance serve
 
 ## 从源码构建
 
-需要：Go（版本见 `core/go.mod`）、Node.js 20 及以上。
+需要：Go（版本见 `core/go.mod`）、Node.js 22 及以上。
 
 ```
 cd ui && npm ci
@@ -46,7 +46,7 @@ node scripts/build.mjs all --targets host
 
 - **删除文件夹**（删除工作树文件夹）会先把被忽略的文件备份，`node_modules`、`dist`、`target` 这类构建产物除外；备份成功后才删除。备份放在 `<Git Glance 主目录>/backups/` 下：主目录是环境变量 `GITGLANCE_HOME`（若设置），否则是用户配置目录里的 `git-glance`（Linux 上如 `~/.config/git-glance`，macOS 上 `~/Library/Application Support/git-glance`，Windows 上 `%AppData%\git-glance`）。要清理备份，删掉这个 `backups` 文件夹即可。
 - 你仓库自己的钩子（hooks）和 fsmonitor 会和你自己用 git 时一样运行。
-- Git Glance 不在你的仓库里写任何文件；设置和操作记录都在上面的主目录里。
+- Git Glance 把自己的设置、操作记录和备份放在上面的主目录里，不会在你的仓库里写它自己的文件。它对仓库做的改动，只有你点击的那些 git 操作。
 
 ## 许可
 
