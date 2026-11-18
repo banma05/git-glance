@@ -66,5 +66,14 @@ suite('Git Glance smoke', () => {
     await vscode.commands.executeCommand('gitglance.refresh');
     const again = await until('the refreshed page to read the repositories', 30_000, () => reposAnswers(api.traffic())[before]);
     assert.deepStrictEqual((again as string[]).map(norm), [norm(workspace)]);
+
+    // Every list came with what discovery could not add (nothing here), and
+    // every page message carried its render token and its instance id.
+    const t = api.traffic() as Traffic;
+    const told = t.filter((e) => e.mode === 'sidebar' && e.dir === 'out' && e.message?.type === 'discovery');
+    assert.ok(told.length >= 2, 'discovery problems are sent with each repository list');
+    assert.ok(told.every((e) => Array.isArray(e.message.problems) && e.message.problems.length === 0));
+    const asked = t.filter((e) => e.mode === 'sidebar' && e.dir === 'in');
+    assert.ok(asked.every((e) => typeof e.message.page === 'string' && /^[0-9a-f]{32}$/.test(e.message.instance)));
   });
 });
