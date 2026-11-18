@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -61,15 +62,8 @@ func CreateFolder(ctx context.Context, r gitx.Runner, st settings.Store, repoRoo
 	if branchTaken(snap, branch) {
 		return refused("branch-exists", "", nil), nil
 	}
-	for _, w := range snap.Worktrees {
-		if insidePath(dir, w.Path) {
-			return refused("path-inside-folder", w.Path, nil), nil
-		}
-	}
-	if _, err := os.Lstat(dir); err == nil {
-		return refused("path-exists", dir, nil), nil
-	} else if !os.IsNotExist(err) {
-		return failed(), err
+	if res, done, err := checkNewFolder(snap, dir); done || err != nil {
+		return res, err
 	}
 	cmd := []string{"worktree", "add", "--no-track", "-b", branch, dir, trunkRef}
 	entry := createEntry(repoRoot, branch, dir, cmd, now)
@@ -85,6 +79,82 @@ func CreateFolder(ctx context.Context, r gitx.Runner, st settings.Store, repoRoo
 		return createFailed(st, dir, entry, err, kept), nil
 	}
 	return finishCreate(ctx, r, st, repoRoot, trunkName, branch, dir, entry), nil
+}
+
+// checkNewFolder refuses a folder path inside an existing folder of the
+// repository (never write into the user's working tree) or one that exists.
+// done is true when res is a refusal.
+func checkNewFolder(snap repo.Snapshot, dir string) (OpResult, bool, error) {
+	for _, w := range snap.Worktrees {
+		if insidePath(dir, w.Path) {
+			return refused("path-inside-folder", w.Path, nil), true, nil
+		}
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		return refused("path-exists", dir, nil), true, nil
+	} else if !os.IsNotExist(err) {
+		return failed(), true, err
+	}
+	return OpResult{}, false, nil
+}
+
+// CreateFolderForBranch checks an existing local branch out in a new folder
+// at dir. The branch must exist and no folder may hold it, nor a rebase or
+// bisect work on it; the path checks are those of CreateFolder. The branch is
+// checked again right before git runs, as git would otherwise create one
+// (from a remote branch of the same name).
+func CreateFolderForBranch(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot, branch, dir string, now func() time.Time) (OpResult, error) {
+	if !validName(ctx, r, repoRoot, branch) {
+		return refused("bad-name", "", nil), nil
+	}
+	if !filepath.IsAbs(dir) {
+		return failed(), fmt.Errorf("folder path %q is not absolute", dir)
+	}
+	snap, err := repo.Read(ctx, r, repoRoot)
+	if err != nil {
+		return failed(), err
+	}
+	if res, done, err := checkExistingBranch(ctx, r, repoRoot, snap, branch); done || err != nil {
+		return res, err
+	}
+	if res, done, err := checkNewFolder(snap, dir); done || err != nil {
+		return res, err
+	}
+	before, ok := branchHash(ctx, r, repoRoot, branch)
+	if !ok {
+		return refused("no-branch", "", nil), nil
+	}
+	cmd := []string{"worktree", "add", dir, branch}
+	entry := createEntry(repoRoot, branch, dir, cmd, now)
+	entry.Before = before
+	if _, err := r.Run(ctx, repoRoot, cmd...); err != nil {
+		entry.After, _ = branchHash(ctx, r, repoRoot, branch)
+		return createFailed(st, dir, entry, err, ""), nil
+	}
+	return finishCreate(ctx, r, st, repoRoot, "", branch, dir, entry), nil
+}
+
+// checkExistingBranch refuses a branch that is not a local branch
+// (no-branch), that a folder holds, missing folders included
+// (checked-out-elsewhere, Path is the folder), or that a rebase or bisect
+// works on (in-progress). done is true when res is a refusal.
+func checkExistingBranch(ctx context.Context, r gitx.Runner, repoRoot string, snap repo.Snapshot, branch string) (OpResult, bool, error) {
+	if !slices.ContainsFunc(snap.Local, func(b repo.Ref) bool { return b.Name == branch }) {
+		return refused("no-branch", "", nil), true, nil
+	}
+	for _, w := range snap.Worktrees {
+		if w.Branch == branch && !w.Detached {
+			return refused("checked-out-elsewhere", w.Path, nil), true, nil
+		}
+	}
+	held, err := heldBranches(ctx, r, repoRoot)
+	if err != nil {
+		return failed(), true, err
+	}
+	if held[branch] {
+		return refused("in-progress", "", nil), true, nil
+	}
+	return OpResult{}, false, nil
 }
 
 func createEntry(repoRoot, branch, dir string, cmd []string, now func() time.Time) settings.OpEntry {

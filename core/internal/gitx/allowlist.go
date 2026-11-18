@@ -110,6 +110,10 @@ func allowedWorktree(args []string) bool {
 		return true
 	case len(args) == 7 && eq(args[:4], "worktree", "add", "--no-track", "-b"):
 		return plain(args[4]) && plain(args[5]) && plain(args[6])
+	case len(args) == 4 && eq(args[:2], "worktree", "add"):
+		// worktree add <path> <branch>: an existing local branch only; the
+		// caller checks that it exists, as git would otherwise create one.
+		return plain(args[2]) && plain(args[3])
 	case len(args) == 3 && eq(args[:2], "worktree", "remove"):
 		return plain(args[2])
 	}

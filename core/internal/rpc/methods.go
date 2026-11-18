@@ -311,16 +311,25 @@ func (h *Handler) trunkRef(ctx context.Context, root, name string) (string, erro
 	return "", badParams("unknown trunk %q", name)
 }
 
+// createFolder makes a new folder at path (default: defaultFolder). Without
+// existing it creates branch from trunk there; with existing: true it checks
+// out the local branch, which must exist and have no folder (trunk is not
+// used).
 func (h *Handler) createFolder(ctx context.Context, raw json.RawMessage) (any, error) {
-	var p struct{ Repo, Trunk, Branch, Path string }
+	var p struct {
+		Repo, Trunk, Branch, Path string
+		Existing                  bool
+	}
 	if err := decode(raw, &p); err != nil {
 		return nil, err
 	}
 	if err := plainName("branch", p.Branch); err != nil {
 		return nil, err
 	}
-	if err := plainName("trunk", p.Trunk); err != nil {
-		return nil, err
+	if !p.Existing {
+		if err := plainName("trunk", p.Trunk); err != nil {
+			return nil, err
+		}
 	}
 	if p.Path != "" && (!filepath.IsAbs(p.Path) || hasControl(p.Path) || strings.HasPrefix(p.Path, "-")) {
 		return nil, badParams("path must be an absolute folder path")
@@ -329,15 +338,21 @@ func (h *Handler) createFolder(ctx context.Context, raw json.RawMessage) (any, e
 	if err != nil {
 		return nil, err
 	}
-	ref, err := h.trunkRef(ctx, root, p.Trunk)
-	if err != nil {
-		return nil, err
-	}
 	dir := p.Path
 	if dir == "" {
 		dir = ops.DefaultFolderPath(root, p.Branch)
 	}
-	res, err := ops.CreateFolder(ctx, h.r, h.st, root, p.Trunk, ref, p.Branch, filepath.ToSlash(filepath.Clean(dir)), h.now)
+	dir = filepath.ToSlash(filepath.Clean(dir))
+	var res ops.OpResult
+	if p.Existing {
+		res, err = ops.CreateFolderForBranch(ctx, h.r, h.st, root, p.Branch, dir, h.now)
+	} else {
+		var ref string
+		if ref, err = h.trunkRef(ctx, root, p.Trunk); err != nil {
+			return nil, err
+		}
+		res, err = ops.CreateFolder(ctx, h.r, h.st, root, p.Trunk, ref, p.Branch, dir, h.now)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -179,3 +179,77 @@ func TestCreateFolderRefusesAmbiguousNames(t *testing.T) {
 		t.Fatalf("a plain name was refused: %+v, %v", res, err)
 	}
 }
+
+func TestCreateFolderForExistingBranch(t *testing.T) {
+	f := newFixture(t)
+	before := f.rev("refs/heads/x")
+	p := f.r.Root + "/wt-x"
+	res, err := CreateFolderForBranch(context.Background(), f.run, f.st, f.r.Dir, "x", p, fixedNow)
+	if err != nil || !res.OK || res.Path != p || res.Files == nil || res.LogError != "" {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
+	if f.head(p) != "refs/heads/x" || f.rev("refs/heads/x") != before {
+		t.Fatalf("folder on %s, branch at %s (was %s)", f.head(p), f.rev("refs/heads/x"), before)
+	}
+	if up := f.r.Git(f.r.Dir, "for-each-ref", "--format=%(upstream)", "refs/heads/x"); up != "refs/remotes/origin/x" {
+		t.Fatalf("upstream changed to %q", up)
+	}
+	e, ok := opFor(t, f, "create", "x")
+	if !ok || e.Result != "ok" || e.Before != before || e.After != before || strings.Join(e.Command, " ") != "git worktree add "+p+" x" {
+		t.Fatalf("log entry = %+v (found %v)", e, ok)
+	}
+	if rs, _ := f.st.Repo(f.r.Dir); rs.CreatedBase["x"] != "" {
+		t.Fatalf("an existing branch got a created base: %v", rs.CreatedBase)
+	}
+}
+
+// Only a local branch that no folder holds gets a folder: never a branch
+// created on the way (git would make one from a same-named remote branch).
+func TestCreateFolderForExistingBranchRefuses(t *testing.T) {
+	f := newFixture(t)
+	f.r.Git(f.other, "push", "origin", "main:theirs")
+	f.r.Git(f.r.Dir, "fetch", "origin")
+	wy := f.r.AddWorktree("y", "y")
+	wz := f.r.AddWorktree("z", "z")
+	f.r.Git(wz, "bisect", "start")
+	f.r.Git(wz, "switch", "--detach")
+	gone := f.r.AddWorktree("w", "w")
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	taken := f.r.Root + "/taken"
+	if err := os.WriteFile(taken, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	free := f.r.Root + "/free"
+	cases := []struct{ name, branch, path, reason, wantPath string }{
+		{"remote only", "theirs", free, "no-branch", ""},
+		{"no such branch", "nope", free, "no-branch", ""},
+		{"main folder's branch", "main", free, "checked-out-elsewhere", f.r.Dir},
+		{"another folder's branch", "y", free, "checked-out-elsewhere", wy},
+		{"missing folder's branch", "w", free, "checked-out-elsewhere", gone},
+		{"bisect", "z", free, "in-progress", ""},
+		{"path exists", "x", taken, "path-exists", taken},
+		{"inside a folder", "x", wy + "/sub", "path-inside-folder", wy},
+		{"bad name", "@{-1}", free, "bad-name", ""},
+	}
+	for _, c := range cases {
+		res, err := CreateFolderForBranch(context.Background(), f.run, f.st, f.r.Dir, c.branch, c.path, fixedNow)
+		if err != nil || res.OK || res.Reason != c.reason || res.Files == nil {
+			t.Errorf("%s: res = %+v, err = %v, want %s", c.name, res, err, c.reason)
+			continue
+		}
+		if c.wantPath != "" && filepath.ToSlash(res.Path) != c.wantPath {
+			t.Errorf("%s: Path = %q, want %q", c.name, res.Path, c.wantPath)
+		}
+	}
+	if _, err := os.Stat(free); err == nil {
+		t.Fatal("a refused create left a folder behind")
+	}
+	if got := f.r.Git(f.r.Dir, "for-each-ref", "refs/heads/theirs", "refs/heads/nope"); got != "" {
+		t.Fatalf("a branch was created: %s", got)
+	}
+	if len(f.opNames(t)) != 0 {
+		t.Fatal("refusals must not be logged")
+	}
+}

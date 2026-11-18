@@ -799,3 +799,35 @@ func TestShellMetaDetection(t *testing.T) {
 		t.Error("plain path flagged")
 	}
 }
+
+// createFolder with existing: true checks out a local branch that has no
+// folder yet; no trunk is needed and no branch is ever created.
+func TestCreateFolderForExistingBranch(t *testing.T) {
+	r := testrepo.New(t)
+	r.Branch("feature/old", "main")
+	c := startServer(t, r)
+	dir := filepath.ToSlash(filepath.Join(r.Root, "wt-old"))
+	var res struct {
+		OK     bool   `json:"ok"`
+		Reason string `json:"reason"`
+		Path   string `json:"path"`
+	}
+	c.ok("createFolder", map[string]any{"repo": r.Dir, "branch": "feature/old", "path": dir, "existing": true}, &res)
+	if !res.OK || res.Path != dir {
+		t.Fatalf("createFolder %+v", res)
+	}
+	if head := r.Git(dir, "rev-parse", "--symbolic-full-name", "HEAD"); head != "refs/heads/feature/old" {
+		t.Fatalf("folder on %s", head)
+	}
+	c.ok("createFolder", map[string]any{"repo": r.Dir, "branch": "feature/old", "path": dir + "-2", "existing": true}, &res)
+	if res.OK || res.Reason != "checked-out-elsewhere" {
+		t.Fatalf("second folder: %+v", res)
+	}
+	c.ok("createFolder", map[string]any{"repo": r.Dir, "branch": "feature/none", "existing": true}, &res)
+	if res.OK || res.Reason != "no-branch" {
+		t.Fatalf("missing branch: %+v", res)
+	}
+	if got := r.Git(r.Dir, "for-each-ref", "refs/heads/feature/none"); got != "" {
+		t.Fatal("a branch was created")
+	}
+}
