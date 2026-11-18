@@ -20,12 +20,14 @@ import (
 // detached (the folder is on a detached HEAD, leaving it could
 // orphan commits), checked-out-elsewhere (Path is that folder) and no-branch
 // (no local branch of that name). CreateFolder reasons: bad-name, branch-exists,
-// path-inside-folder (Path is the folder) and path-exists. Up to here nothing
-// was done. Both may also return git-failed (git ran and failed; Detail is its
-// message and, for CreateFolder, names a branch git created and left behind)
-// and verify-failed (git ran but the folder is not on the branch afterwards;
-// Detail says what it is on). LogError is empty unless saving settings or the
-// operation log failed.
+// path-inside-folder (Path is the folder) and path-exists; CreateFolderForBranch
+// reasons: bad-name, no-branch, checked-out-elsewhere (Path is that folder),
+// in-progress (a rebase or bisect works on the branch), path-inside-folder and
+// path-exists. Up to here nothing was done. All may also return git-failed
+// (git ran and failed; Detail is its message and, for CreateFolder, names a
+// branch git created and left behind) and verify-failed (git ran but the
+// folder is not on the branch afterwards; Detail says what it is on). LogError
+// is empty unless saving settings or the operation log failed.
 type OpResult struct {
 	OK       bool     `json:"ok"`
 	Reason   string   `json:"reason"`

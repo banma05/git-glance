@@ -27,7 +27,9 @@ type AlignItem struct {
 // assume-unchanged exist on disk), folder-missing (its folder was deleted from disk),
 // checked-out-twice (several folders hold the branch), tracks-other-branch
 // (its upstream is a branch of another name, such as a trunk; Detail names
-// it), in-progress (a stopped rebase or a bisect works on it) or git-failed.
+// it), in-progress (a stopped rebase or a bisect works on it), git-failed
+// (Detail is git's message) or verify-failed (git ran but the branch or its
+// folder is not where it should be afterwards; Detail says what).
 type AlignSkip struct {
 	Branch string   `json:"branch"`
 	Reason string   `json:"reason"`
