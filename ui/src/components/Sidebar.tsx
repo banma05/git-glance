@@ -44,7 +44,7 @@ export function Sidebar({ t, state, actions }: Props) {
     names
       .map((n) => view?.branches[n])
       .filter((b): b is BranchView => !!b)
-      .map((b) => <Fish t={t} b={b} state={state} actions={actions} />);
+      .map((b) => <Fish key={b.name} t={t} b={b} state={state} actions={actions} />);
   const group = (key: string, title: string, names: string[]) => (
     <section class="group">
       <button class="group-head" aria-expanded={!state.collapsed[key]} onClick={() => actions.toggleGroup(key)}>

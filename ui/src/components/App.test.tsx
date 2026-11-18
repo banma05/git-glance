@@ -81,3 +81,113 @@ describe('App', () => {
     });
   }
 });
+
+// A host whose answers are chosen per call: handler(method, repo) returns a value,
+// a promise or throws.
+function scriptedHost(handler: (method: string, repo: string, n: number) => unknown) {
+  const calls: string[] = [];
+  const counts: Record<string, number> = {};
+  const host: Host = {
+    async call<T>(method: string, params?: object): Promise<T> {
+      const repo = String((params as { repo?: string } | undefined)?.repo ?? '');
+      const k = `${method}:${repo}`;
+      counts[k] = (counts[k] ?? 0) + 1;
+      calls.push(k);
+      if (method === 'repos') return ['/a', '/b'] as T;
+      if (method === 'getGlobal') return { repos: ['/a', '/b'], editor: 'code', theme: 'auto' } as T;
+      return (await handler(method, repo, counts[k])) as T;
+    },
+    openFolder: async () => undefined,
+    copy: async () => undefined,
+    openDiff: async () => false,
+    openWide: () => undefined,
+    mode: 'wide',
+    locale: 'en',
+    theme: () => 'dark',
+    onTheme: () => undefined,
+  };
+  return { host, calls, counts };
+}
+const okFetch = { ok: true, attempts: 1, error: '', at: 1 };
+
+describe('App failures and repo switching', () => {
+  it('keeps refresh state per repo when the user switches mid-refresh', async () => {
+    let lateFetch!: (v: unknown) => void;
+    const pending = new Promise((r) => (lateFetch = r));
+    const { host } = scriptedHost((method, repo) => {
+      if (method === 'view' && repo === '/a') return mockView('/a');
+      if (method === 'fetch' && repo === '/a') return pending;
+      if (method === 'view' && repo === '/b') throw new HostError('git-failed', 'exit 1');
+      throw new HostError('unknown-method', method);
+    });
+    render(<App host={host} />);
+    await screen.findByText('Reading the remote…');
+    fireEvent.click(screen.getByRole('tab', { name: 'b' }));
+    expect(await screen.findByText(/A git command failed/)).toBeTruthy();
+    lateFetch({ ok: false, attempts: 1, error: 'late-from-a', at: 0 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/late-from-a/)).toBeNull();
+    expect(screen.queryByText('Reading the remote…')).toBeNull();
+    expect(screen.queryByText('feature/login')).toBeNull();
+    const retry = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+  });
+
+  it('does not show repo A failure on repo B', async () => {
+    let failFetch!: (e: unknown) => void;
+    const pending = new Promise((_r, rej) => (failFetch = rej));
+    const { host } = scriptedHost((method, repo) => {
+      if (method === 'fetch' && repo === '/a') return pending;
+      if (method === 'view') return mockView(repo);
+      return okFetch;
+    });
+    render(<App host={host} />);
+    await screen.findByText('Reading the remote…');
+    fireEvent.click(screen.getByRole('tab', { name: 'b' }));
+    await waitFor(() => expect(screen.queryByText('Reading the remote…')).toBeNull());
+    failFetch(new HostError('network', 'a-is-down'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/a-is-down/)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows the retry line for a rejected fetch and retries fetch then view', async () => {
+    const { host, calls } = scriptedHost((method, _repo, n) => {
+      if (method === 'view') return mockView('/a');
+      if (method === 'fetch') {
+        if (n === 1) throw new HostError('network', 'offline');
+        return okFetch;
+      }
+      throw new HostError('unknown-method', method);
+    });
+    render(<App host={host} />);
+    expect(await screen.findByText(/Could not read the remote: offline/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/Could not read the remote/)).toBeNull());
+    expect(calls.filter((c) => !c.startsWith('repos') && !c.startsWith('getGlobal')).slice(-2)).toEqual(['fetch:/a', 'view:/a']);
+  });
+
+  it('shows an error with a working retry when the first view is rejected', async () => {
+    const { host } = scriptedHost((method, _repo, n) => {
+      if (method === 'view') {
+        if (n === 1) throw new TypeError('Failed to fetch');
+        return mockView('/a');
+      }
+      return okFetch;
+    });
+    render(<App host={host} />);
+    expect(await screen.findByText(/Failed to fetch/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('makes no further calls once the opening sequence has settled', async () => {
+    const { host, calls } = scriptedHost((method, repo) => (method === 'view' ? mockView(repo) : okFetch));
+    render(<App host={host} />);
+    await waitFor(() => expect(calls).toContain('getGlobal:'));
+    const settled = calls.length;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(calls.length).toBe(settled);
+  });
+});

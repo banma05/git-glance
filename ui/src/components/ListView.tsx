@@ -60,6 +60,7 @@ export function ListView({ t, view, state, actions, compact = false }: Props) {
       .filter(Boolean)
       .map((b) => (
         <BranchRow
+          key={b.name}
           t={t}
           b={b}
           theme={state.theme}

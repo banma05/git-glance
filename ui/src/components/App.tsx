@@ -41,12 +41,17 @@ export function App({ host }: { host: Host }) {
   ) : state.fetching ? (
     <div class="fetch-note muted">{t('fetch.running')}</div>
   ) : null;
+  const view = state.view;
   const errorLine = state.error ? (
     <div class="fetch-error" role="alert">
-      {errorText(state.error, t)}
+      <span>{errorText(state.error, t)}</span>
+      {!view && state.repo && (
+        <button class="btn" onClick={actions.reload}>
+          {t('app.retry')}
+        </button>
+      )}
     </div>
   ) : null;
-  const view = state.view;
   const selected = view && state.selected ? (view.branches[state.selected] ?? null) : null;
 
   if (host.mode === 'sidebar') {

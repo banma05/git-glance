@@ -29,6 +29,7 @@ export interface AppState {
 export interface Actions {
   selectRepo(repo: string): void;
   addRepo(path: string): void;
+  reload(): void; // open the current repository again (after a failed first view)
   refresh(): void; // read the remote again, then the view (the retry button)
   setMode(mode: ViewMode): void;
   select(branch: string): void;
@@ -88,38 +89,50 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     };
     const current = (repo: string) => ref.current.repo === repo;
 
+    // failFor reports a failure of a call made for `repo`; once the user has moved
+    // to another repository the failure is not theirs to see.
+    const failFor = (repo: string, e: unknown) => {
+      if (current(repo)) fail(e);
+    };
+    const reasonOf = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
+
     const loadView = async (repo: string) => {
       const view = await rpc(host, 'view', { repo });
-      if (current(repo)) patch({ view, fetchError: view.fetchError });
+      if (current(repo)) patch({ view, fetchError: view.fetchError, error: null });
       return view;
     };
 
-    // refresh reads the remote in the background, then the view again.
+    // refresh reads the remote in the background, then the view again. A failed
+    // call lands in the "could not read the remote" line, which has the retry.
     const refresh = async (repo: string) => {
       patch({ fetching: true });
       try {
         const f = await rpc(host, 'fetch', { repo });
         const view = await rpc(host, 'view', { repo });
         if (!current(repo)) return;
-        const failed = f.ok ? view.fetchError : f.error || view.fetchError || 'fetch';
-        patch({ view, fetching: false, fetchError: failed });
+        const failed = f.ok ? view.fetchError : f.error || view.fetchError || 'unknown';
+        patch({ view, fetching: false, fetchError: failed, error: null });
       } catch (e) {
-        if (current(repo)) patch({ fetching: false });
-        fail(e);
+        if (!current(repo)) return;
+        if (e instanceof HostError && e.code === 'no-token') fail(e);
+        else patch({ fetchError: reasonOf(e) });
+        patch({ fetching: false });
       }
     };
 
     const open = async (repo: string) => {
-      patch({ repo, view: null, selected: '', fetchError: '', error: null, alignReport: null });
+      // fetching is reset here: a refresh of the repository left behind drops its result
+      patch({ repo, view: null, selected: '', fetchError: '', error: null, alignReport: null, fetching: false });
       try {
         await loadView(repo);
+        if (!current(repo)) return;
         patch({ loaded: true });
       } catch (e) {
-        fail(e);
+        failFor(repo, e);
         return;
       }
       await refresh(repo);
-      if (ref.current.global === null) {
+      if (current(repo) && ref.current.global === null) {
         try {
           patch({ global: await rpc(host, 'getGlobal') });
         } catch {
@@ -161,6 +174,9 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
             fail(e);
           }
         })();
+      },
+      reload: () => {
+        if (ref.current.repo) void open(ref.current.repo);
       },
       refresh: () => {
         if (ref.current.repo && !ref.current.fetching) void refresh(ref.current.repo);
