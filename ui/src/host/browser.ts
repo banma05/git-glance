@@ -5,17 +5,24 @@ import type { Global, RpcResponse } from '../types';
 const TOKEN_KEY = 'gitglance.token';
 
 // loadToken takes the token from the page address (#token=<t>), keeps it in
-// sessionStorage and removes it from the address bar.
+// sessionStorage and removes it from the address bar. The hash is removed
+// first, so a token that cannot be decoded never stays in the address bar; the
+// page then has no token and says how to get one.
 function loadToken(): string {
   const m = /(?:^#|&)token=([^&]+)/.exec(location.hash);
   if (m) {
-    const token = decodeURIComponent(m[1]);
+    history.replaceState(null, '', location.pathname + location.search);
+    let token: string;
+    try {
+      token = decodeURIComponent(m[1]);
+    } catch {
+      return '';
+    }
     try {
       sessionStorage.setItem(TOKEN_KEY, token);
     } catch {
       // storage can be blocked; the token then only lives in memory
     }
-    history.replaceState(null, '', location.pathname + location.search);
     return token;
   }
   try {

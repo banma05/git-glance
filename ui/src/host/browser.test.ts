@@ -28,6 +28,15 @@ describe('browserHost', () => {
     expect(location.hash).toBe('');
   });
 
+  it('strips a hash with a malformed token and goes on without one', async () => {
+    history.replaceState(null, '', '/#token=%E0%A4%A');
+    let host!: ReturnType<typeof browserHost>;
+    expect(() => (host = browserHost())).not.toThrow();
+    expect(location.hash).toBe('');
+    expect(sessionStorage.getItem('gitglance.token')).toBeNull();
+    await expect(host.call('version')).rejects.toMatchObject({ code: 'no-token' });
+  });
+
   it('keeps using the stored token after a reload', async () => {
     sessionStorage.setItem('gitglance.token', 'kept');
     const f = reply({ id: 1, result: 1 });
