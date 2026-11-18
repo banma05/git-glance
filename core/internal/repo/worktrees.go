@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 
@@ -20,7 +21,16 @@ func readWorktrees(ctx context.Context, r gitx.Runner, dir string) ([]Worktree, 
 			w.Missing = true
 			continue
 		}
-		if w.Dirty, err = readDirty(ctx, r, w.Path); err != nil {
+		dirty, err := readDirty(ctx, r, w.Path)
+		var ge *gitx.GitError
+		switch {
+		case err == nil:
+			w.Dirty = dirty
+		case errors.As(err, &ge) && ctx.Err() == nil:
+			// git cannot read this folder (a broken .git file, no access):
+			// mark it so nothing touches it, and show the rest.
+			w.Missing, w.Broken = true, true
+		default:
 			return nil, err
 		}
 	}
@@ -46,6 +56,8 @@ func parseWorktrees(out string) []Worktree {
 			cur.Detached = true
 		case line == "locked" || strings.HasPrefix(line, "locked "):
 			cur.Locked = true
+		case line == "bare":
+			cur.Bare = true
 		}
 	}
 	return list

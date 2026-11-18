@@ -331,3 +331,55 @@ func TestContainsSquashRejectsExtraFile(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 }
+
+// subjectFixture gives feature/a two own commits that share one subject.
+func subjectFixture(t *testing.T) (*testrepo.Repo, *Matcher) {
+	t.Helper()
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Branch("feature/a", "main")
+	r.Git(r.Dir, "switch", "feature/a")
+	r.Commit(r.Dir, "fix", map[string]string{"a.txt": "a\n"})
+	r.Commit(r.Dir, "fix", map[string]string{"b.txt": "b\n"})
+	r.Git(r.Dir, "switch", "main")
+	return r, &Matcher{R: gitx.ExecRunner{}, Dir: r.Dir}
+}
+
+func containsOnMain(t *testing.T, m *Matcher) Containment {
+	t.Helper()
+	own, fork, _, err := m.OwnCommits(context.Background(), "main", "feature/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := m.Contains(context.Background(), "main", "feature/a", fork, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// Each target commit vouches for at most one own commit with its subject: one
+// "fix" on the trunk does not make two own "fix" commits merged.
+func TestContainsSubjectCountsEachTargetCommitOnce(t *testing.T) {
+	r, m := subjectFixture(t)
+	r.Commit(r.Dir, "fix", map[string]string{"c.txt": "c\n"})
+	if c := containsOnMain(t, m); c.State != "some" || c.Matched != 1 {
+		t.Fatalf("%+v", c)
+	}
+	r.Commit(r.Dir, "fix", map[string]string{"d.txt": "d\n"})
+	if c := containsOnMain(t, m); c.State != "all" || c.Matched != 2 {
+		t.Fatalf("two trunk commits: %+v", c)
+	}
+}
+
+// A trunk commit that already matched an own commit by its patch has vouched:
+// it cannot vouch again for another own commit by the same subject.
+func TestContainsSubjectNotVouchedTwiceAfterPatch(t *testing.T) {
+	r, m := subjectFixture(t)
+	first := r.Git(r.Dir, "rev-parse", "feature/a~1")
+	r.Git(r.Dir, "cherry-pick", first)
+	c := containsOnMain(t, m)
+	if c.State != "some" || c.Matched != 1 || c.Per[1].By != "patch" || c.Per[0].By != "" {
+		t.Fatalf("%+v", c)
+	}
+}

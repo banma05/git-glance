@@ -19,8 +19,9 @@ type FetchResult struct {
 	At       int64  `json:"at"`    // unix seconds
 }
 
-// Fetch runs `fetch --all --prune --no-prune-tags` and retries once on failure. The timeout of
-// each attempt is the one of the runner.
+// Fetch runs `fetch --all --prune --no-prune-tags` and retries once on
+// failure, but not after a timeout: that attempt already waited the runner's
+// whole fetch timeout.
 func Fetch(ctx context.Context, r gitx.Runner, repoRoot string, now func() time.Time) FetchResult {
 	res := FetchResult{}
 	for res.Attempts < 2 {
@@ -31,7 +32,7 @@ func Fetch(ctx context.Context, r gitx.Runner, repoRoot string, now func() time.
 			break
 		}
 		res.Error = lastLine(err)
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
 			break
 		}
 	}
@@ -54,4 +55,34 @@ func lastLine(err error) string {
 		}
 	}
 	return ""
+}
+
+// failDetail is what a failed git command tells the user: the last two
+// non-empty stderr lines or, when an earlier line names a lock file (git
+// prints its path first and advice after it), that line and the last one.
+// Any other error gives its text.
+func failDetail(err error) string {
+	var ge *gitx.GitError
+	if !errors.As(err, &ge) {
+		return lastLine(err)
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.ReplaceAll(ge.Stderr, "\r", ""), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	switch len(lines) {
+	case 0:
+		return ""
+	case 1:
+		return lines[0]
+	}
+	last := lines[len(lines)-1]
+	for _, l := range lines[:len(lines)-1] {
+		if strings.Contains(l, ".lock") {
+			return l + "; " + last
+		}
+	}
+	return lines[len(lines)-2] + "; " + last
 }

@@ -295,3 +295,47 @@ func TestQueuedWritesDoNotBlockReads(t *testing.T) {
 		}
 	}
 }
+
+// versionRunner answers `git version` with text and runs everything else.
+type versionRunner struct {
+	gitx.ExecRunner
+	text string
+}
+
+func (v versionRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if len(args) == 1 && args[0] == "version" {
+		return []byte(v.text), nil
+	}
+	return v.ExecRunner.Run(ctx, dir, args...)
+}
+
+// Older git lacks flags the writes depend on (--no-overwrite-ignore,
+// --no-autostash): every write is refused, while version keeps reporting.
+func TestWritesNeedGit230(t *testing.T) {
+	for _, c := range []struct {
+		name, git string
+		runner    gitx.Runner
+	}{
+		{"old git", "2.29", versionRunner{text: "git version 2.29.2\n"}},
+		{"no git", "", gitx.ExecRunner{Git: filepath.Join(t.TempDir(), "no-such-git")}},
+	} {
+		h, err := NewHandler(c.runner, settings.Store{Dir: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, m := range h.methods {
+			if !m.write {
+				continue
+			}
+			rep := h.Handle(context.Background(), Request{ID: 1, Method: name, Params: json.RawMessage(`{}`)})
+			if rep.Error == nil || rep.Error.Code != "git-too-old" {
+				t.Errorf("%s: %s gave %+v, want git-too-old", c.name, name, rep)
+			}
+		}
+		rep := h.Handle(context.Background(), Request{ID: 2, Method: "version"})
+		res, ok := rep.Result.(VersionResult)
+		if rep.Error != nil || !ok || res.GitOK || res.Git != c.git {
+			t.Errorf("%s: version = %+v", c.name, rep)
+		}
+	}
+}

@@ -41,8 +41,10 @@ type Response struct {
 	Error  *RPCError `json:"error,omitempty"`
 }
 
-// RPCError codes: not-repo, bad-params, unknown-method, git-failed,
-// not-allowed, editor-not-found, internal.
+// RPCError codes: not-repo, bare-repo, unsafe-repo (Message is git's text),
+// bad-params, unknown-method, git-failed, git-too-old (every write method
+// when git is missing or older than 2.30), not-allowed, editor-not-found,
+// internal.
 type RPCError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -58,6 +60,7 @@ func badParams(format string, args ...any) error {
 func toRPCError(err error) *RPCError {
 	var re *RPCError
 	var ge *gitx.GitError
+	var ue *repo.UnsafeRepoError
 	switch {
 	case errors.As(err, &re):
 		return re
@@ -67,6 +70,10 @@ func toRPCError(err error) *RPCError {
 		return &RPCError{Code: "git-failed", Message: lastStderrLine(ge.Stderr)}
 	case errors.Is(err, repo.ErrNotRepo):
 		return &RPCError{Code: "not-repo", Message: err.Error()}
+	case errors.Is(err, repo.ErrBareRepo):
+		return &RPCError{Code: "bare-repo", Message: err.Error()}
+	case errors.As(err, &ue):
+		return &RPCError{Code: "unsafe-repo", Message: ue.Message}
 	}
 	return &RPCError{Code: "internal", Message: err.Error()}
 }
@@ -131,6 +138,10 @@ func NewHandler(r gitx.Runner, st settings.Store) (*Handler, error) {
 
 func (h *Handler) isWrite(name string) bool { return h.methods[name].write }
 
+// gitUsable reports whether git was found and is at least 2.30, the oldest
+// version whose flags every write relies on.
+func (h *Handler) gitUsable() bool { return h.gitFound && h.gitVersion.AtLeast(2, 30) }
+
 // SetCoreVersion sets the version string reported by the version method.
 func (h *Handler) SetCoreVersion(v string) { h.coreVersion = v }
 
@@ -148,6 +159,12 @@ func (h *Handler) Handle(ctx context.Context, req Request) (resp Response) {
 		return resp
 	}
 	if m.write {
+		// The writes depend on flags older git lacks (--no-overwrite-ignore,
+		// --no-autostash); with an unknown git nothing is safe to run.
+		if !h.gitUsable() {
+			resp.Error = &RPCError{Code: "git-too-old", Message: "changes need git 2.30 or newer"}
+			return resp
+		}
 		h.write.Lock()
 		defer h.write.Unlock()
 	}

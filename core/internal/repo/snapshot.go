@@ -42,7 +42,9 @@ type DirtyCounts struct {
 }
 
 // Worktree is one checked-out folder of the repository. Locked is set by
-// `git worktree lock`; git then refuses to remove the folder.
+// `git worktree lock`; git then refuses to remove the folder. Broken means
+// the folder exists but git cannot read it; it is also Missing, so nothing
+// touches it.
 type Worktree struct {
 	Path     string      `json:"path"`
 	Branch   string      `json:"branch"`
@@ -50,7 +52,9 @@ type Worktree struct {
 	Main     bool        `json:"main"`
 	Detached bool        `json:"detached"`
 	Missing  bool        `json:"missing"`
+	Broken   bool        `json:"broken"`
 	Locked   bool        `json:"locked"`
+	Bare     bool        `json:"bare"`
 	Dirty    DirtyCounts `json:"dirty"`
 }
 
@@ -66,26 +70,56 @@ type Snapshot struct {
 // ErrNotRepo is returned by Discover outside of a git repository.
 var ErrNotRepo = errors.New("not a git repository")
 
+// ErrBareRepo is returned by Discover for a bare repository, which has no
+// folders to show.
+var ErrBareRepo = errors.New("bare repositories are not supported")
+
+// UnsafeRepoError is returned by Discover when git refuses a repository that
+// belongs to another user ("dubious ownership"). Message is git's text, which
+// says how to trust the folder.
+type UnsafeRepoError struct{ Message string }
+
+func (e *UnsafeRepoError) Error() string { return e.Message }
+
 // Discover returns the main worktree root (absolute, forward slashes) of the
-// repository that contains path.
+// repository that contains path: the first folder git lists for it, from any
+// of its folders. A submodule is its own repository, whose git directory lies
+// inside the superproject's.
 func Discover(ctx context.Context, r gitx.Runner, path string) (string, error) {
-	out, err := r.Run(ctx, path, "rev-parse", "--git-common-dir")
+	out, err := r.Run(ctx, path, "worktree", "list", "--porcelain")
 	if err != nil {
 		var ge *gitx.GitError
-		if errors.As(err, &ge) {
-			return "", ErrNotRepo
-		}
-		return "", err
-	}
-	common := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(common) {
-		abs, err := filepath.Abs(path)
-		if err != nil {
+		if !errors.As(err, &ge) {
 			return "", err
 		}
-		common = filepath.Join(abs, common)
+		if strings.Contains(ge.Stderr, "dubious ownership") {
+			return "", &UnsafeRepoError{Message: strings.TrimSpace(ge.Stderr)}
+		}
+		return "", ErrNotRepo
 	}
-	return filepath.ToSlash(filepath.Dir(filepath.Clean(common))), nil
+	list := parseWorktrees(string(out))
+	switch {
+	case len(list) == 0:
+		return "", ErrNotRepo
+	case list[0].Bare:
+		return "", ErrBareRepo
+	}
+	return filepath.ToSlash(filepath.Clean(mainFolder(ctx, r, list[0].Path))), nil
+}
+
+// mainFolder corrects the first folder git lists: for a submodule git lists
+// its git directory (.git/modules/<name>), while the folder itself is set by
+// core.worktree there. Asked inside that directory, git names the folder.
+func mainFolder(ctx context.Context, r gitx.Runner, listed string) string {
+	out, err := r.Run(ctx, listed, "rev-parse", "--is-inside-git-dir")
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		return listed
+	}
+	out, err = r.Run(ctx, listed, "rev-parse", "--show-toplevel")
+	if top := strings.TrimSpace(string(out)); err == nil && top != "" {
+		return top
+	}
+	return listed
 }
 
 // Read takes a snapshot of the repository whose main worktree is repoRoot.

@@ -132,8 +132,8 @@ func TestSwitchIgnoredFileIsNotOverwritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := Switch(context.Background(), f.run, f.st, f.r.Dir, f.r.Dir, "feature/b", fixedNow)
-	if err == nil && res.OK {
-		t.Fatalf("the switch must not succeed over an ignored file: %+v", res)
+	if err != nil || res.OK || res.Reason != "git-failed" || res.Detail == "" || res.Files == nil {
+		t.Fatalf("res = %+v, err = %v, want git-failed over an ignored file", res, err)
 	}
 	if got := f.head(f.r.Dir); got != "refs/heads/main" {
 		t.Fatalf("HEAD = %q", got)
@@ -142,8 +142,22 @@ func TestSwitchIgnoredFileIsNotOverwritten(t *testing.T) {
 	if rerr != nil || strings.TrimSpace(string(data)) != "mine" {
 		t.Fatalf("ignored file was lost: %q %v", data, rerr)
 	}
-	if len(f.opNames(t)) != 0 {
-		t.Fatal("a failed switch must not be logged")
+	// git ran and failed: the attempt is in the log all the same.
+	if e, ok := opFor(t, f, "switch", "feature/b"); !ok || !strings.HasPrefix(e.Result, "git-failed: ") || e.After != "refs/heads/main" {
+		t.Fatalf("log entry = %+v (found %v)", e, ok)
+	}
+}
+
+func TestSwitchVerifyFailedIsLogged(t *testing.T) {
+	f := newFixture(t)
+	f.r.Branch("feature/b", "main")
+	run := skipRunner{skip: func(args []string) bool { return args[0] == "switch" }}
+	res, err := Switch(context.Background(), run, f.st, f.r.Dir, f.r.Dir, "feature/b", fixedNow)
+	if err != nil || res.OK || res.Reason != "verify-failed" || !strings.Contains(res.Detail, "refs/heads/main") {
+		t.Fatalf("res = %+v, err = %v, want verify-failed", res, err)
+	}
+	if e, ok := opFor(t, f, "switch", "feature/b"); !ok || !strings.HasPrefix(e.Result, "verify-failed: ") {
+		t.Fatalf("log entry = %+v (found %v)", e, ok)
 	}
 }
 

@@ -72,7 +72,10 @@ func gitEnv(base []string) []string {
 	)
 }
 
-const localMutationTimeout = 30 * time.Minute
+const (
+	localMutationTimeout = 30 * time.Minute
+	networkFetchTimeout  = 15 * time.Minute
+)
 
 // localMutation reports whether args change the local repository only. Such
 // commands must not be interrupted half way. args has passed Allowed.
@@ -84,6 +87,25 @@ func localMutation(args []string) bool {
 		return args[1] == "."
 	}
 	return false
+}
+
+// timeoutFor returns how long args may run: Timeout (default 60s) for reads,
+// at least 15 minutes for the network fetch (a first fetch of a large
+// repository over a slow link) and at least 30 minutes for a local mutation (a
+// worktree add of a large repository can take minutes). args has passed
+// Allowed.
+func (r ExecRunner) timeoutFor(args []string) time.Duration {
+	timeout := r.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	switch {
+	case localMutation(args):
+		timeout = max(timeout, localMutationTimeout)
+	case args[0] == "fetch":
+		timeout = max(timeout, networkFetchTimeout)
+	}
+	return timeout
 }
 
 // Run executes git with args in dir and returns stdout.
@@ -107,17 +129,11 @@ func (r ExecRunner) run(ctx context.Context, dir string, input []byte, args []st
 	if bin == "" {
 		bin = "git"
 	}
-	timeout := r.Timeout
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
 	if localMutation(args) {
-		// A killed git leaves stale lock files and half-updated folders, and
-		// a worktree add of a large repository can take minutes.
+		// A killed git leaves stale lock files and half-updated folders.
 		ctx = context.WithoutCancel(ctx)
-		timeout = max(timeout, localMutationTimeout)
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, r.timeoutFor(args))
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, args...)

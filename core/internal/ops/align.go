@@ -100,7 +100,7 @@ func alignSnapshot(ctx context.Context, r gitx.Runner, st settings.Store, repoRo
 		if wt != nil {
 			hidden, err := hiddenChanges(ctx, r, wt.Path)
 			if err != nil {
-				rep.Skipped = append(rep.Skipped, AlignSkip{Branch: b.Name, Reason: "git-failed", Files: []string{}, Detail: lastLine(err)})
+				rep.Skipped = append(rep.Skipped, AlignSkip{Branch: b.Name, Reason: "git-failed", Files: []string{}, Detail: failDetail(err)})
 				continue
 			}
 			if len(hidden) > 0 {
@@ -242,12 +242,13 @@ func wrongHead(head, branchRef string) string {
 // update moves one branch and verifies, before and after, that exactly the
 // reported branch moved from the snapshot hash to the upstream hash. A branch
 // in a folder is merged there; a branch without a folder is moved by a local
-// fetch.
+// fetch. Once git has run, the attempt is logged whatever its outcome.
 func update(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot string, b repo.Ref, wt *repo.Worktree, now func() time.Time) (AlignItem, AlignSkip, string, bool) {
-	fail := func(detail string) (AlignItem, AlignSkip, string, bool) {
-		return AlignItem{}, AlignSkip{Branch: b.Name, Reason: "git-failed", Files: []string{}, Detail: detail}, "", false
+	skip := func(reason, detail, logErr string) (AlignItem, AlignSkip, string, bool) {
+		return AlignItem{}, AlignSkip{Branch: b.Name, Reason: reason, Files: []string{}, Detail: detail}, logErr, false
 	}
-	failErr := func(err error) (AlignItem, AlignSkip, string, bool) { return fail(lastLine(err)) }
+	fail := func(detail string) (AlignItem, AlignSkip, string, bool) { return skip("git-failed", detail, "") }
+	failErr := func(err error) (AlignItem, AlignSkip, string, bool) { return fail(failDetail(err)) }
 	branchRef, upRef := "refs/heads/"+b.Name, b.Upstream
 	dir, folder := repoRoot, ""
 	cmd := []string{"fetch", ".", upRef + ":" + branchRef}
@@ -269,35 +270,45 @@ func update(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot stri
 	if now0 != b.Hash {
 		return fail("branch changed since it was read: " + b.Hash + " -> " + now0)
 	}
-	if _, err := r.Run(ctx, dir, cmd...); err != nil {
-		return failErr(err)
+	entry := settings.OpEntry{
+		Time: now().Unix(), Repo: repoRoot, Op: "align", Branch: b.Name, Folder: folder,
+		Command: append([]string{"git"}, cmd...), Before: b.Hash,
 	}
+	if _, err := r.Run(ctx, dir, cmd...); err != nil {
+		entry.After, _ = revParse(ctx, r, repoRoot, branchRef)
+		return skip("git-failed", failDetail(err), logRan(st, entry, gitFailed(err), ""))
+	}
+	after, why := checkAligned(ctx, r, repoRoot, dir, branchRef, upRef, wt != nil)
+	entry.After = after
+	if why != "" {
+		return skip("verify-failed", why, logRan(st, entry, verifyFailed(why), ""))
+	}
+	logErr := logRan(st, entry, "ok", "")
+	return AlignItem{Branch: b.Name, From: b.Hash, To: after, Folder: folder}, AlignSkip{}, logErr, true
+}
+
+// checkAligned reads where the branch is after the update and explains why
+// that is not its upstream, or not checked out in its folder any more.
+func checkAligned(ctx context.Context, r gitx.Runner, repoRoot, dir, branchRef, upRef string, inFolder bool) (after, why string) {
 	after, err := revParse(ctx, r, repoRoot, branchRef)
 	if err != nil {
-		return failErr(err)
+		return "", "could not read " + branchRef + ": " + failDetail(err)
 	}
 	want, err := revParse(ctx, r, repoRoot, upRef)
 	if err != nil {
-		return failErr(err)
+		return after, "could not read " + upRef + ": " + failDetail(err)
 	}
 	if after != want {
-		return fail("branch is at " + after + " after the update, upstream is at " + want)
+		return after, "branch is at " + after + " after the update, upstream is at " + want
 	}
-	if wt != nil {
+	if inFolder {
 		head, err := headRef(ctx, r, dir)
 		if err != nil {
-			return failErr(err)
+			return after, "could not read HEAD of the folder: " + failDetail(err)
 		}
 		if why := wrongHead(head, branchRef); why != "" {
-			return fail(why + " after the update")
+			return after, why + " after the update"
 		}
 	}
-	logErr := ""
-	if err := st.AppendOp(settings.OpEntry{
-		Time: now().Unix(), Repo: repoRoot, Op: "align", Branch: b.Name, Folder: folder,
-		Command: append([]string{"git"}, cmd...), Before: b.Hash, After: after, Result: "ok",
-	}); err != nil {
-		logErr = err.Error()
-	}
-	return AlignItem{Branch: b.Name, From: b.Hash, To: after, Folder: folder}, AlignSkip{}, logErr, true
+	return after, ""
 }

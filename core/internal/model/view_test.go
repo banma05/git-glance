@@ -413,3 +413,76 @@ func TestRemoveBlock(t *testing.T) {
 		})
 	}
 }
+
+// A folder git cannot read is shown as missing and broken, and the rest of the
+// view still renders.
+func TestBuildBrokenFolder(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Branch("feature/b", "main")
+	r.Branch("feature/c", "main")
+	wt := r.AddWorktree("b", "feature/b")
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+r.Root+"/nowhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v := buildView(t, r.Dir, settings.RepoSettings{}, r.Clock().Unix())
+	bv := v.Branches["feature/b"]
+	if !bv.FolderBroken || !bv.FolderMissing || bv.CanRemoveFolder || bv.FolderHead != "" {
+		t.Fatalf("broken folder branch = %+v", bv)
+	}
+	if _, ok := v.Branches["feature/c"]; !ok {
+		t.Fatal("the other branches are missing")
+	}
+}
+
+// failBranchRunner fails the merge-base of one branch, as a broken object
+// would.
+type failBranchRunner struct {
+	gitx.ExecRunner
+	bad string
+}
+
+func (f failBranchRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if args[0] == "merge-base" && listHas(args, "refs/heads/"+f.bad) {
+		return nil, &gitx.GitError{Args: args, ExitCode: 128, Stderr: "fatal: bad object\n"}
+	}
+	return f.ExecRunner.Run(ctx, dir, args...)
+}
+
+// One branch whose details cannot be read gets an error and is never
+// removable; every other branch still renders.
+func TestBuildKeepsOtherBranchesWhenOneFails(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	for _, b := range []string{"feature/good", "feature/bad"} {
+		r.Branch(b, "main")
+		r.Push(r.Dir, "-u", "origin", b)
+	}
+	r.AddWorktree("bad", "feature/bad")
+	ctx := context.Background()
+	ver, err := gitx.DetectVersion(ctx, gitx.ExecRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := repo.Read(ctx, gitx.ExecRunner{}, r.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := settings.RepoSettings{Trunks: []settings.TrunkConfig{{Name: "main"}}}
+	v, err := Build(ctx, failBranchRunner{bad: "feature/bad"}, ver, snap, rs, r.Clock().Unix())
+	if err != nil {
+		t.Fatalf("one failing branch failed the view: %v", err)
+	}
+	bad := v.Branches["feature/bad"]
+	if !strings.Contains(bad.Error, "bad object") || bad.CanRemoveFolder || bad.RemoveBlock != "error" || bad.Folder == "" || !listHas(v.Unknown, "feature/bad") {
+		t.Fatalf("failing branch = %+v, unknown = %v", bad, v.Unknown)
+	}
+	good := v.Branches["feature/good"]
+	if good.Error != "" || good.Trunk != "main" || !good.Merged {
+		t.Fatalf("good branch = %+v", good)
+	}
+	data, err := json.Marshal(good)
+	if err != nil || !strings.Contains(string(data), `"error":""`) {
+		t.Fatalf("json %s, %v", data, err)
+	}
+}

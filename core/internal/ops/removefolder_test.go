@@ -642,6 +642,11 @@ func TestRemoveFolderChangedDuringBackup(t *testing.T) {
 		{"new ignored file", func(t *testing.T, f *removeFixture) { f.write(t, "debug.log", "log\n") }},
 		{"new file in a backed-up dir", func(t *testing.T, f *removeFixture) { f.write(t, "notes/later.txt", "later\n") }},
 		{"backed-up file grew", func(t *testing.T, f *removeFixture) { f.write(t, ".env", "SECRET=1\nMORE=2\n") }},
+		{"commit on a detached HEAD, then back", func(t *testing.T, f *removeFixture) {
+			f.r.Git(f.wt, "checkout", "-q", "--detach")
+			f.r.Commit(f.wt, "meanwhile", map[string]string{"meanwhile.txt": "m\n"})
+			f.r.Git(f.wt, "checkout", "-q", "alice/done")
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

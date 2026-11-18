@@ -24,6 +24,8 @@ const (
 	blockDirty         = "dirty"
 	blockUnpushed      = "unpushed"
 	blockNotMerged     = "not-merged"
+	// blockError: the branch's details could not be read (BranchView.Error).
+	blockError = "error"
 )
 
 // sourceUnknown is the assignment source of a branch without a trunk.
@@ -41,8 +43,9 @@ type ReleaseSummary struct {
 // set only when the branch's folder exists and has changes or new files.
 // FolderHead is the commit the folder's HEAD was at ("" without a usable
 // folder); a request to delete the folder quotes it back. FolderLocked is set
-// by `git worktree lock`. Branches whose trunk is unknown have no Own, fork,
-// Test or Release.
+// by `git worktree lock`; FolderBroken (with FolderMissing) when the folder
+// exists but git cannot read it. Branches whose trunk is unknown have no Own,
+// fork, Test or Release.
 type BranchView struct {
 	Name            string            `json:"name"`
 	Short           string            `json:"short"`
@@ -54,6 +57,7 @@ type BranchView struct {
 	FolderHead      string            `json:"folderHead"`
 	MainFolder      bool              `json:"mainFolder"`
 	FolderMissing   bool              `json:"folderMissing"`
+	FolderBroken    bool              `json:"folderBroken"`
 	FolderLocked    bool              `json:"folderLocked"`
 	Dirty           *repo.DirtyCounts `json:"dirty"`
 	HasUpstream     bool              `json:"hasUpstream"`
@@ -72,6 +76,7 @@ type BranchView struct {
 	RemoveBlock     string            `json:"removeBlock"`
 	Old             bool              `json:"old"`
 	LastCommit      int64             `json:"lastCommit"`
+	Error           string            `json:"error"`
 }
 
 // TrunkView describes a trunk: the ref it is compared through, and how the
@@ -143,7 +148,11 @@ func Build(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.Snapsho
 	for _, ref := range features {
 		bv, err := b.branch(ref)
 		if err != nil {
-			return View{}, fmt.Errorf("branch %s: %w", ref.Name, err)
+			if ctx.Err() != nil {
+				return View{}, fmt.Errorf("branch %s: %w", ref.Name, err)
+			}
+			// One unreadable branch must not hide all the others.
+			bv = b.failedBranch(ref, err)
 		}
 		view.Branches[ref.Name] = bv
 	}
@@ -290,7 +299,8 @@ func (b *builder) trunk(name string) (Trunk, bool) {
 	return Trunk{}, false
 }
 
-func (b *builder) branch(ref repo.Ref) (BranchView, error) {
+// baseView holds what the snapshot alone says about a branch.
+func (b *builder) baseView(ref repo.Ref) BranchView {
 	short := ShortName(ref.Name, b.rs.HidePrefix)
 	bv := BranchView{
 		Name: ref.Name, Short: short, Topic: Topic(short),
@@ -299,6 +309,22 @@ func (b *builder) branch(ref repo.Ref) (BranchView, error) {
 		Own: []repo.CommitInfo{}, LastCommit: ref.Time,
 	}
 	b.placeFolder(&bv)
+	return bv
+}
+
+// failedBranch is the view of a branch whose details could not be read: what
+// the snapshot says, with no trunk (so it shows among the unknown branches),
+// never removable, and the error.
+func (b *builder) failedBranch(ref repo.Ref, err error) BranchView {
+	bv := b.baseView(ref)
+	bv.TrunkSource = sourceUnknown
+	bv.RemoveBlock = blockError
+	bv.Error = err.Error()
+	return bv
+}
+
+func (b *builder) branch(ref repo.Ref) (BranchView, error) {
+	bv := b.baseView(ref)
 	a := b.assign(ref.Name)
 	bv.Trunk, bv.TrunkSource = a.Trunk, a.Source
 	branchRef := headRef(ref.Name)
@@ -324,6 +350,7 @@ func (b *builder) placeFolder(bv *BranchView) {
 		return
 	}
 	bv.Folder, bv.MainFolder, bv.FolderMissing, bv.FolderLocked = w.Path, w.Main, w.Missing, w.Locked
+	bv.FolderBroken = w.Broken
 	if !w.Missing {
 		bv.FolderHead = w.Head
 	}

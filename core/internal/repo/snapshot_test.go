@@ -224,3 +224,86 @@ func TestParseStatusRenameSkipsOriginalPath(t *testing.T) {
 		t.Errorf("files = %q", d.Files)
 	}
 }
+
+// A submodule is a repository of its own: its root is its own folder, not the
+// superproject's git directory.
+func TestDiscoverSubmodule(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Git(r.Dir, "-c", "protocol.file.allow=always", "submodule", "add", r.Remote, "sub")
+	sub := r.Dir + "/sub"
+	got, err := Discover(context.Background(), gitx.ExecRunner{}, sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameDir(t, got, sub) {
+		t.Fatalf("Discover(submodule) = %q, want %q", got, sub)
+	}
+	if got, err := Discover(context.Background(), gitx.ExecRunner{}, r.Dir); err != nil || !sameDir(t, got, r.Dir) {
+		t.Fatalf("Discover(superproject) = %q, %v", got, err)
+	}
+}
+
+func sameDir(t *testing.T, a, b string) bool {
+	t.Helper()
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("EvalSymlinks: %v %v", err1, err2)
+	}
+	return strings.EqualFold(filepath.Clean(ra), filepath.Clean(rb))
+}
+
+func TestDiscoverBareRepo(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	if _, err := Discover(context.Background(), gitx.ExecRunner{}, r.Remote); !errors.Is(err, ErrBareRepo) {
+		t.Fatalf("err = %v, want ErrBareRepo", err)
+	}
+}
+
+// failRunner fails every command with err.
+type failRunner struct {
+	gitx.ExecRunner
+	err error
+}
+
+func (f failRunner) Run(context.Context, string, ...string) ([]byte, error) { return nil, f.err }
+
+// git refuses a repository owned by another user ("dubious ownership"): that
+// is not "not a repository", and git's text tells the user what to do.
+func TestDiscoverUnsafeRepo(t *testing.T) {
+	stderr := "fatal: detected dubious ownership in repository at 'D:/x'\n'D:/x' is owned by:\n\tsomeone\n" +
+		"To add an exception for this directory, call:\n\n\tgit config --global --add safe.directory D:/x\n"
+	run := failRunner{err: &gitx.GitError{Args: []string{"worktree"}, ExitCode: 128, Stderr: stderr}}
+	_, err := Discover(context.Background(), run, t.TempDir())
+	var ue *UnsafeRepoError
+	if !errors.As(err, &ue) || !strings.Contains(ue.Message, "dubious ownership") || !strings.Contains(ue.Message, "safe.directory") {
+		t.Fatalf("err = %v, want UnsafeRepoError with git's text", err)
+	}
+	if errors.Is(err, ErrNotRepo) {
+		t.Fatal("an unsafe repository is not reported as no repository")
+	}
+}
+
+// A folder git cannot read (its .git file points nowhere) must not break the
+// whole snapshot; it is marked missing and broken.
+func TestReadBrokenWorktree(t *testing.T) {
+	r := testrepo.New(t)
+	r.ApplyEnv()
+	r.Branch("feature/b", "main")
+	wt := r.AddWorktree("b", "feature/b")
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+r.Root+"/nowhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Read(context.Background(), gitx.ExecRunner{}, r.Dir)
+	if err != nil {
+		t.Fatalf("Read failed for one broken folder: %v", err)
+	}
+	if w := findWorktree(t, s, "/wt-b"); !w.Missing || !w.Broken {
+		t.Errorf("broken worktree = %+v", w)
+	}
+	if w := findWorktree(t, s, "/work"); w.Missing || w.Broken {
+		t.Errorf("main worktree = %+v", w)
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +124,58 @@ func TestCreateFolderNameCollisions(t *testing.T) {
 	res, err := CreateFolder(context.Background(), f.run, f.st, f.r.Dir, "main", "refs/heads/main", "origin-fix/x", p, fixedNow)
 	if err != nil || !res.OK {
 		t.Fatalf("origin-fix/x: res = %+v, err = %v, want ok", res, err)
+	}
+}
+
+// git creates the branch before it checks out the folder. When the rest fails
+// the branch stays (it holds nothing but the start commit): report and log it
+// with its hash, never delete it.
+func TestCreateFolderFailureReportsTheBranchLeftBehind(t *testing.T) {
+	f := newFixture(t)
+	hook := filepath.Join(f.r.Dir, ".git", "hooks", "post-checkout")
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := f.r.Root + "/wt-hooked"
+	res, err := CreateFolder(context.Background(), f.run, f.st, f.r.Dir, "main", "refs/remotes/origin/main", "feature/hooked", p, fixedNow)
+	if err != nil || res.OK || res.Reason != "git-failed" || res.Files == nil {
+		t.Fatalf("res = %+v, err = %v, want git-failed", res, err)
+	}
+	hash := f.rev("refs/heads/feature/hooked")
+	if !strings.Contains(res.Detail, "feature/hooked") || !strings.Contains(res.Detail, hash) {
+		t.Fatalf("detail %q does not name the branch and %s", res.Detail, hash)
+	}
+	if e, ok := opFor(t, f, "create", "feature/hooked"); !ok || !strings.HasPrefix(e.Result, "git-failed: ") || e.After != hash {
+		t.Fatalf("log entry = %+v (found %v)", e, ok)
+	}
+}
+
+// Names git would read as something else: a tag, a ref namespace, or a
+// pseudo-ref such as HEAD or FETCH_HEAD (case-insensitive file systems make
+// case variants collide too).
+func TestCreateFolderRefusesAmbiguousNames(t *testing.T) {
+	f := newFixture(t)
+	f.r.Git(f.r.Dir, "tag", "v1")
+	f.r.Git(f.r.Dir, "tag", "rel/2.0")
+	for i, name := range []string{
+		"v1", "V1", "rel/2.0",
+		"refs/x", "heads/x", "tags/x", "remotes/x", "Heads/x",
+		"HEAD", "head", "ORIG_HEAD", "FETCH_HEAD", "fetch_head", "x_HEAD", "feature/MERGE_HEAD",
+	} {
+		p := f.r.Root + "/wt-amb-" + strconv.Itoa(i)
+		res, err := CreateFolder(context.Background(), f.run, f.st, f.r.Dir, "main", "refs/heads/main", name, p, fixedNow)
+		if err != nil || res.OK || res.Reason != "bad-name" {
+			t.Errorf("%s: res = %+v, err = %v, want bad-name", name, res, err)
+		}
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s: a folder was created", name)
+		}
+	}
+	res, err := CreateFolder(context.Background(), f.run, f.st, f.r.Dir, "main", "refs/heads/main", "feature/v1-heads", f.r.Root+"/wt-ok", fixedNow)
+	if err != nil || !res.OK {
+		t.Fatalf("a plain name was refused: %+v, %v", res, err)
 	}
 }

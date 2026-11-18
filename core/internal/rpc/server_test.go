@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/banma05/git-glance/core/internal/gitx"
+	"github.com/banma05/git-glance/core/internal/repo"
 	"github.com/banma05/git-glance/core/internal/settings"
 	"github.com/banma05/git-glance/core/internal/testrepo"
 )
@@ -692,6 +693,21 @@ func TestErrorCodes(t *testing.T) {
 	}
 	if e := toRPCError(errors.New("other")); e.Code != "internal" {
 		t.Fatalf("%+v", e)
+	}
+	if e := toRPCError(repo.ErrBareRepo); e.Code != "bare-repo" {
+		t.Fatalf("%+v", e)
+	}
+	unsafe := &repo.UnsafeRepoError{Message: "fatal: detected dubious ownership in repository at 'D:/x'"}
+	if e := toRPCError(unsafe); e.Code != "unsafe-repo" || e.Message != unsafe.Message {
+		t.Fatalf("%+v", e)
+	}
+}
+
+func TestBareRepoIsRefused(t *testing.T) {
+	r := testrepo.New(t)
+	c := startServer(t, r)
+	if code := c.errCode("addRepo", map[string]any{"path": r.Remote}); code != "bare-repo" {
+		t.Fatalf("bare repository gave %s", code)
 	}
 }
 

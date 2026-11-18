@@ -38,7 +38,7 @@ func DefaultFolderPath(repoRoot, branch string) string {
 // CreateFolder creates branch from trunkRef (a full ref name) in a new folder
 // at dir, without upstream, and remembers trunkName as the branch's base.
 func CreateFolder(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot, trunkName, trunkRef, branch, dir string, now func() time.Time) (OpResult, error) {
-	if !validName(ctx, r, repoRoot, branch) {
+	if !validName(ctx, r, repoRoot, branch) || ambiguousName(branch) {
 		return refused("bad-name", "", nil), nil
 	}
 	if !strings.HasPrefix(trunkRef, "refs/remotes/") && !strings.HasPrefix(trunkRef, "refs/heads/") {
@@ -51,7 +51,11 @@ func CreateFolder(ctx context.Context, r gitx.Runner, st settings.Store, repoRoo
 	if err != nil {
 		return failed(), err
 	}
-	if shadowsRemote(snap, branch) {
+	tag, err := shadowsTag(ctx, r, repoRoot, branch)
+	if err != nil {
+		return failed(), err
+	}
+	if tag || shadowsRemote(snap, branch) {
 		return refused("bad-name", "", nil), nil
 	}
 	if branchTaken(snap, branch) {
@@ -68,12 +72,54 @@ func CreateFolder(ctx context.Context, r gitx.Runner, st settings.Store, repoRoo
 		return failed(), err
 	}
 	cmd := []string{"worktree", "add", "--no-track", "-b", branch, dir, trunkRef}
+	entry := createEntry(repoRoot, branch, dir, cmd, now)
 	if _, err := r.Run(ctx, repoRoot, cmd...); err != nil {
-		return failed(), err
+		// git creates the branch before it checks out the folder, so a
+		// failure can leave it behind. It holds nothing but its start
+		// commit; it is kept, never deleted, and named with its hash.
+		kept := ""
+		if hash, ok := branchHash(ctx, r, repoRoot, branch); ok {
+			entry.After = hash
+			kept = "branch " + branch + " was created at " + hash + " and kept"
+		}
+		return createFailed(st, dir, entry, err, kept), nil
+	}
+	return finishCreate(ctx, r, st, repoRoot, trunkName, branch, dir, entry), nil
+}
+
+func createEntry(repoRoot, branch, dir string, cmd []string, now func() time.Time) settings.OpEntry {
+	return settings.OpEntry{
+		Time: now().Unix(), Repo: repoRoot, Op: "create", Branch: branch, Folder: dir,
+		Command: append([]string{"git"}, cmd...),
+	}
+}
+
+// createFailed reports and logs a worktree add that git ran and failed.
+func createFailed(st settings.Store, dir string, entry settings.OpEntry, err error, note string) OpResult {
+	res := OpResult{Reason: "git-failed", Files: []string{}, Path: dir, Detail: joinDetail(failDetail(err), note)}
+	res.LogError = logRan(st, entry, gitFailed(err), note)
+	return res
+}
+
+// finishCreate checks that the new folder is on branch, remembers trunkName
+// (when set) as the branch's base and logs the operation.
+func finishCreate(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot, trunkName, branch, dir string, entry settings.OpEntry) OpResult {
+	entry.After, _ = branchHash(ctx, r, repoRoot, branch)
+	if _, why := checkOnBranch(ctx, r, dir, "refs/heads/"+branch); why != "" {
+		res := OpResult{Reason: "verify-failed", Files: []string{}, Path: dir, Detail: why}
+		res.LogError = logRan(st, entry, verifyFailed(why), "")
+		return res
 	}
 	res := OpResult{OK: true, Files: []string{}, Path: dir}
-	res.LogError = remember(ctx, r, st, repoRoot, trunkName, branch, dir, cmd, now)
-	return res, nil
+	res.LogError = remember(st, repoRoot, trunkName, branch, entry)
+	return res
+}
+
+// branchHash returns the commit of a local branch, if it exists.
+func branchHash(ctx context.Context, r gitx.Runner, repoRoot, branch string) (string, bool) {
+	out, err := r.Run(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	h := strings.TrimSpace(string(out))
+	return h, err == nil && h != ""
 }
 
 // validName accepts only a plain branch name: git must approve it and print it
@@ -84,6 +130,35 @@ func validName(ctx context.Context, r gitx.Runner, repoRoot, branch string) bool
 	}
 	out, err := r.Run(ctx, repoRoot, "check-ref-format", "--branch", branch)
 	return err == nil && strings.TrimSpace(string(out)) == branch
+}
+
+// ambiguousName is true for a name git would read as something else: one
+// whose first segment is a ref namespace (refs, heads, tags, remotes), or a
+// pseudo-ref (HEAD, or a name ending in _HEAD such as FETCH_HEAD). Case is
+// ignored: on a case-insensitive file system "head" finds .git/HEAD.
+func ambiguousName(branch string) bool {
+	first, _, _ := strings.Cut(branch, "/")
+	switch strings.ToLower(first) {
+	case "refs", "heads", "tags", "remotes":
+		return true
+	}
+	upper := strings.ToUpper(branch)
+	return upper == "HEAD" || strings.HasSuffix(upper, "_HEAD")
+}
+
+// shadowsTag is true when a tag has the same name as branch, ignoring case:
+// git would then read the short name as the tag.
+func shadowsTag(ctx context.Context, r gitx.Runner, repoRoot, branch string) (bool, error) {
+	out, err := r.Run(ctx, repoRoot, "for-each-ref", "--format=%(refname:lstrip=2)", "refs/tags")
+	if err != nil {
+		return false, err
+	}
+	for _, tag := range strings.Split(string(out), "\n") {
+		if strings.EqualFold(strings.TrimSpace(tag), branch) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // shadowsRemote is true when branch would collide with the namespace of a
@@ -119,27 +194,22 @@ func branchTaken(snap repo.Snapshot, branch string) bool {
 	return false
 }
 
-// remember stores the base of the new branch and logs the operation. It
-// returns the text of the failures, or "".
-func remember(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot, trunkName, branch, dir string, cmd []string, now func() time.Time) string {
-	var msgs []string
-	rs, err := st.Repo(repoRoot)
-	if err == nil {
-		if rs.CreatedBase == nil {
-			rs.CreatedBase = map[string]string{}
+// remember stores trunkName (when set) as the base of the new branch and logs
+// the operation. It returns the text of the failures, or "".
+func remember(st settings.Store, repoRoot, trunkName, branch string, entry settings.OpEntry) string {
+	saveErr := ""
+	if trunkName != "" {
+		rs, err := st.Repo(repoRoot)
+		if err == nil {
+			if rs.CreatedBase == nil {
+				rs.CreatedBase = map[string]string{}
+			}
+			rs.CreatedBase[branch] = trunkName
+			err = st.SaveRepo(repoRoot, rs)
 		}
-		rs.CreatedBase[branch] = trunkName
-		err = st.SaveRepo(repoRoot, rs)
+		if err != nil {
+			saveErr = err.Error()
+		}
 	}
-	if err != nil {
-		msgs = append(msgs, err.Error())
-	}
-	after, _ := revParse(ctx, r, repoRoot, "refs/heads/"+branch)
-	if err := st.AppendOp(settings.OpEntry{
-		Time: now().Unix(), Repo: repoRoot, Op: "create", Branch: branch, Folder: dir,
-		Command: append([]string{"git"}, cmd...), After: after, Result: "ok",
-	}); err != nil {
-		msgs = append(msgs, err.Error())
-	}
-	return strings.Join(msgs, "; ")
+	return joinDetail(saveErr, logRan(st, entry, "ok", ""))
 }

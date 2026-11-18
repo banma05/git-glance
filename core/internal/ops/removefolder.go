@@ -117,7 +117,7 @@ func RemoveFolder(ctx context.Context, r gitx.Runner, st settings.Store, v model
 		res.Reason = reason
 		return res, err
 	}
-	why, err := changedDuringBackup(ctx, r, path, branch, head, plan, copied)
+	why, err := changedDuringBackup(ctx, r, v.Repo, path, branch, head, plan, copied)
 	if err != nil || why != "" {
 		// Nothing was removed, so this call's backup is not needed.
 		res = abandonBackup(res, copied.created, backupDir)
@@ -197,9 +197,9 @@ func backUp(path, backupDir string, plan backupPlan) (RemoveFolderResult, copyRe
 
 // changedDuringBackup re-reads, after the copy, everything the decision was
 // based on: the list of ignored paths, every copied file (size and time), the
-// branch and commit of the folder, and its hidden changes. It explains the
-// first difference, or returns "".
-func changedDuringBackup(ctx context.Context, r gitx.Runner, path, branch, head string, plan backupPlan, copied copyResult) (string, error) {
+// branch and commit of the folder, its hidden changes and the commits only its
+// HEAD history reaches. It explains the first difference, or returns "".
+func changedDuringBackup(ctx context.Context, r gitx.Runner, repoRoot, path, branch, head string, plan backupPlan, copied copyResult) (string, error) {
 	listed, err := listIgnored(ctx, r, path)
 	if err != nil {
 		return "", err
@@ -224,6 +224,13 @@ func changedDuringBackup(ctx context.Context, r gitx.Runner, path, branch, head 
 	if len(hidden) > 0 {
 		return "tracked files were marked skip-worktree or assume-unchanged during the backup", nil
 	}
+	orphans, err := orphanedCommits(ctx, r, repoRoot, path)
+	if err != nil {
+		return "", err
+	}
+	if len(orphans) > 0 {
+		return "commits only the folder's HEAD history reaches appeared during the backup: " + strings.Join(orphans, ", "), nil
+	}
 	return "", nil
 }
 
@@ -235,20 +242,14 @@ func removeWorktree(ctx context.Context, r gitx.Runner, st settings.Store, repoR
 		Command: append([]string{"git"}, cmd...), Before: head, Detail: res.BackupDir,
 	}
 	if _, err := r.Run(ctx, repoRoot, cmd...); err != nil {
-		res.Reason, res.Detail = "git-failed", lastLine(err)+" ("+folderState(path)+")"
-		entry.Result = "git-failed: " + res.Detail
-		if err := st.AppendOp(entry); err != nil {
-			res.LogError = err.Error()
-		}
+		res.Reason, res.Detail = "git-failed", failDetail(err)+" ("+folderState(path)+")"
+		res.LogError = logRan(st, entry, "git-failed: "+res.Detail, "")
 		return res
 	}
 	res.OK = true
 	res.DeletedBuild = plan.build
 	res.Detail = sweepLinks(path)
-	entry.Result = "ok"
-	if err := st.AppendOp(entry); err != nil {
-		res.LogError = err.Error()
-	}
+	res.LogError = logRan(st, entry, "ok", "")
 	return res
 }
 

@@ -255,13 +255,24 @@ func (m *Matcher) stepSubject(ctx context.Context, target, branch, _ string, per
 	if err != nil {
 		return err
 	}
-	subjects := map[string]bool{}
+	// Each target commit vouches for at most one own commit.
+	left := map[string]int{}
 	for _, line := range strings.Split(out, "\n") {
-		subjects[strings.TrimSpace(line)] = true
+		if s := strings.TrimSpace(line); s != "" {
+			left[s]++
+		}
+	}
+	// A target commit that matched an own commit by its patch has vouched
+	// already (a reworded pick only makes this stricter).
+	for _, p := range per {
+		if s := strings.TrimSpace(p.Subject); p.By == byPatch && left[s] > 0 {
+			left[s]--
+		}
 	}
 	for _, i := range unmatched(per) {
-		if s := strings.TrimSpace(per[i].Subject); s != "" && subjects[s] {
+		if s := strings.TrimSpace(per[i].Subject); s != "" && left[s] > 0 {
 			per[i].By = bySubject
+			left[s]--
 		}
 	}
 	return nil

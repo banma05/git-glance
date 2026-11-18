@@ -223,11 +223,18 @@ func TestAlignIndexLock(t *testing.T) {
 	if !ok || s.Detail == "" {
 		t.Fatalf("y skip = %+v ok=%v, report %+v", s, ok, rep)
 	}
+	if !strings.Contains(s.Detail, "index.lock") {
+		t.Fatalf("detail %q does not name the lock file", s.Detail)
+	}
 	if got := strings.Join(updatedNames(rep), ","); got != "x" {
 		t.Fatalf("updated = %q", got)
 	}
 	if f.rev("y") != yBefore {
 		t.Fatal("y moved")
+	}
+	// The merge ran and failed: it is in the log all the same.
+	if e, ok := opFor(t, f, "align", "y"); !ok || !strings.HasPrefix(e.Result, "git-failed: ") || e.Before != yBefore || !strings.Contains(e.Result, "index.lock") {
+		t.Fatalf("log entry for y = %+v (found %v)", e, ok)
 	}
 }
 
@@ -540,5 +547,53 @@ func TestAlignAfterOneRemoteFailed(t *testing.T) {
 	}
 	if got := strings.Join(updatedNames(rep), ","); got != "x" || f.rev("x") != f.rev("origin/x") {
 		t.Fatalf("updated = %q, want x: %+v", got, rep)
+	}
+}
+
+// opFor returns the newest op-log entry of op for branch.
+func opFor(t *testing.T, f *fixture, op, branch string) (settings.OpEntry, bool) {
+	t.Helper()
+	ops, err := f.st.Ops(f.r.Dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ops {
+		if e.Op == op && e.Branch == branch {
+			return e, true
+		}
+	}
+	return settings.OpEntry{}, false
+}
+
+// skipRunner reports success for the commands matched by skip without
+// running them, so the checks after a command see that nothing happened.
+type skipRunner struct {
+	gitx.ExecRunner
+	skip func(args []string) bool
+}
+
+func (s skipRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if s.skip(args) {
+		return nil, nil
+	}
+	return s.ExecRunner.Run(ctx, dir, args...)
+}
+
+// A command that ran but did not do what it should is reported and logged as
+// verify-failed.
+func TestAlignVerifyFailedIsLogged(t *testing.T) {
+	f := newFixture(t)
+	f.pushOther("x", "x.txt")
+	before := f.rev("x")
+	run := skipRunner{skip: func(args []string) bool { return args[0] == "fetch" && args[1] == "." }}
+	rep, err := Align(context.Background(), run, f.st, f.r.Dir, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := hasSkip(rep, "x", "verify-failed"); !ok || s.Detail == "" || f.rev("x") != before {
+		t.Fatalf("report %+v", rep)
+	}
+	if e, ok := opFor(t, f, "align", "x"); !ok || !strings.HasPrefix(e.Result, "verify-failed: ") || e.After != before {
+		t.Fatalf("log entry = %+v (found %v)", e, ok)
 	}
 }

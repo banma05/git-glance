@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func initRepo(t *testing.T) string {
@@ -234,5 +235,26 @@ func TestRunCappedTruncates(t *testing.T) {
 	}
 	if _, _, err = r.RunCapped(context.Background(), dir, 10, "rev-parse", "--verify", "--quiet", "nope^{commit}"); !errors.As(err, &ge) {
 		t.Fatalf("want GitError, got %v", err)
+	}
+}
+
+func TestTimeouts(t *testing.T) {
+	r := ExecRunner{}
+	cases := []struct {
+		args []string
+		want time.Duration
+	}{
+		{[]string{"status"}, 60 * time.Second},
+		{[]string{"fetch", "--all", "--prune", "--no-prune-tags"}, 15 * time.Minute},
+		{[]string{"fetch", ".", "refs/remotes/origin/x:refs/heads/x"}, 30 * time.Minute},
+		{[]string{"worktree", "remove", "p"}, 30 * time.Minute},
+	}
+	for _, c := range cases {
+		if got := r.timeoutFor(c.args); got != c.want {
+			t.Errorf("timeoutFor(%q) = %v, want %v", c.args, got, c.want)
+		}
+	}
+	if got := (ExecRunner{Timeout: time.Hour}).timeoutFor(cases[1].args); got != time.Hour {
+		t.Errorf("a longer configured timeout is kept: %v", got)
 	}
 }

@@ -112,7 +112,7 @@ func (h *Handler) version(context.Context, json.RawMessage) (any, error) {
 	res := VersionResult{Core: h.coreVersion}
 	if h.gitFound {
 		res.Git = strconv.Itoa(h.gitVersion.Major) + "." + strconv.Itoa(h.gitVersion.Minor)
-		res.GitOK = h.gitVersion.AtLeast(2, 30)
+		res.GitOK = h.gitUsable()
 	}
 	return res, nil
 }
