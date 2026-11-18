@@ -1,0 +1,50 @@
+/* Colors come from CSS variables; the root carries data-theme="dark" or "light". */
+:root,
+:root[data-theme='dark'] {
+  --bg: #1e1f22;
+  --fg: #dfe1e5;
+  --fg-mute: #9da0a8;
+  --border: #393b40;
+  --surface: #2b2d30;
+  --tone-ok: #5fd38d;
+  --tone-warn: #f2c14e;
+  --tone-info: #5aa9ff;
+  --tone-mute: #9da0a8;
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+:root[data-theme='light'] {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --fg-mute: #5c6370;
+  --border: #d0d7de;
+  --surface: #f6f8fa;
+  --tone-ok: #1c8a4c;
+  --tone-warn: #a86a00;
+  --tone-info: #1f6fd1;
+  --tone-mute: #5c6370;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+.chip {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.chip.ok { color: var(--tone-ok); }
+.chip.warn { color: var(--tone-warn); }
+.chip.info { color: var(--tone-info); }
+.chip.mute { color: var(--tone-mute); }

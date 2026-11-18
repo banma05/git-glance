@@ -1,0 +1,287 @@
+// Mirrors the JSON the Go core sends. Field names are the json tags of the Go
+// structs; slices are never null, so arrays here are plain arrays. Pointers in
+// Go (marshalled as null when unset) are `| null`.
+
+// core/internal/repo
+export interface CommitInfo {
+  hash: string;
+  subject: string;
+  time: number;
+}
+
+export interface DirtyCounts {
+  changed: number;
+  untracked: number;
+  files: string[]; // first 50 paths
+}
+
+// core/internal/model
+export type ContainState = 'all' | 'some' | 'none';
+
+export interface CommitMatch extends CommitInfo {
+  by: string; // empty when no step matched
+}
+
+export interface Containment {
+  state: ContainState;
+  matched: number;
+  total: number;
+  per: CommitMatch[];
+}
+
+export interface ReleaseSummary {
+  state: ContainState;
+  in: string[];
+  notIn: string[];
+}
+
+export type TrunkSource = string; // how the trunk was chosen; "unknown" when there is none
+
+export type RemoveBlock =
+  | ''
+  | 'not-in-folder'
+  | 'main-folder'
+  | 'folder-missing'
+  | 'dirty'
+  | 'unpushed'
+  | 'not-merged';
+
+export interface BranchView {
+  name: string;
+  short: string;
+  topic: string;
+  color: number;
+  trunk: string; // "" when unknown
+  trunkSource: TrunkSource;
+  folder: string; // "" when the branch has no folder
+  mainFolder: boolean;
+  folderMissing: boolean;
+  dirty: DirtyCounts | null; // set only when the folder exists and has changes
+  hasUpstream: boolean;
+  upstreamGone: boolean;
+  ahead: number;
+  behind: number;
+  unpushed: number;
+  behindTrunk: number;
+  own: CommitInfo[];
+  forkHash: string;
+  forkTime: number;
+  merged: boolean;
+  test: Containment | null;
+  release: ReleaseSummary | null;
+  canRemoveFolder: boolean;
+  removeBlock: RemoveBlock | string;
+  old: boolean;
+  lastCommit: number;
+}
+
+export interface TrunkView {
+  name: string;
+  ref: string;
+  hash: string;
+  time: number;
+  hasLocal: boolean;
+  localAhead: number;
+  localBehind: number;
+  folder: string;
+  test: string;
+  releases: string[];
+}
+
+export interface Group {
+  trunk: TrunkView;
+  branches: string[];
+}
+
+// core/internal/graph
+export type RowKind = 'head' | 'commit' | 'more-own' | 'fork' | 'merge' | 'more';
+
+export interface Row {
+  kind: RowKind;
+  lane: number;
+  branch: string;
+  hash: string;
+  time: number;
+  count: number;
+  ends: number[]; // fork rows: lanes that join the trunk here
+}
+
+export interface Section {
+  trunk: string;
+  rows: Row[];
+  lanes: number;
+}
+
+// core/internal/settings
+export interface TrunkConfig {
+  name: string;
+  test: string;
+  releases: string[];
+}
+
+export interface RepoSettings {
+  trunks: TrunkConfig[];
+  hidePrefix: string;
+  oldDays: number;
+  manualTrunk: Record<string, string>;
+  createdBase: Record<string, string>;
+}
+
+export type Theme = 'auto' | 'dark' | 'light';
+
+export interface Global {
+  repos: string[];
+  editor: string; // code|cursor|windsurf|idea|pycharm|webstorm|goland
+  theme: Theme;
+}
+
+export interface OpEntry {
+  time: number;
+  repo: string;
+  op: string;
+  branch: string;
+  folder: string;
+  command: string[];
+  before: string;
+  after: string;
+  result: string;
+  detail: string;
+}
+
+export interface View {
+  repo: string;
+  settings: RepoSettings;
+  groups: Group[];
+  unknown: string[];
+  old: string[];
+  branches: Record<string, BranchView>;
+  sections: Section[]; // same order as groups
+  fetchedAt: number;
+  fetchError: string;
+}
+
+// core/internal/ops
+export interface FetchResult {
+  ok: boolean;
+  attempts: number;
+  error: string;
+  at: number; // unix seconds
+}
+
+export interface AlignItem {
+  branch: string;
+  from: string;
+  to: string;
+  folder: string;
+}
+
+export interface AlignSkip {
+  branch: string;
+  reason: string;
+  files: string[];
+  detail: string;
+}
+
+export interface AlignReport {
+  fetch: FetchResult;
+  updated: AlignItem[];
+  skipped: AlignSkip[];
+  logError: string;
+}
+
+export interface OpResult {
+  ok: boolean;
+  reason: string;
+  files: string[];
+  path: string;
+  logError: string;
+}
+
+export interface RemoveFolderResult {
+  ok: boolean;
+  reason: string;
+  files: string[];
+  backupDir: string;
+  backupBytes: number;
+  deletedBuild: string[];
+  skippedLinks: string[];
+  detail: string;
+  logError: string;
+}
+
+// core/internal/rpc: result shapes of the methods
+export interface VersionResult {
+  core: string;
+  git: string; // "" when git was not found
+  gitOK: boolean;
+}
+
+export interface FileChange {
+  path: string;
+  status: string; // first letter of the git status, e.g. "M", "A", "D"
+}
+
+export interface CompareResult {
+  onlyA: CommitInfo[]; // at most 200, newest first
+  onlyB: CommitInfo[];
+  files: FileChange[];
+  filesTruncated: boolean;
+}
+
+export interface FileText {
+  text: string;
+  binary: boolean;
+  truncated: boolean;
+}
+
+export interface FileDiffResult {
+  diff: string;
+  truncated: boolean;
+}
+
+export interface BackupsInfo {
+  dir: string;
+  bytes: number;
+}
+
+export interface RpcError {
+  code: string; // not-repo, bad-params, unknown-method, git-failed, not-allowed, editor-not-found, internal
+  message: string;
+}
+
+export interface RpcResponse<T = unknown> {
+  id: number;
+  result?: T;
+  error?: RpcError;
+}
+
+// Result type of every rpc method, keyed by method name.
+export interface Methods {
+  version: VersionResult;
+  discover: { repo: string };
+  repos: string[];
+  addRepo: string[];
+  removeRepo: string[];
+  view: View;
+  fetch: FetchResult;
+  align: AlignReport;
+  switch: OpResult;
+  createFolder: OpResult;
+  removeFolder: RemoveFolderResult;
+  compare: CompareResult;
+  fileAt: FileText;
+  fileDiff: FileDiffResult;
+  setRole: RepoSettings;
+  moveTrunk: RepoSettings;
+  assign: RepoSettings;
+  setRepoSettings: RepoSettings;
+  getGlobal: Global;
+  setGlobal: Global;
+  ops: OpEntry[];
+  defaultFolder: { path: string };
+  remoteBranches: string[];
+  trunkCommits: CommitInfo[];
+  backups: BackupsInfo;
+  clearBackups: Record<string, never>;
+  openInEditor: Record<string, never>;
+}
