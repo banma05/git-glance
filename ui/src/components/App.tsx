@@ -71,13 +71,14 @@ export function App({ host }: { host: Host }) {
   if (host.mode === 'sidebar') {
     return (
       <div class="app narrow">
-        <Sidebar t={t} host={host} state={state} actions={actions} />
-        {gitLine}
-        {fetchLine}
-        {errorLine}
-        {noticeLine}
-        {!state.loaded && <div class="muted pad">{t('app.loading')}</div>}
-        {state.loaded && state.repos.length === 0 && <div class="muted pad">{t('repo.none')}</div>}
+        <Sidebar t={t} host={host} state={state} actions={actions}>
+          {gitLine}
+          {fetchLine}
+          {errorLine}
+          {noticeLine}
+          {!state.loaded && <div class="muted pad">{t('app.loading')}</div>}
+          {state.loaded && state.repos.length === 0 && <div class="muted pad">{t('repo.none')}</div>}
+        </Sidebar>
         <Dialogs t={t} host={host} state={state} actions={actions} />
       </div>
     );

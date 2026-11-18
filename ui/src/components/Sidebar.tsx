@@ -1,3 +1,4 @@
+import type { ComponentChildren } from 'preact';
 import type { Host } from '../host/types';
 import type { T } from '../i18n';
 import { chips } from '../format';
@@ -9,12 +10,14 @@ import { DetailPanel } from './DetailPanel';
 import { Details, assignOf } from './Details';
 import { GraphView } from './GraphView';
 import { branchColor } from './ListView';
+import { AddRepo } from './RepoTabs';
 
 interface Props {
   t: T;
   host: Host;
   state: AppState;
   actions: Actions;
+  children?: ComponentChildren; // status lines, shown right under the header
 }
 
 function Fish({ t, b, state, actions }: Omit<Props, 'host'> & { b: BranchView }) {
@@ -39,9 +42,10 @@ function Fish({ t, b, state, actions }: Omit<Props, 'host'> & { b: BranchView })
   );
 }
 
-// Sidebar is the narrow mode: a repository dropdown, the list/graph toggle and
-// the button that opens the wide window, then a vertical list of branches.
-export function Sidebar({ t, host, state, actions }: Props) {
+// Sidebar is the narrow mode: a repository dropdown, the "+" that adds one,
+// the button that opens the wide window and the list/graph toggle, then the
+// status lines and a vertical list of branches.
+export function Sidebar({ t, host, state, actions, children }: Props) {
   const view = state.view;
   const list = (names: string[]) =>
     names
@@ -71,6 +75,10 @@ export function Sidebar({ t, host, state, actions }: Props) {
             <option value={r}>{baseName(r)}</option>
           ))}
         </select>
+        <AddRepo t={t} host={host} readOnly={!!state.gitProblem} buttonClass="btn" onAdd={actions.addRepo} />
+        <button class="btn" title={t('toolbar.wide')} aria-label={t('toolbar.wide')} onClick={actions.openWide}>
+          ⤢
+        </button>
         <div class="seg" role="group">
           <button class="btn" aria-pressed={state.mode === 'list'} onClick={() => actions.setMode('list')}>
             {t('toolbar.list')}
@@ -79,10 +87,8 @@ export function Sidebar({ t, host, state, actions }: Props) {
             {t('toolbar.graph')}
           </button>
         </div>
-        <button class="btn" title={t('toolbar.wide')} aria-label={t('toolbar.wide')} onClick={actions.openWide}>
-          ⤢
-        </button>
       </div>
+      {children}
       {view && state.mode === 'graph' && (
         <>
           <GraphView

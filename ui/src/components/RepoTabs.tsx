@@ -4,23 +4,22 @@ import type { Host } from '../host/types';
 import type { T } from '../i18n';
 import { baseName, errorText } from '../reasons';
 
-interface Props {
+interface AddProps {
   t: T;
   host: Host;
-  repos: string[];
-  repo: string;
-  readOnly?: boolean; // the core refuses every change, adding a repository too
-  onSelect(repo: string): void;
+  readOnly: boolean; // the core refuses every change, adding a repository too
+  buttonClass: string;
   onAdd(path: string): void;
 }
 
-export function RepoTabs({ t, host, repos, repo, readOnly = false, onSelect, onAdd }: Props) {
+// AddRepo is the "+" and the form it opens. The path may be any folder inside
+// the repository: discover finds its root, then onAdd adds it.
+export function AddRepo({ t, host, readOnly, buttonClass, onAdd }: AddProps) {
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  // The path may be any folder inside the repository: discover finds its root.
   const submit = async () => {
     const typed = path.trim();
     if (!typed || busy || readOnly) return;
@@ -39,13 +38,8 @@ export function RepoTabs({ t, host, repos, repo, readOnly = false, onSelect, onA
   };
 
   return (
-    <div class="tabs" role="tablist">
-      {repos.map((r) => (
-        <button class="tab" role="tab" aria-selected={r === repo} title={r} onClick={() => onSelect(r)}>
-          {baseName(r)}
-        </button>
-      ))}
-      <button class="tab add" title={t('repo.add')} aria-label={t('repo.add')} onClick={() => setAdding(!adding)}>
+    <>
+      <button class={buttonClass} title={t('repo.add')} aria-label={t('repo.add')} aria-expanded={adding} onClick={() => setAdding(!adding)}>
         +
       </button>
       {adding && (
@@ -70,6 +64,29 @@ export function RepoTabs({ t, host, repos, repo, readOnly = false, onSelect, onA
           )}
         </form>
       )}
+    </>
+  );
+}
+
+interface Props {
+  t: T;
+  host: Host;
+  repos: string[];
+  repo: string;
+  readOnly?: boolean;
+  onSelect(repo: string): void;
+  onAdd(path: string): void;
+}
+
+export function RepoTabs({ t, host, repos, repo, readOnly = false, onSelect, onAdd }: Props) {
+  return (
+    <div class="tabs" role="tablist">
+      {repos.map((r) => (
+        <button class="tab" role="tab" aria-selected={r === repo} title={r} onClick={() => onSelect(r)}>
+          {baseName(r)}
+        </button>
+      ))}
+      <AddRepo t={t} host={host} readOnly={readOnly} buttonClass="tab add" onAdd={onAdd} />
     </div>
   );
 }

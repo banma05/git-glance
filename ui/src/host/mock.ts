@@ -4,7 +4,7 @@ import type { BranchView, Global, Group, Row, Section, TrunkView, View } from '.
 
 // Invented, generic data for developing the UI without a core: ?mock=1.
 // Add &mode=sidebar for the narrow layout, &theme=light for the light theme and
-// &lang=zh-CN for Chinese.
+// &lang=zh-CN for Chinese and &repos=0 for a start without any repository.
 
 const DAY = 86400;
 // A deterministic pseudo hash: 40 hex digits derived from n.
@@ -285,7 +285,7 @@ export function mockHost(): Host {
   const listeners: Array<(t: ThemeKind) => void> = [];
   const repo = '/home/dev/demo';
   const global: Global = {
-    repos: [repo, '/home/dev/other'],
+    repos: q.get('repos') === '0' ? [] : [repo, '/home/dev/other'],
     editor: 'code',
     theme: q.get('theme') === 'light' ? 'light' : 'dark',
   };
