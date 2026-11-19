@@ -222,7 +222,10 @@ describe('switch the main folder to the latest', () => {
 
   // Each code says only what is true of it, and the next step that fits.
   const SHOW = `git stash show -p ${'a'.repeat(40)}`;
-  const truths: Array<{ code: string; state: string; says: string; step: 'apply' | 'check' | 'gone' | 'none' }> = [
+  const TAKEN = 'files the shelf would create are already on disk (build/out.txt, notes.txt); putting the work back would stop on them or overwrite them';
+  const truths: Array<{ code: string; state: string; why?: string; says: string; step: 'apply' | 'check' | 'gone' | 'clear' | 'none' }> = [
+    { code: 'path-exists', state: 'kept', why: TAKEN, says: 'The shelved changes of main are whole in git stash list as aaaaaaa, but files now sit where they would go back: build/out.txt, notes.txt.', step: 'clear' },
+    { code: 'path-exists', state: 'kept', says: 'The shelved changes of main are whole in git stash list as aaaaaaa, but files now sit where they would go back.', step: 'clear' },
     { code: 'apply-partial', state: 'kept', says: 'Part of the shelved changes of main is already back in the folder, and all of them are still in git stash list as aaaaaaa.', step: 'check' },
     { code: 'apply-mismatch', state: 'kept', says: 'The shelved changes of main were applied, but the folder does not match them: part or all of the work may already be in the folder. All of it is still in git stash list as aaaaaaa.', step: 'check' },
     { code: 'entry-gone', state: 'kept', says: 'The shelved changes of main are no longer in git stash list.', step: 'gone' },
@@ -232,10 +235,14 @@ describe('switch the main folder to the latest', () => {
     { code: 'later-code', state: 'kept', says: 'The shelved changes of main were not put back automatically (code later-code); their stash commit is aaaaaaa.', step: 'none' },
   ];
   for (const c of truths) {
-    it(`says only what is true for ${c.code}, and the next step that fits`, async () => {
-      await switchOnce(sw({ keptShelf: shelf({ state: c.state, whyCode: c.code, why: 'English detail' }) }));
+    it(`says only what is true for ${c.code}${c.why ? ' (files named)' : ''}, and the next step that fits`, async () => {
+      await switchOnce(sw({ keptShelf: shelf({ state: c.state, whyCode: c.code, why: c.why ?? 'English detail' }) }));
       expect(await screen.findByText(c.says)).toBeTruthy();
-      expect(!!screen.queryByText(APPLY), 'apply command').toBe(c.step === 'apply' || c.step === 'gone');
+      expect(!!screen.queryByText(APPLY), 'apply command').toBe(c.step === 'apply' || c.step === 'gone' || c.step === 'clear');
+      expect(!!screen.queryByText(en('switch.keptHow')), 'apply right away').toBe(c.step === 'apply');
+      // the files in the way are moved first: the command never comes without that step before it
+      expect(!!screen.queryByText(en('switch.clearFirst')), 'clear first').toBe(c.step === 'clear');
+      if (c.step === 'clear') expect(screen.getByText(APPLY).parentElement!.textContent!.startsWith(en('switch.clearFirst'))).toBe(true);
       expect(!!screen.queryByText(SHOW), 'show command').toBe(c.step === 'check');
       expect(!!screen.queryByText(en('switch.checkFirst')), 'check first').toBe(c.step === 'check');
       expect(!!screen.queryByText(en('switch.goneHow')), 'only while git has it').toBe(c.step === 'gone');
@@ -356,6 +363,18 @@ describe('switch back', () => {
     expect(await screen.findByText(en('switch.checkFirst'))).toBeTruthy();
     expect(screen.getByText(`git stash show -p ${'a'.repeat(40)}`)).toBeTruthy();
     expect(screen.queryByText(`git stash apply --index ${'a'.repeat(40)}`)).toBeNull();
+  });
+
+  it('names the files in the way of a shelf, and has them moved before the apply command', async () => {
+    const taken = {
+      previous: '',
+      shelves: [shelf({ state: 'kept', whyCode: 'path-exists', why: 'files the shelf would create are already on disk (build/out.txt); putting the work back would stop on them or overwrite them' })],
+    };
+    render(<App host={switchHost({ state: taken }).host} />);
+    expect(await screen.findByText('They will not be put back automatically: files now sit where it would put files back: build/out.txt')).toBeTruthy();
+    const command = screen.getByText(`git stash apply --index ${'a'.repeat(40)}`);
+    expect(command.parentElement!.textContent!.startsWith(en('switch.clearFirst'))).toBe(true);
+    expect(screen.queryByText(en('switch.keptHow'))).toBeNull();
   });
 
   it('says why kept work will not come back on its own, and how to put it back by hand', async () => {

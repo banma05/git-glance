@@ -14,25 +14,41 @@ function coded(t: T, prefix: 'shelf.why' | 'shelf.state' | 'switch.noff', code: 
   return key in en ? t(key as Key, vars) : t(`${prefix}.other` as Key, { ...vars, code });
 }
 
-const whyOf = (t: T, s: Shelf) => (s.whyCode ? coded(t, 'shelf.why', s.whyCode, { branch: s.branch }) : '');
+// takenPaths are the paths a path-exists detail of the core names ("…already
+// on disk (a, b); putting…"), or "" when it names none.
+function takenPaths(s: Shelf): string {
+  const open = 'on disk (';
+  const start = s.why.indexOf(open);
+  const end = s.why.lastIndexOf('); ');
+  return s.whyCode === 'path-exists' && start >= 0 && end > start ? s.why.slice(start + open.length, end) : '';
+}
+
+function whyOf(t: T, s: Shelf): string {
+  const paths = takenPaths(s);
+  if (paths) return t('shelf.takenPaths', { paths });
+  return s.whyCode ? coded(t, 'shelf.why', s.whyCode, { branch: s.branch }) : '';
+}
 
 // What to do next about a shelf that is not back in the folder:
 //   apply: it is in git stash list and nothing of it is in the folder;
+//   clear: as apply, but files sit where it would go back; git would stop on
+//          them or write over them, so they are moved first;
 //   check: part or all of it may already be in the folder, so look first;
 //   gone:  it is no longer listed, but git may still have its commit;
 //   none:  it comes back on its own, it is already back, or this page does not
 //          know enough to say (a state or reason of a newer core).
-type Next = 'apply' | 'check' | 'gone' | 'none';
+type Next = 'apply' | 'clear' | 'check' | 'gone' | 'none';
 
 // Only these states leave work that is not back and will not come back on its own.
 const NOT_AUTOMATIC = new Set(['kept', 'superseded', 'orphan']);
 // The reasons after which the work is whole in git stash list and none of it is in the folder.
-const WHOLE_IN_STASH = new Set(['', 'apply-failed', 'base-moved', 'not-on-branch', 'folder-dirty', 'path-exists', 'superseded', 'no-record']);
+const WHOLE_IN_STASH = new Set(['', 'apply-failed', 'base-moved', 'not-on-branch', 'folder-dirty', 'superseded', 'no-record']);
 
 function nextOf(s: Shelf): Next {
   if (!NOT_AUTOMATIC.has(s.state)) return 'none';
   if (s.whyCode === 'apply-partial' || s.whyCode === 'apply-mismatch') return 'check';
   if (s.whyCode === 'entry-gone') return 'gone';
+  if (s.whyCode === 'path-exists') return 'clear';
   return WHOLE_IN_STASH.has(s.whyCode) ? 'apply' : 'none';
 }
 
@@ -51,7 +67,13 @@ function English({ t, text }: { t: T; text: string }) {
 function NextStep({ t, s }: { t: T; s: Shelf }) {
   const next = nextOf(s);
   if (next === 'none') return null;
-  const label = next === 'check' ? t('switch.checkFirst') : next === 'gone' ? t('switch.goneHow') : t('switch.keptHow');
+  const labels: Record<Exclude<Next, 'none'>, string> = {
+    apply: t('switch.keptHow'),
+    clear: t('switch.clearFirst'), // the files in the way go first, then the command
+    check: t('switch.checkFirst'),
+    gone: t('switch.goneHow'),
+  };
+  const label = labels[next];
   const command = next === 'check' ? `git stash show -p ${s.hash}` : `git stash apply --index ${s.hash}`;
   return (
     <div class="by-hand">
@@ -67,6 +89,10 @@ function keptLine(t: T, s: Shelf): string {
   const next = nextOf(s);
   if (next === 'check') return t(s.whyCode === 'apply-partial' ? 'switch.partial' : 'switch.mismatch', vars);
   if (next === 'gone') return t('switch.gone', vars);
+  if (next === 'clear') {
+    const paths = takenPaths(s);
+    return paths ? t('switch.inTheWay', { ...vars, paths }) : t('switch.inTheWayUnnamed', vars);
+  }
   if (next === 'apply') return t('switch.kept', vars);
   return t('switch.keptOther', vars);
 }
