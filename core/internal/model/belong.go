@@ -81,15 +81,16 @@ func parseCounts(s string, leftIsBehind bool) (AheadBehind, error) {
 }
 
 // Assignment says which trunk a branch belongs to and how that was decided:
-// count, created, manual or unknown (Trunk empty).
+// count, created, manual, reflog or unknown (Trunk empty).
 type Assignment struct {
 	Trunk  string `json:"trunk"`
 	Source string `json:"source"`
 }
 
 // AssignTrunk picks the trunk with the smallest Ahead; ties are broken by the
-// trunk the branch was created from, then by a manual choice.
-func AssignTrunk(ahead map[string]int, order []string, created, manual string) Assignment {
+// trunk the branch was created from, then by a manual choice, then by the
+// trunk git's own creation record names (recorded).
+func AssignTrunk(ahead map[string]int, order []string, created, manual, recorded string) Assignment {
 	best := -1
 	var tied []string
 	for _, name := range order {
@@ -112,6 +113,9 @@ func AssignTrunk(ahead map[string]int, order []string, created, manual string) A
 	}
 	if has(tied, manual) {
 		return Assignment{Trunk: manual, Source: "manual"}
+	}
+	if has(tied, recorded) {
+		return Assignment{Trunk: recorded, Source: "reflog"}
 	}
 	return Assignment{Source: "unknown"}
 }

@@ -16,7 +16,11 @@ interface Props {
   assign?: { trunks: string[]; current: string }; // the trunks, and the one this branch was put under by hand ("" none)
 }
 
-const SOURCE_KEYS = { created: 'detail.source.created', manual: 'detail.source.manual' } as const;
+const SOURCE_KEYS = {
+  created: 'detail.source.created',
+  manual: 'detail.source.manual',
+  reflog: 'detail.source.reflog',
+} as const;
 const BY_KEYS = {
   ancestor: 'detail.by.ancestor',
   patch: 'detail.by.patch',

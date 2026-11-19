@@ -226,6 +226,7 @@ export const zh = {
   'detail.trunkUnknown': '看不出来属于哪条主干',
   'detail.source.created': '按新建时的起点',
   'detail.source.manual': '按你的指定',
+  'detail.source.reflog': '按 git 记下的起点',
   'detail.remote': '和线上',
   'detail.remote.gone': '线上的这个分支已被删除',
   'detail.files': '改动的文件',

@@ -151,6 +151,12 @@ describe('DetailPanel', () => {
     renderPanel(branchOf('x', [], { trunkSource: 'manual' }));
     expect(screen.getByText(/按你的指定/)).toBeTruthy();
     cleanup();
+    renderPanel(branchOf('x', [], { trunkSource: 'reflog' }));
+    expect(screen.getByText(/按 git 记下的起点/)).toBeTruthy();
+    cleanup();
+    renderPanel(branchOf('x', [], { trunkSource: 'reflog' }), idle, en);
+    expect(screen.getByText(/from git's record of where it was created/)).toBeTruthy();
+    cleanup();
     renderPanel(branchOf('x', [], { trunkSource: 'count' }));
     expect(screen.queryByText(/按新建时的起点|按你的指定/)).toBeNull();
   });

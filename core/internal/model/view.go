@@ -121,6 +121,8 @@ type builder struct {
 	bulk     Counter // nil: ahead/behind are asked per branch
 	facts    gitFacts
 	workers  int
+	runner   gitx.Runner // nil: git's creation record is not read
+	remotes  []string
 	unpushed map[string]int // answered in one go; the others are asked per branch
 }
 
@@ -143,18 +145,25 @@ func BuildCached(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.S
 	if v.AtLeast(2, 41) {
 		bulk = bulkCounter{r, snap.Repo}
 	}
-	return build(ctx, bulk, newHashFacts(ctx, r, snap, c), buildWorkers, snap, rs, now)
+	return buildWith(ctx, r, bulk, newHashFacts(ctx, r, snap, c), buildWorkers, snap, rs, now)
 }
 
 // build assembles the view. bulk counts ahead/behind for all branches at once;
 // when nil, facts are asked per branch.
 func build(ctx context.Context, bulk Counter, facts gitFacts, workers int, snap repo.Snapshot, rs settings.RepoSettings, now int64) (View, error) {
+	return buildWith(ctx, nil, bulk, facts, workers, snap, rs, now)
+}
+
+// buildWith is build plus the runner that reads git's creation record for
+// branches whose trunk is a tie; with a nil runner no record is read.
+func buildWith(ctx context.Context, r gitx.Runner, bulk Counter, facts gitFacts, workers int, snap repo.Snapshot, rs settings.RepoSettings, now int64) (View, error) {
 	rs = normalizeSettings(rs)
 	b := &builder{
 		ctx: ctx, snap: snap, rs: rs, now: now,
 		trunks:  uniqueTrunks(ResolveTrunks(snap, rs)),
 		folders: foldersByBranch(snap.Worktrees),
 		bulk:    bulk, facts: facts, workers: workers,
+		runner: r, remotes: remoteNames(snap),
 	}
 	features := featureRefs(snap.Local, rs, b.trunks)
 	if err := b.count(features); err != nil {
@@ -353,7 +362,38 @@ func (b *builder) assign(branch string) Assignment {
 			ahead[t.Name] = c.Ahead
 		}
 	}
-	return AssignTrunk(ahead, order, b.rs.CreatedBase[branch], b.rs.ManualTrunk[branch])
+	created, manual := b.rs.CreatedBase[branch], b.rs.ManualTrunk[branch]
+	return AssignTrunk(ahead, order, created, manual, b.recorded(branch, ahead, order, created, manual))
+}
+
+// recorded asks git where branch was created, only when its trunk is a tie
+// that the creation record and the manual choice have not settled.
+func (b *builder) recorded(branch string, ahead map[string]int, order []string, created, manual string) string {
+	if b.runner == nil {
+		return ""
+	}
+	tied := tiedTrunks(ahead, order)
+	if len(tied) < 2 || has(tied, created) || has(tied, manual) {
+		return ""
+	}
+	return trunkNamed(creationRecord(b.ctx, b.runner, b.snap.Repo, branch), tied, b.remotes)
+}
+
+// tiedTrunks lists the trunks that share the smallest ahead count.
+func tiedTrunks(ahead map[string]int, order []string) []string {
+	best := -1
+	var tied []string
+	for _, name := range order {
+		n, ok := ahead[name]
+		switch {
+		case !ok:
+		case best < 0 || n < best:
+			best, tied = n, []string{name}
+		case n == best:
+			tied = append(tied, name)
+		}
+	}
+	return tied
 }
 
 func (b *builder) trunk(name string) (Trunk, bool) {

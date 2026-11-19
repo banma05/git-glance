@@ -15,22 +15,28 @@ import (
 )
 
 func TestAssignTrunk(t *testing.T) {
-	order := []string{"main", "v2"}
+	order := []string{"main", "v2", "v3"}
 	cases := []struct {
 		name            string
 		ahead           map[string]int
 		created, manual string
+		recorded        string
 		want            Assignment
 	}{
-		{"unique min", map[string]int{"main": 1, "v2": 248}, "", "", Assignment{"main", "count"}},
-		{"tie created", map[string]int{"main": 0, "v2": 0}, "v2", "", Assignment{"v2", "created"}},
-		{"tie manual", map[string]int{"main": 0, "v2": 0}, "", "main", Assignment{"main", "manual"}},
-		{"tie none", map[string]int{"main": 0, "v2": 0}, "", "", Assignment{"", "unknown"}},
-		{"tie created outside", map[string]int{"main": 2, "v2": 2}, "v3", "", Assignment{"", "unknown"}},
+		{"unique min", map[string]int{"main": 1, "v2": 248}, "", "", "", Assignment{"main", "count"}},
+		{"tie created", map[string]int{"main": 0, "v2": 0}, "v2", "", "", Assignment{"v2", "created"}},
+		{"tie manual", map[string]int{"main": 0, "v2": 0}, "", "main", "", Assignment{"main", "manual"}},
+		{"tie none", map[string]int{"main": 0, "v2": 0}, "", "", "", Assignment{"", "unknown"}},
+		{"tie recorded", map[string]int{"main": 0, "v2": 0}, "", "", "v2", Assignment{"v2", "reflog"}},
+		{"created beats recorded", map[string]int{"main": 0, "v2": 0}, "main", "", "v2", Assignment{"main", "created"}},
+		{"manual beats recorded", map[string]int{"main": 0, "v2": 0}, "", "main", "v2", Assignment{"main", "manual"}},
+		{"recorded outside the tie", map[string]int{"main": 2, "v2": 2, "v3": 5}, "", "", "v3", Assignment{"", "unknown"}},
+		{"unique count ignores recorded", map[string]int{"main": 1, "v2": 3}, "", "", "v2", Assignment{"main", "count"}},
+		{"tie created outside", map[string]int{"main": 2, "v2": 2}, "v3", "", "", Assignment{"", "unknown"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := AssignTrunk(c.ahead, order, c.created, c.manual); got != c.want {
+			if got := AssignTrunk(c.ahead, order, c.created, c.manual, c.recorded); got != c.want {
 				t.Fatalf("got %+v want %+v", got, c.want)
 			}
 		})

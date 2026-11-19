@@ -229,6 +229,7 @@ export const en: Record<Key, string> = {
   'detail.trunkUnknown': 'Cannot tell which trunk it belongs to',
   'detail.source.created': 'from where it was created',
   'detail.source.manual': 'set by you',
+  'detail.source.reflog': "from git's record of where it was created",
   'detail.remote': 'Against the remote',
   'detail.remote.gone': 'The remote branch was deleted',
   'detail.files': 'Changed files',
