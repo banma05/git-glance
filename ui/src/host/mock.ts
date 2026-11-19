@@ -263,7 +263,8 @@ export function mockView(repo: string): View {
     repo,
     settings: {
       trunks: [
-        { name: 'main', test: 'test', releases: ['release/1.0'] },
+        // release/0.9 was deleted after its release: the view no longer has it
+        { name: 'main', test: 'test', releases: ['release/1.0', 'release/0.9'] },
         { name: 'develop', test: '', releases: [] },
       ],
       hidePrefix: '',

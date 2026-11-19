@@ -45,6 +45,8 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
 .group-name { flex: 1; min-width: 0; padding: 5px 10px 5px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-name:hover { text-decoration: underline; }
 .trunk-head.selected { box-shadow: inset 3px 0 0 var(--tone-info); }
+.trunk-head[draggable='true'] .group-name { flex: 0 1 auto; }
+.trunk-head[draggable='true']::after { content: '\283F' / ''; margin-left: auto; padding: 5px 10px; color: var(--fg-mute); font-weight: normal; }
 .trunk-head.selected .group-name { color: var(--tone-info); }
 .group > .detail { margin-left: 10px; }
 .row { display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left; background: none; color: var(--fg); border: none; border-left: 3px solid transparent; padding: 5px 10px; font: inherit; cursor: pointer; }
@@ -104,6 +106,8 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
 .detail-grid dt { color: var(--fg-mute); }
 .detail-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .detail-grid .when { white-space: nowrap; }
+.detail-grid.trunk-grid { grid-template-columns: fit-content(50%) 1fr; }
+.trunk-grid dt { overflow-wrap: anywhere; }
 .detail .files { margin: 0; padding-left: 16px; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .detail .hint { margin: 0 0 8px; }

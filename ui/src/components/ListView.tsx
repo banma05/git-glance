@@ -139,11 +139,12 @@ export function ListView({ t, view, state, actions, compact = false }: Props) {
               trunk={{
                 name: g.trunk.name,
                 selected: state.selectedTrunk === g.trunk.name,
-                hint: t('group.dragHint'),
+                hint: t('group.showTrunkDrag'),
                 onShow: () => actions.showTrunk(g.trunk.name),
               }}
               drag={{
                 draggable: true,
+                title: t('group.dragHint'), // over the grab area beside the name
                 onDragStart: () => {
                   dragFrom.current = g.trunk.name;
                 },

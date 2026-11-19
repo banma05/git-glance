@@ -143,10 +143,11 @@ export const zh = {
   'group.trunk': '主干 {name}',
   'group.unknown': '看不出来',
   'group.old': '旧分支',
-  'group.dragHint': '点击看主干详情；拖动可排序',
+  'group.dragHint': '拖动排序',
   'group.empty': '没有分支',
   'group.fold': '展开或收起 {name} 下的分支',
   'group.showTrunk': '点击看主干详情',
+  'group.showTrunkDrag': '点击看主干详情；拖动可排序',
 
   'detail.none': '点一行看详情',
 
@@ -310,7 +311,7 @@ export const zh = {
   'trunk.title': '主干',
   'trunk.ref': '比较时用',
   'trunk.refLocal': '{name}（本地分支，线上没有）',
-  'trunk.latest': '最新提交',
+  'trunk.latest': '{ref} 的最新提交',
   'trunk.local': '本地分支',
   'trunk.local.none': '没有，只在线上',
   'trunk.local.only': '只有本地的，线上没有可比的',
@@ -320,6 +321,7 @@ export const zh = {
   'trunk.test': '测试分支',
   'trunk.releases': '上线分支',
   'trunk.notSet': '没有设置',
+  'trunk.notFound': '{name}（找不到这个分支）',
   'trunk.rolesHint': '在“{settings} → {roles}”里设置',
   'trunk.branches': '下面的分支',
 } as const;

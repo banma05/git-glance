@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { App } from './App';
@@ -594,5 +596,37 @@ describe('trunk details', () => {
     await waitFor(() => expect(screen.queryByText('Compared through')).toBeNull());
     await screen.findByText(named('feature/login'));
     expect(pressed(headName('main'))).toBe('false');
+  });
+});
+
+describe('dragging a trunk header', () => {
+  const css = fs.readFileSync(path.resolve(__dirname, '../app.css'), 'utf8');
+
+  it('has a grab area of its own beside the name, which no longer fills the header', async () => {
+    const style = document.createElement('style');
+    style.textContent = css;
+    document.head.appendChild(style);
+    try {
+      const { host } = fakeHost();
+      const { container } = render(<App host={host} />);
+      await screen.findByText(named('feature/login'));
+      const head = container.querySelector('.trunk-head')!;
+      expect(head.getAttribute('draggable')).toBe('true');
+      expect(head.getAttribute('title')).toBe('Drag to reorder');
+      expect(getComputedStyle(head).cursor).toBe('grab');
+      const name = head.querySelector('.group-name')!;
+      expect(name.getAttribute('title')).toBe('Click for the trunk details; drag to reorder');
+      expect(getComputedStyle(name).flexGrow).toBe('0');
+    } finally {
+      style.remove();
+    }
+    // only a draggable header gives up room: the sidebar's name still fills its header
+    const rule = (selector: string) => {
+      const at = css.indexOf(`\n${selector} {`);
+      expect(at, selector).toBeGreaterThanOrEqual(0);
+      return css.slice(at, css.indexOf('}', at));
+    };
+    expect(rule(".trunk-head[draggable='true'] .group-name")).toMatch(/flex:\s*0 1 auto/);
+    expect(rule(".trunk-head[draggable='true']::after")).toMatch(/content:/);
   });
 });

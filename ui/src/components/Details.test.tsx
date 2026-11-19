@@ -77,8 +77,8 @@ describe('trunk details', () => {
     const { container } = show(trunkView());
     expect(container.querySelector('.detail-name strong')!.textContent).toBe('main');
     expect(dd('Compared through')).toBe('origin/main');
-    expect(dd('Latest commit')).toContain('abcdef1');
-    expect(dd('Latest commit')).toContain(dateTime(1_700_000_100));
+    expect(dd('Latest commit of origin/main')).toContain('abcdef1');
+    expect(dd('Latest commit of origin/main')).toContain(dateTime(1_700_000_100));
     expect(dd('Branches under it')).toBe('2');
     expect(screen.queryByText('Folder', { selector: 'dt' })).toBeNull();
   });
@@ -102,6 +102,31 @@ describe('trunk details', () => {
   it('names the local branch as what it is compared through when the remote has none', () => {
     show(trunkView({ ref: 'main' }));
     expect(dd('Compared through')).toBe('main (the local branch; the remote has none)');
+    expect(dd('Latest commit of main')).toContain('abcdef1');
+  });
+
+  it('shows a configured test or release branch that no longer exists as not found, not as not set', () => {
+    const view = trunkView({ test: '', releases: ['release/1.0'] });
+    view.settings.trunks = [{ name: 'main', test: 'test', releases: ['release/1.0', 'release/0.9'] }];
+    show(view);
+    expect(dd('Test branch')).toBe('test (branch not found)');
+    expect(dd('Release branches')).toBe('release/1.0, release/0.9 (branch not found)');
+    expect(screen.queryByText(/Settings → Branch roles/)).toBeNull();
+    cleanup();
+    const found = trunkView({ test: 'test', releases: ['release/1.0'] });
+    found.settings.trunks = [{ name: 'main', test: 'test', releases: ['release/1.0'] }];
+    show(found);
+    expect(dd('Test branch')).toBe('test');
+    expect(dd('Release branches')).toBe('release/1.0');
+  });
+
+  it('says not set, with the hint, only when the settings name no branch for the role', () => {
+    const view = trunkView();
+    view.settings.trunks = [{ name: 'main', test: '', releases: ['release/0.9'] }];
+    show(view);
+    expect(dd('Test branch')).toBe('Not set');
+    expect(dd('Release branches')).toBe('release/0.9 (branch not found)');
+    expect(screen.getByText('Set them in Settings → Branch roles')).toBeTruthy();
   });
 
   it('shows the test and release branches, or that they are not set and where to set them', () => {

@@ -146,10 +146,11 @@ export const en: Record<Key, string> = {
   'group.trunk': 'Trunk {name}',
   'group.unknown': 'Cannot tell',
   'group.old': 'Old branches',
-  'group.dragHint': 'Click for the trunk details; drag to reorder',
+  'group.dragHint': 'Drag to reorder',
   'group.empty': 'No branches',
   'group.fold': 'Show or hide the branches under {name}',
   'group.showTrunk': 'Click for the trunk details',
+  'group.showTrunkDrag': 'Click for the trunk details; drag to reorder',
 
   'detail.none': 'Click a row to see details',
 
@@ -313,7 +314,7 @@ export const en: Record<Key, string> = {
   'trunk.title': 'Trunk',
   'trunk.ref': 'Compared through',
   'trunk.refLocal': '{name} (the local branch; the remote has none)',
-  'trunk.latest': 'Latest commit',
+  'trunk.latest': 'Latest commit of {ref}',
   'trunk.local': 'Local branch',
   'trunk.local.none': 'None; only on the remote',
   'trunk.local.only': 'Local only; nothing on the remote to compare with',
@@ -323,6 +324,7 @@ export const en: Record<Key, string> = {
   'trunk.test': 'Test branch',
   'trunk.releases': 'Release branches',
   'trunk.notSet': 'Not set',
+  'trunk.notFound': '{name} (branch not found)',
   'trunk.rolesHint': 'Set them in {settings} → {roles}',
   'trunk.branches': 'Branches under it',
 };

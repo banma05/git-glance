@@ -1,7 +1,7 @@
 import { dateTime } from '../format';
 import type { T } from '../i18n';
 import type { Actions, AppState } from '../state';
-import type { Group, TrunkView, View } from '../types';
+import type { Group, TrunkConfig, TrunkView, View } from '../types';
 import { DetailPanel } from './DetailPanel';
 
 interface Props {
@@ -69,26 +69,32 @@ function localText(tv: TrunkView, t: T): string {
 interface TrunkDetailProps {
   t: T;
   group: Group;
+  config?: TrunkConfig; // the trunk's roles as the settings name them; none for the default trunk
   actions: Pick<Actions, 'openFolder' | 'copy' | 'openDialog'>;
 }
 
 // TrunkDetail is what a click on a trunk's name shows: what it is compared
 // through, its latest commit, its local branch, its roles and its branches.
 // It only reads; none of its buttons changes anything.
-export function TrunkDetail({ t, group, actions }: TrunkDetailProps) {
+export function TrunkDetail({ t, group, config, actions }: TrunkDetailProps) {
   const tv = group.trunk;
   const notSet = <span class="muted">{t('trunk.notSet')}</span>;
+  // The roles as set: the view keeps only the branches it found, so a role
+  // whose branch is gone is shown as not found, not as not set.
+  const test = config ? config.test : tv.test;
+  const releases = config ? config.releases : tv.releases;
+  const role = (name: string, found: boolean) => (found ? name : <span class="warn">{t('trunk.notFound', { name })}</span>);
   return (
     <div class="detail">
       <div class="detail-name">
         <strong>{tv.name}</strong>
         <span class="muted">{t('trunk.title')}</span>
       </div>
-      <dl class="detail-grid">
+      <dl class="detail-grid trunk-grid">
         <dt>{t('trunk.ref')}</dt>
         <dd>{tv.ref === tv.name ? t('trunk.refLocal', { name: tv.name }) : tv.ref}</dd>
 
-        <dt>{t('trunk.latest')}</dt>
+        <dt>{t('trunk.latest', { ref: tv.ref })}</dt>
         <dd>
           <code>{tv.hash.slice(0, 7)}</code>
           {tv.time > 0 && (
@@ -110,15 +116,24 @@ export function TrunkDetail({ t, group, actions }: TrunkDetailProps) {
         )}
 
         <dt>{t('trunk.test')}</dt>
-        <dd>{tv.test || notSet}</dd>
+        <dd>{test ? role(test, tv.test === test) : notSet}</dd>
 
         <dt>{t('trunk.releases')}</dt>
-        <dd>{tv.releases.length > 0 ? tv.releases.join(', ') : notSet}</dd>
+        <dd>
+          {releases.length > 0
+            ? releases.map((n, i) => (
+                <>
+                  {i > 0 && ', '}
+                  {role(n, tv.releases.includes(n))}
+                </>
+              ))
+            : notSet}
+        </dd>
 
         <dt>{t('trunk.branches')}</dt>
         <dd>{group.branches.length}</dd>
       </dl>
-      {(!tv.test || tv.releases.length === 0) && (
+      {(!test || releases.length === 0) && (
         <p class="muted hint">{t('trunk.rolesHint', { settings: t('toolbar.settings'), roles: t('dialog.settings.roles') })}</p>
       )}
       <div class="detail-actions">
@@ -148,7 +163,10 @@ export function assignOf(view: View, branch: { name: string } | null): { trunks:
 // branch (with the picked commit when there is one).
 export function Details({ t, view, state, actions }: Props) {
   const group = state.selectedTrunk ? view.groups.find((g) => g.trunk.name === state.selectedTrunk) : undefined;
-  if (group) return <TrunkDetail t={t} group={group} actions={actions} />;
+  if (group) {
+    const config = view.settings.trunks.find((c) => c.name === group.trunk.name);
+    return <TrunkDetail t={t} group={group} config={config} actions={actions} />;
+  }
   if (state.pick?.kind === 'trunk') return <TrunkCommitDetail t={t} view={view} pick={state.pick} />;
   const branch = state.selected ? (view.branches[state.selected] ?? null) : null;
   return <DetailPanel t={t} branch={branch} state={state} actions={actions} pick={state.pick} assign={assignOf(view, branch)} />;
