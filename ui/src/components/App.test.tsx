@@ -8,7 +8,8 @@ import type { FetchResult } from '../types';
 
 // named finds a branch name, which BranchName writes in two parts.
 const named = (n: string) => (_: string, el: Element | null) =>
-  !!el?.classList.contains('bname') && [...el.querySelectorAll('[aria-hidden="true"]')].map((x) => x.textContent).join('') === n;
+  !!el?.classList.contains('bname') &&
+  (el.querySelector('.bname-pre')?.textContent ?? '') + el.querySelector('.bname-last')!.textContent === n;
 
 
 function fakeHost(over: Record<string, unknown> = {}, locale = 'en') {
@@ -142,6 +143,22 @@ describe('the repository list', () => {
     render(<App host={host} />);
     expect(await screen.findByText(/Reading the remote takes long/)).toBeTruthy();
     expect(screen.queryByText(/Could not read the remote/)).toBeNull();
+  });
+});
+
+describe('the list beside the graph in the wide window', () => {
+  it('shows "feature/login" whole, folders included', async () => {
+    const { host } = fakeHost();
+    const { container } = render(<App host={host} />);
+    await screen.findByText(named('feature/login'));
+    fireEvent.click(screen.getByRole('button', { name: 'Graph' }));
+    const left = container.querySelector('.left')!;
+    const row = [...left.querySelectorAll('.row')].find((r) => r.getAttribute('title') === 'alice/feature/login')!;
+    const name = row.querySelector('.bname')!;
+    expect(name.querySelector('.bname-pre')!.textContent).toBe('feature');
+    expect(name.querySelector('.bname-last')!.textContent).toBe('/login');
+    // nothing hides the folders by width (see BranchName.test.tsx: they only wrap away when the name does not fit)
+    expect(name.querySelector('.bname-pre')!.getAttribute('style')).toBeNull();
   });
 });
 

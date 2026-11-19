@@ -13,7 +13,8 @@ import type { BranchView, OpResult } from '../types';
 
 // named finds a branch name, which BranchName writes in two parts.
 const named = (n: string) => (_: string, el: Element | null) =>
-  !!el?.classList.contains('bname') && [...el.querySelectorAll('[aria-hidden="true"]')].map((x) => x.textContent).join('') === n;
+  !!el?.classList.contains('bname') &&
+  (el.querySelector('.bname-pre')?.textContent ?? '') + el.querySelector('.bname-last')!.textContent === n;
 
 
 const zh = makeT('zh-cn');

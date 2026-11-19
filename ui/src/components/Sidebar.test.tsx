@@ -10,7 +10,8 @@ import { mockView } from '../host/mock';
 
 // named finds a branch name, which BranchName writes in two parts.
 const named = (n: string) => (_: string, el: Element | null) =>
-  !!el?.classList.contains('bname') && [...el.querySelectorAll('[aria-hidden="true"]')].map((x) => x.textContent).join('') === n;
+  !!el?.classList.contains('bname') &&
+  (el.querySelector('.bname-pre')?.textContent ?? '') + el.querySelector('.bname-last')!.textContent === n;
 
 
 const en = makeT('en');

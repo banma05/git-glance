@@ -14,8 +14,8 @@ import type { Actions } from '../state';
 afterEach(cleanup);
 
 const LONG = 'platform-migration/checkout-summary-redesign';
-// visible is the text BranchName shows (the parts not hidden from assistive technology).
-const visible = (el: Element) => [...el.querySelectorAll('[aria-hidden="true"]')].map((x) => x.textContent).join('');
+// visible is the text BranchName shows: the folders, then the last segment.
+const visible = (el: Element) => (el.querySelector('.bname-pre')?.textContent ?? '') + el.querySelector('.bname-last')!.textContent;
 const parts = (el: Element) => ({
   pre: el.querySelector('.bname-pre')?.textContent ?? null,
   last: el.querySelector('.bname-last')!.textContent,
@@ -51,7 +51,13 @@ describe('BranchName', () => {
     expect(parts(container.firstElementChild!)).toEqual({ pre: 'alice/feature', last: '/login' });
   });
 
-  it('isolates the shrinking part, so bidi never reorders it', () => {
+  it('puts the last segment first in the DOM, so in its rtl box the folders are what wraps away', () => {
+    const { container } = render(<BranchName name={LONG} />);
+    const kids = [...container.firstElementChild!.children].map((x) => x.className);
+    expect(kids).toEqual(['bname-last', 'bname-pre', 'vh']);
+  });
+
+  it('isolates the folders, so bidi never reorders them', () => {
     const { container } = render(<BranchName name={LONG} />);
     expect(container.querySelector('.bname-pre > bdi')!.textContent).toBe('platform-migration');
   });
@@ -105,24 +111,46 @@ describe('the CSS that cuts names from the front', () => {
     return css.slice(at, css.indexOf('}', at));
   };
 
-  it('lets the folders shrink first, to a leading "…", and never reorders them', () => {
+  it('never hides the folders by row width: a name that fits is always whole', () => {
+    expect(css).not.toMatch(/@container/);
+    expect(css).not.toMatch(/\.bname-pre\s*\{[^}]*display:\s*none/);
+  });
+
+  it('drops the folders whole when the whole name does not fit: they wrap to a second line that is never shown', () => {
+    const box = rule('.bname');
+    expect(box).toMatch(/flex-wrap:\s*wrap/);
+    expect(box).toMatch(/height:\s*1lh/);
+    expect(box).toMatch(/overflow:\s*hidden/);
+    expect(box).toMatch(/direction:\s*rtl/); // the last segment is placed first, so the folders are what wraps
     const pre = rule('.bname-pre');
-    expect(pre).toMatch(/flex:\s*0 1000000 auto/);
-    expect(pre).toMatch(/direction:\s*rtl/);
-    expect(pre).toMatch(/text-overflow:\s*ellipsis/);
+    expect(pre).toMatch(/flex:\s*0 0 auto/); // whole or not at all: never a sliver
+    expect(pre).not.toMatch(/text-overflow/);
     expect(rule('.bname-pre > bdi')).toMatch(/unicode-bidi:\s*isolate/);
   });
 
-  it('cuts the last segment at its end only when the folders are gone', () => {
+  it('shows "…" in the place of dropped folders, under the folders when they are there', () => {
+    const before = rule('.bname::before');
+    expect(before).toMatch(/content:\s*'…' \/ ''/);
+    expect(before).toMatch(/position:\s*absolute/);
+    expect(rule('.bname')).toMatch(/padding-left:\s*1em/);
+    const pre = rule('.bname-pre');
+    expect(pre).toMatch(/margin-left:\s*-1em/);
+    expect(pre).toMatch(/min-width:\s*1em/);
+    expect(pre).toMatch(/background:\s*var\(--row-bg, var\(--bg\)\)/);
+    expect(pre).toMatch(/z-index:\s*1/);
+    expect(rule('.row:hover, .row.selected')).toMatch(/--row-bg:\s*var\(--surface\)/);
+    expect(rule('.g-row:hover, .g-row.selected')).toMatch(/--row-bg:\s*var\(--surface\)/);
+  });
+
+  it('cuts the last segment at its end only once the folders are gone', () => {
     const last = rule('.bname-last');
-    expect(last).toMatch(/flex:\s*0 1 auto/);
+    expect(last).toMatch(/flex:\s*1 1 auto/);
+    expect(last).toMatch(/min-width:\s*0/);
     expect(last).toMatch(/text-overflow:\s*ellipsis/);
   });
 
   it('in a graph row, lets the status chip go first, then the folders, then the last segment', () => {
-    // one flex line: the name's parts and the chip are siblings
-    expect(rule('.g-text > .bname')).toMatch(/display:\s*contents/);
-    expect(rule('.g-text > .bname > .bname-pre')).toMatch(/flex:\s*0 1e6 auto/);
+    expect(rule('.g-text > .bname')).toMatch(/flex:\s*0 1 auto/);
     const chip = rule('.g-text > .chip');
     expect(chip).toMatch(/flex:\s*0 1e12 auto/);
     expect(chip).toMatch(/min-width:\s*[\d.]+em/); // a few characters of the status stay
@@ -133,15 +161,5 @@ describe('the CSS that cuts names from the front', () => {
     const vh = rule('.vh');
     expect(vh).toMatch(/position:\s*absolute/);
     expect(vh).toMatch(/clip:\s*rect\(0 0 0 0\)/);
-  });
-
-  it('drops the folders whole, for a "…" before the last segment, when the row text is narrow (graph and list)', () => {
-    expect(rule('.g-text')).toMatch(/container:\s*rowtext \/ inline-size/);
-    expect(rule('.row-main')).toMatch(/container:\s*rowtext \/ inline-size/);
-    const at = css.indexOf('@container rowtext (max-width: 17em)');
-    expect(at).toBeGreaterThanOrEqual(0);
-    const block = css.slice(at, css.indexOf('\n}\n', at));
-    expect(block).toMatch(/\.bname-pre\s*\{\s*display:\s*none/);
-    expect(block).toMatch(/\.bname-pre \+ \.bname-last::before\s*\{\s*content:\s*'…'/);
   });
 });
