@@ -7,12 +7,18 @@ const h = vi.hoisted(() => ({
   executeCommand: vi.fn(async (..._a: unknown[]) => undefined),
   writeText: vi.fn(async (_t: string) => undefined),
   showErrorMessage: vi.fn(async (_m: string) => undefined),
+  docs: [] as Array<{ uri: { scheme: string; fsPath: string }; isDirty: boolean }>,
 }));
 
 vi.mock('vscode', () => ({
   commands: { executeCommand: h.executeCommand },
   env: { clipboard: { writeText: h.writeText } },
   window: { showErrorMessage: h.showErrorMessage },
+  workspace: {
+    get textDocuments() {
+      return h.docs;
+    },
+  },
   l10n: { t: (s: string, ...a: unknown[]) => s.replace(/\{(\d+)\}/g, (_m, i) => String(a[Number(i)])) },
   Uri: {
     file: (p: string) => ({ scheme: 'file', fsPath: p }),
@@ -20,7 +26,7 @@ vi.mock('vscode', () => ({
   },
 }));
 
-import { Generation, handlePageMessage, handleWebviewMessage, unsafeFolderPath, type BridgeDeps } from './bridge';
+import { Generation, handlePageMessage, handleWebviewMessage, unsafeFolderPath, unsavedUnder, type BridgeDeps } from './bridge';
 
 let posted: any[];
 let call: ReturnType<typeof vi.fn>;
@@ -34,7 +40,71 @@ beforeEach(() => {
   h.executeCommand.mockClear();
   h.writeText.mockClear();
   h.showErrorMessage.mockClear();
+  h.docs = [];
   deps = { core: { call } as any, post: (m) => posted.push(m), openWide: openWide as any, log: () => {} };
+});
+
+describe('switch under unsaved editors', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gg-main-'));
+  const doc = (p: string, isDirty: boolean, scheme = 'file') => ({ uri: { scheme, fsPath: p }, isDirty });
+  const params = { repo: root, folder: root, branch: 'main', latest: true, shelve: true };
+
+  it('refuses switch while editors are dirty', async () => {
+    h.docs = [doc(path.join(root, 'src', 'login.ts'), true), doc(path.join(root, 'README.md'), false)];
+    await handleWebviewMessage({ type: 'call', id: 7, method: 'switch', params }, deps);
+    expect(call).not.toHaveBeenCalled();
+    expect(posted).toEqual([
+      {
+        type: 'result',
+        id: 7,
+        result: {
+          ok: false,
+          reason: 'unsaved-editors',
+          files: ['src/login.ts'],
+          path: root,
+          detail: '',
+          logError: '',
+          shelved: null,
+          restored: null,
+          keptShelf: null,
+          fastForwarded: false,
+          aheadNote: '',
+        },
+      },
+    ]);
+  });
+
+  it('forwards switch when only other folders have unsaved editors', async () => {
+    h.docs = [
+      doc(root + '-login' + path.sep + 'a.ts', true), // a sibling folder whose name starts the same
+      doc(path.join(os.tmpdir(), 'elsewhere.ts'), true),
+      doc('Untitled-1', true, 'untitled'),
+      doc(path.join(root, 'saved.ts'), false),
+    ];
+    await handleWebviewMessage({ type: 'call', id: 8, method: 'switch', params }, deps);
+    expect(call).toHaveBeenCalledWith('switch', params, undefined, undefined);
+    expect(posted).toEqual([{ type: 'result', id: 8, result: { ok: true } }]);
+  });
+
+  it('leaves other writes alone', async () => {
+    h.docs = [doc(path.join(root, 'src', 'login.ts'), true)];
+    await handleWebviewMessage({ type: 'call', id: 9, method: 'align', params: { repo: root } }, deps);
+    expect(call).toHaveBeenCalledWith('align', { repo: root }, undefined, undefined);
+  });
+});
+
+describe('unsavedUnder', () => {
+  const d = (fsPath: string, isDirty = true) => ({ uri: { scheme: 'file', fsPath }, isDirty });
+
+  it('compares paths without case on Windows only', () => {
+    const docs = [d('C:\\Work\\Repo\\src\\a.ts'), d('c:/work/repo/b.ts'), d('C:\\Work\\Repo2\\c.ts')];
+    expect(unsavedUnder('c:\\work\\repo\\', docs, 'win32')).toEqual(['src/a.ts', 'b.ts']);
+    expect(unsavedUnder('/home/dev/Repo', [d('/home/dev/repo/a.ts'), d('/home/dev/Repo/b.ts')], 'linux')).toEqual(['b.ts']);
+  });
+
+  it('skips saved and non-file documents', () => {
+    expect(unsavedUnder('/w/r', [d('/w/r/a.ts', false), { uri: { scheme: 'untitled', fsPath: '/w/r/x' }, isDirty: true }], 'linux')).toEqual([]);
+  });
 });
 
 describe('handleWebviewMessage', () => {

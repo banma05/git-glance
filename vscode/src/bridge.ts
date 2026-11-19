@@ -97,6 +97,50 @@ export function unsafeFolderPath(p: string, platform: string = process.platform)
   return platform === 'win32' && (p.startsWith('/') || p.startsWith('\\'));
 }
 
+interface OpenDocument {
+  uri: { scheme: string; fsPath: string };
+  isDirty: boolean;
+}
+
+// unsavedUnder lists, relative to folder and with "/", the open files with
+// unsaved changes that live in folder. Paths are compared without case on
+// Windows only.
+export function unsavedUnder(folder: string, docs: readonly OpenDocument[], platform: string = process.platform): string[] {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const fold = (p: string) => (platform === 'win32' ? p.toLowerCase() : p);
+  const root = norm(folder);
+  const out: string[] = [];
+  for (const d of docs) {
+    if (!d.isDirty || d.uri.scheme !== 'file') continue;
+    const file = norm(d.uri.fsPath);
+    if (fold(file).startsWith(fold(root) + '/')) out.push(file.slice(root.length + 1));
+  }
+  return out;
+}
+
+// unsavedRefusal is the answer to a switch of a folder that has open files with
+// unsaved changes: git would change those files under the editor. The core is
+// not asked.
+function unsavedRefusal(params: unknown): object | undefined {
+  const folder = isObject(params) ? params.folder : undefined;
+  if (!isText(folder)) return undefined;
+  const files = unsavedUnder(folder, vscode.workspace.textDocuments);
+  if (files.length === 0) return undefined;
+  return {
+    ok: false,
+    reason: 'unsaved-editors',
+    files,
+    path: folder,
+    detail: '',
+    logError: '',
+    shelved: null,
+    restored: null,
+    keptShelf: null,
+    fastForwarded: false,
+    aheadNote: '',
+  };
+}
+
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isText = (v: unknown, max = 4096): v is string => typeof v === 'string' && v.length > 0 && v.length <= max && !v.includes('\0');
 
@@ -115,6 +159,11 @@ export async function handleWebviewMessage(msg: unknown, deps: BridgeDeps): Prom
       if (id === undefined) return;
       if (typeof msg.method !== 'string' || !METHOD_NAME.test(msg.method)) return fail('bad-message', vscode.l10n.t('Invalid method.'));
       if (msg.params !== undefined && !isObject(msg.params)) return fail('bad-message', vscode.l10n.t('Invalid parameters.'));
+      const refused = msg.method === 'switch' ? unsavedRefusal(msg.params) : undefined;
+      if (refused) {
+        deps.post({ type: 'result', id, result: refused });
+        return;
+      }
       const started = Date.now();
       try {
         if (msg.method === 'repos' && deps.beforeRepos) {
