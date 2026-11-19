@@ -104,6 +104,17 @@ describe('narrow layout rules', () => {
     expect(rule('.seg .btn')).toMatch(/white-space:\s*nowrap/);
   });
 
+  it('puts the dialog backdrop above every other layer, the sticky sidebar header included', () => {
+    const overlay = Number(/z-index:\s*(\d+)/.exec(rule('.overlay'))?.[1] ?? NaN);
+    expect(overlay).toBeGreaterThan(0);
+    // every other z-index in the stylesheet is below it
+    const others = [...css.matchAll(/([^{}]+)\{[^}]*?z-index:\s*(\d+)/g)]
+      .map((m) => ({ selector: m[1].trim().split('\n').pop()!.trim(), z: Number(m[2]) }))
+      .filter((o) => o.selector !== '.overlay');
+    expect(others.map((o) => o.selector)).toContain('.side-head');
+    for (const o of others) expect(o.z, o.selector).toBeLessThan(overlay);
+  });
+
   it('lets the sidebar header wrap instead of overflowing', () => {
     expect(rule('.side-head')).toMatch(/flex-wrap:\s*wrap/);
   });
