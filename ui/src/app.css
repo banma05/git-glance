@@ -51,14 +51,16 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
    cut at its end. The box is rtl and wraps, with the last segment first in
    the DOM: the folders are the item that wraps, to a second line the fixed
    one-line height never shows. The "…" sits in the box's left padding, under
-   the folders (which have the row's background) while they are there; the
-   folders' negative margin takes the padding back so the name starts at the
-   left edge. --row-bg is the row's background. */
-.bname { position: relative; display: flex; flex-wrap: wrap; direction: rtl; height: 1lh; min-width: 0; overflow: hidden; white-space: nowrap; padding-left: 1em; }
+   the folders (which have the row's background, and paint over it because they
+   come later in the box, without a z-index) while they are there; the folders'
+   negative margin takes the padding back so the name starts at the left edge.
+   --row-bg is the row's background. isolation keeps all of it in the name's
+   own stacking context, under dialogs and the sticky sidebar header. */
+.bname { position: relative; isolation: isolate; display: flex; flex-wrap: wrap; direction: rtl; height: 1lh; min-width: 0; overflow: hidden; white-space: nowrap; padding-left: 1em; }
 .bname::before { content: '…' / ''; position: absolute; left: 0; top: 0; width: 1em; text-align: right; }
 .bname.bname-plain { padding-left: 0; }
 .bname.bname-plain::before { content: none; }
-.bname-pre { position: relative; z-index: 1; flex: 0 0 auto; min-width: 1em; margin-left: -1em; direction: ltr; text-align: right; background: var(--row-bg, var(--bg)); }
+.bname-pre { position: relative; flex: 0 0 auto; min-width: 1em; margin-left: -1em; direction: ltr; text-align: right; background: var(--row-bg, var(--bg)); }
 .bname-pre > bdi { direction: ltr; unicode-bidi: isolate; }
 .bname-last { flex: 1 1 auto; min-width: 0; direction: ltr; text-align: left; overflow: hidden; text-overflow: ellipsis; }
 /* Text for assistive technology only (the whole branch name of a BranchName). */

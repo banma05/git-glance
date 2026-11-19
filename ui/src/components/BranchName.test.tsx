@@ -137,9 +137,15 @@ describe('the CSS that cuts names from the front', () => {
     expect(pre).toMatch(/margin-left:\s*-1em/);
     expect(pre).toMatch(/min-width:\s*1em/);
     expect(pre).toMatch(/background:\s*var\(--row-bg, var\(--bg\)\)/);
-    expect(pre).toMatch(/z-index:\s*1/);
     expect(rule('.row:hover, .row.selected')).toMatch(/--row-bg:\s*var\(--surface\)/);
     expect(rule('.g-row:hover, .g-row.selected')).toMatch(/--row-bg:\s*var\(--surface\)/);
+  });
+
+  it('keeps every part of a name inside its own stacking context: nothing paints over dialogs or the sticky header', () => {
+    // the folders cover the "…" by coming later in the box, not by a z-index
+    expect(rule('.bname')).toMatch(/isolation:\s*isolate/);
+    expect(rule('.bname-pre')).not.toMatch(/z-index/);
+    expect(rule('.bname::before')).not.toMatch(/z-index/);
   });
 
   it('cuts the last segment at its end only once the folders are gone', () => {
