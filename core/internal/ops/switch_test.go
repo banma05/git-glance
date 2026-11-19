@@ -254,7 +254,7 @@ func TestSwitchLatestFastForwards(t *testing.T) {
 	f := newFixture(t)
 	mainBehind(t, f)
 	res := f.sw(t, "main", SwitchOptions{Latest: true})
-	if !res.OK || !res.FastForwarded || res.AheadNote != "" || res.LogError != "" {
+	if !res.OK || !res.FastForwarded || res.AheadNote != "" || res.NoFastForward != "" || res.LogError != "" {
 		t.Fatalf("res = %+v", res)
 	}
 	if f.rev("main") != f.rev("origin/main") || f.head(f.r.Dir) != "refs/heads/main" || f.read(t, "m.txt") != "main\n" {
@@ -310,7 +310,7 @@ func TestSwitchLatestKeepsAheadBranch(t *testing.T) {
 	mainAhead(t, f)
 	before := f.rev("main")
 	res := f.sw(t, "main", SwitchOptions{Latest: true})
-	if !res.OK || res.FastForwarded || res.AheadNote != "local has 1 commit not on origin/main; not fast-forwarded" {
+	if !res.OK || res.FastForwarded || res.AheadNote != "local has 1 commit not on origin/main; not fast-forwarded" || res.NoFastForward != "ahead" {
 		t.Fatalf("res = %+v", res)
 	}
 	if f.rev("main") != before || f.head(f.r.Dir) != "refs/heads/main" {
@@ -337,10 +337,38 @@ func TestSwitchLatestOnlyOwnNameUpstream(t *testing.T) {
 	f.r.Git(f.r.Dir, "fetch", "-q", "origin")
 	before := f.rev("feature/login")
 	res := f.sw(t, "feature/login", SwitchOptions{Latest: true})
-	if !res.OK || res.FastForwarded || res.AheadNote != "" || f.rev("feature/login") != before {
+	if !res.OK || res.FastForwarded || res.AheadNote != "" || res.NoFastForward != "no-upstream" || f.rev("feature/login") != before {
 		t.Fatalf("res = %+v", res)
 	}
 	wantOps(t, f, "switch feature/login ok")
+}
+
+// Fast-forwarding a branch that has work shelved on its current commit for
+// this folder would make that work impossible to put back: the branch is
+// switched to unmoved, and the work comes back.
+func TestSwitchLatestKeepsPendingShelfBranch(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "README", "edited\n")
+	away := f.sw(t, "x", SwitchOptions{Shelve: true})
+	if !away.OK || away.Shelved == nil || away.Shelved.Branch != "main" {
+		t.Fatalf("away = %+v", away)
+	}
+	f.pushOther("main", "m.txt")
+	f.r.Git(f.r.Dir, "fetch", "-q", "origin")
+	before := f.rev("main")
+	back := f.sw(t, "main", SwitchOptions{Latest: true, Shelve: true})
+	if !back.OK || back.FastForwarded || back.NoFastForward != "shelf-pending" || back.Restored == nil || f.rev("main") != before {
+		t.Fatalf("back = %+v", back)
+	}
+	if f.read(t, "README") != "edited\n" {
+		t.Fatal("the work did not come back")
+	}
+	// Nothing pending any more: the next latest switch moves main.
+	f.r.Git(f.r.Dir, "checkout", "-q", "--", "README")
+	f.sw(t, "x", SwitchOptions{})
+	if again := f.sw(t, "main", SwitchOptions{Latest: true}); !again.FastForwarded || again.NoFastForward != "" {
+		t.Fatalf("again = %+v", again)
+	}
 }
 
 // The fast-forward fails after the shelf was taken: the work is put back.

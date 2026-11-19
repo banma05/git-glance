@@ -123,6 +123,13 @@ func listWorktrees(ctx context.Context, r gitx.Runner, dir string) ([]Worktree, 
 	return list, nil
 }
 
+// ListFolders lists the folders of the repository whose main folder is
+// repoRoot, the main folder first, without reading their changes (Dirty and
+// Missing are not set).
+func ListFolders(ctx context.Context, r gitx.Runner, repoRoot string) ([]Worktree, error) {
+	return listWorktrees(ctx, r, repoRoot)
+}
+
 // mainFolder corrects the first folder git lists: for a submodule git lists
 // its git directory (.git/modules/<name>), while the folder itself is set by
 // core.worktree there. Asked inside that directory, git names the folder. A

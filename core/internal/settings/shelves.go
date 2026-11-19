@@ -12,17 +12,36 @@ import (
 // before switching the folder away from Branch. Hash is the stash commit (it
 // identifies the entry, whose stash@{n} index shifts), Base the commit HEAD
 // was on, Time the unix time it was shelved and Files its first 50 paths.
-// Why is "" or the reason the shelf was left in the stash; a stored shelf
-// with a reason is never put back on its own.
+// State is one of the Shelf* states; only a pending shelf is ever put back
+// on its own. WhyCode is "" or a machine-readable reason (the ops package
+// lists them) and Why the same reason as an English sentence.
 type Shelf struct {
-	Folder string   `json:"folder"`
-	Branch string   `json:"branch"`
-	Hash   string   `json:"hash"`
-	Base   string   `json:"base"`
-	Time   int64    `json:"time"`
-	Files  []string `json:"files"`
-	Why    string   `json:"why"`
+	Folder  string   `json:"folder"`
+	Branch  string   `json:"branch"`
+	Hash    string   `json:"hash"`
+	Base    string   `json:"base"`
+	Time    int64    `json:"time"`
+	Files   []string `json:"files"`
+	State   string   `json:"state"`
+	WhyCode string   `json:"whyCode"`
+	Why     string   `json:"why"`
 }
+
+// Shelf states. Pending: in the stash, put back on the folder's next arrival
+// on its branch when that cannot conflict. Kept: in the stash, never put
+// back on its own (git did not do what it should, or putting it back after a
+// failed switch was not possible). Superseded: a newer shelf of the same
+// folder and branch was taken. Restored: put back and its stash entry
+// dropped. RestoredEntryKept: put back, but its stash entry stays. Orphan: a
+// stash entry with a Git Glance shelf message and no record.
+const (
+	ShelfPending           = "pending"
+	ShelfKept              = "kept"
+	ShelfSuperseded        = "superseded"
+	ShelfRestored          = "restored"
+	ShelfRestoredEntryKept = "restored-entry-kept"
+	ShelfOrphan            = "orphan"
+)
 
 // PreviousBranch is the branch a folder was on before the tool last switched
 // it to another one.
@@ -52,8 +71,16 @@ func normalizeSwitch(rec SwitchRecords) SwitchRecords {
 		rec.Shelves = []Shelf{}
 	}
 	for i := range rec.Shelves {
-		if rec.Shelves[i].Files == nil {
-			rec.Shelves[i].Files = []string{}
+		sh := &rec.Shelves[i]
+		if sh.Files == nil {
+			sh.Files = []string{}
+		}
+		switch {
+		case sh.State != "":
+		case sh.Why == "":
+			sh.State = ShelfPending
+		default:
+			sh.State = ShelfKept
 		}
 	}
 	if rec.Previous == nil {

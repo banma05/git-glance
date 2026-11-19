@@ -85,17 +85,21 @@ type SwitchOptions struct {
 
 // SwitchResult is the outcome of Switch. Shelved is the work shelved on the
 // way out; Restored is work put back (the arrival branch's shelf, or the
-// shelf just taken when the switch failed), with Why set when its stash
-// entry could not be dropped; KeptShelf is a shelf that was not put back,
-// with Why. FastForwarded says the branch was moved to its upstream, and
-// AheadNote ("" or a sentence) that it was not because it has commits of
-// its own.
+// shelf just taken when the switch failed), state restored, or
+// restored-entry-kept with a reason when its stash entry stays; KeptShelf is
+// a shelf that was not put back (state pending or kept, with a reason).
+// FastForwarded says the branch was moved to its upstream. With latest,
+// NoFastForward says why it was not ("" when it was, or was already there):
+// ahead (commits of its own; AheadNote says how many), no-upstream (it does
+// not follow the remote branch of its own name) or shelf-pending (moving it
+// would keep this folder's shelf on it from coming back).
 type SwitchResult struct {
 	OpResult
 	Shelved       *settings.Shelf `json:"shelved"`
 	Restored      *settings.Shelf `json:"restored"`
 	KeptShelf     *settings.Shelf `json:"keptShelf"`
 	FastForwarded bool            `json:"fastForwarded"`
+	NoFastForward string          `json:"noFastForward"`
 	AheadNote     string          `json:"aheadNote"`
 }
 
@@ -241,7 +245,7 @@ func checkSwitchFolder(ctx context.Context, r gitx.Runner, repoRoot string, p sw
 	if len(hidden) > 0 {
 		return refused("hidden-changes", "", capFiles(hidden)), true, nil
 	}
-	busy, err := folderBusy(ctx, r, p.wt.Path)
+	busy, err := operationInProgress(ctx, r, p.wt.Path)
 	if err != nil {
 		return failed(), true, err
 	}
@@ -251,7 +255,9 @@ func checkSwitchFolder(ctx context.Context, r gitx.Runner, repoRoot string, p sw
 	}
 	if busy != "" || held[p.branch] {
 		res := refused("in-progress", "", nil)
-		res.Detail = busy
+		if busy != "" {
+			res.Detail = busy + " is in progress"
+		}
 		return res, true, nil
 	}
 	return OpResult{}, false, nil
@@ -334,13 +340,17 @@ func (s *switchRun) move(opt SwitchOptions) bool {
 }
 
 // latest fast-forwards the branch to its upstream when it follows the remote
-// branch of its own name and has no commits of its own: in the folder when
-// it is on the branch, else without touching any folder. A branch with
-// commits of its own is left alone and AheadNote says so. It returns false
-// when the fast-forward failed (Reason and Detail say why).
+// branch of its own name, has no commits of its own and holds no pending
+// shelf of this folder on its commit: in the folder when it is on the
+// branch, else without touching any folder. Otherwise NoFastForward says why
+// it is left alone. It returns false when the fast-forward failed (Reason
+// and Detail say why).
 func (s *switchRun) latest() bool {
-	ff, note := latestPlan(s.p.target)
-	s.res.AheadNote = note
+	ff, code, note := latestPlan(s.p.target)
+	if ff && s.shelfWaitsOn(s.p.target) {
+		ff, code = false, "shelf-pending"
+	}
+	s.res.NoFastForward, s.res.AheadNote = code, note
 	if !ff {
 		return true
 	}
@@ -359,23 +369,36 @@ func (s *switchRun) latest() bool {
 }
 
 // latestPlan applies the align rules: only a branch whose upstream is the
-// remote branch of its own name, and only when it is behind and not ahead.
-func latestPlan(b repo.Ref) (ff bool, note string) {
+// remote branch of its own name (else code no-upstream), and only when it is
+// behind and not ahead (else code ahead, with a note).
+func latestPlan(b repo.Ref) (ff bool, code, note string) {
 	if !strings.HasPrefix(b.Upstream, "refs/remotes/") {
-		return false, ""
+		return false, "no-upstream", ""
 	}
 	skip, skipped := checkBranch(b, nil)
 	switch {
 	case !skipped:
-		return b.Behind > 0, ""
+		return b.Behind > 0, "", ""
 	case skip.Reason == "ahead" || skip.Reason == "diverged":
 		unit := "commits"
 		if b.Ahead == 1 {
 			unit = "commit"
 		}
-		return false, fmt.Sprintf("local has %d %s not on %s; not fast-forwarded", b.Ahead, unit, strings.TrimPrefix(b.Upstream, "refs/remotes/"))
+		return false, "ahead", fmt.Sprintf("local has %d %s not on %s; not fast-forwarded", b.Ahead, unit, strings.TrimPrefix(b.Upstream, "refs/remotes/"))
 	}
-	return false, ""
+	return false, "no-upstream", ""
+}
+
+// shelfWaitsOn reports whether this folder has a pending shelf on b's
+// current commit: moving b would keep it from being put back.
+func (s *switchRun) shelfWaitsOn(b repo.Ref) bool {
+	rec, err := s.st.SwitchRecords(s.repoRoot)
+	if err != nil {
+		s.addLogError("reading the shelf records failed: " + err.Error())
+		return false
+	}
+	sh, ok := pendingShelf(rec, s.dir(), b.Name)
+	return ok && sh.Base == b.Hash
 }
 
 // runSwitch runs a switch command, checks that the folder is on the branch

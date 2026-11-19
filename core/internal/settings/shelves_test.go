@@ -26,6 +26,7 @@ func TestSwitchRecordsRoundTrip(t *testing.T) {
 		Shelves: []Shelf{{
 			Folder: "/some/repo", Branch: "feature/login", Hash: "0123456789abcdef0123456789abcdef01234567",
 			Base: "89abcdef0123456789abcdef0123456789abcdef", Time: 1700000000, Files: []string{"a.txt", "new.txt"},
+			State: ShelfKept, WhyCode: "base-moved", Why: "feature/login moved",
 		}},
 		Previous: []PreviousBranch{{Folder: "/some/repo", Branch: "feature/login"}},
 	}
@@ -77,9 +78,27 @@ func TestSwitchRecordsNormalizesNilLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"shelves":[{"folder":"","branch":"","hash":"h","base":"","time":0,"files":[],"why":""}],"previous":[]}`
+	want := `{"shelves":[{"folder":"","branch":"","hash":"h","base":"","time":0,"files":[],"state":"pending","whyCode":"","why":""}],"previous":[]}`
 	if string(data) != want {
 		t.Fatalf("json = %s\nwant   %s", data, want)
+	}
+}
+
+// A record without a state (written before states existed) is pending when
+// it has no reason, and kept when it has one.
+func TestSwitchRecordsStateOfOldRecords(t *testing.T) {
+	s := newStore(t)
+	in := SwitchRecords{Shelves: []Shelf{{Hash: "a"}, {Hash: "b", Why: "kept for a reason"}, {Hash: "c", State: ShelfSuperseded}}}
+	if err := s.SaveSwitchRecords("/r", in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.SwitchRecords("/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{out.Shelves[0].State, out.Shelves[1].State, out.Shelves[2].State}
+	if !reflect.DeepEqual(got, []string{ShelfPending, ShelfKept, ShelfSuperseded}) {
+		t.Fatalf("states = %v", got)
 	}
 }
 

@@ -2,6 +2,7 @@ package gitx
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -142,6 +143,67 @@ func TestAllowed(t *testing.T) {
 	for _, a := range bad {
 		if err := Allowed(a); !errors.Is(err, ErrNotAllowed) {
 			t.Errorf("Allowed(%q) = %v, want ErrNotAllowed", a, err)
+		}
+	}
+}
+
+// stash store puts back an entry that a drop removed by mistake: exactly
+// --message <one-line text> <full hash>. ls-tree is a read.
+func TestAllowedStoreShape(t *testing.T) {
+	sha1 := "0123456789abcdef0123456789abcdef01234567"
+	ok := [][]string{
+		{"stash", "store", "--message", "On main: mine", sha1},
+		{"stash", "store", "--message", StoreMessage("On main: mine"), sha1 + "89abcdef0123456789abcdef"},
+		{"ls-tree", "-r", "--name-only", "-z", sha1 + "^3"},
+	}
+	for _, a := range ok {
+		if err := Allowed(a); err != nil {
+			t.Errorf("Allowed(%q) = %v, want nil", a, err)
+		}
+	}
+	bad := [][]string{
+		{"stash", "store", sha1},
+		{"stash", "store", "-m", "x", sha1},
+		{"stash", "store", "--message=x", sha1},
+		{"stash", "store", "-q", "--message", "x", sha1},
+		{"stash", "store", "--message", "x"},
+		{"stash", "store", "--message", "x", sha1, "y"},
+		{"stash", "store", "--message", "x", "--", sha1},
+		{"stash", "store", "--message", "", sha1},
+		{"stash", "store", "--message", "-x", sha1},
+		{"stash", "store", "--message", "a\nb", sha1},
+		{"stash", "store", "--message", strings.Repeat("m", 1001), sha1},
+		{"stash", "store", "--message", "x", sha1[:39]},
+		{"stash", "store", "--message", "x", "0123456789ABCDEF0123456789abcdef01234567"},
+		{"stash", "store", "--message", "x", "stash@{0}"},
+		{"stash", "store", "--message", "x", "HEAD"},
+		{"ls-tree", "-r", "--output=x", "HEAD"},
+	}
+	for _, a := range bad {
+		if err := Allowed(a); !errors.Is(err, ErrNotAllowed) {
+			t.Errorf("Allowed(%q) = %v, want ErrNotAllowed", a, err)
+		}
+	}
+}
+
+func TestShelfAndStoreMessages(t *testing.T) {
+	msg := ShelfMessage("feature/login", 1700000000)
+	if b, at, ok := ParseShelfMessage(msg); !ok || b != "feature/login" || at != 1700000000 {
+		t.Fatalf("ParseShelfMessage(%q) = %q %d %v", msg, b, at, ok)
+	}
+	for _, m := range []string{"", "my work", "git-glance shelf main", "git-glance shelf main x", "git-glance shelf -x 1", "git-glance shelf a b 1"} {
+		if _, _, ok := ParseShelfMessage(m); ok {
+			t.Errorf("ParseShelfMessage(%q) ok", m)
+		}
+	}
+	for in, want := range map[string]string{
+		"On main: mine": "On main: mine",
+		"":              "stored again by git-glance",
+		"-x":            "stored again by git-glance",
+		"a\nb":          "stored again by git-glance",
+	} {
+		if got := StoreMessage(in); got != want {
+			t.Errorf("StoreMessage(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

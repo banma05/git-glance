@@ -3,6 +3,7 @@ package gitx
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -13,7 +14,7 @@ var readOnly = map[string]bool{
 	"rev-parse": true, "for-each-ref": true, "rev-list": true, "log": true,
 	"show": true, "cherry": true, "status": true, "diff": true,
 	"merge-base": true, "patch-id": true, "ls-files": true, "version": true,
-	"check-ref-format": true,
+	"check-ref-format": true, "ls-tree": true,
 }
 
 func deny(args []string, why string) error {
@@ -131,11 +132,30 @@ func ShelfMessage(branch string, unix int64) string {
 	return fmt.Sprintf("%s%s %d", shelfPrefix, branch, unix)
 }
 
+// ParseShelfMessage reads the branch and time out of a shelf message.
+func ParseShelfMessage(msg string) (branch string, unix int64, ok bool) {
+	if !shelfMessage(msg) {
+		return "", 0, false
+	}
+	branch, at, _ := strings.Cut(strings.TrimPrefix(msg, shelfPrefix), " ")
+	unix, err := strconv.ParseInt(at, 10, 64)
+	return branch, unix, err == nil
+}
+
 const shelfPrefix = "git-glance shelf "
 
+// StoreMessage returns subject when the stash store shape accepts it as a
+// message, else a fixed message.
+func StoreMessage(subject string) string {
+	if storeMessage(subject) {
+		return subject
+	}
+	return "stored again by git-glance"
+}
+
 // allowedStash permits exactly: stash push --include-untracked --message
-// <shelf message>, stash apply --index <full hash>, stash list --format=%H
-// and stash drop stash@{<n>}.
+// <shelf message>, stash apply --index <full hash>, stash list --format=%H,
+// stash drop stash@{<n>} and stash store --message <one line> <full hash>.
 func allowedStash(args []string) bool {
 	switch {
 	case len(args) == 5 && eq(args[:4], "stash", "push", "--include-untracked", "--message"):
@@ -148,6 +168,8 @@ func allowedStash(args []string) bool {
 		n, ok := strings.CutPrefix(args[2], "stash@{")
 		n, ok2 := strings.CutSuffix(n, "}")
 		return ok && ok2 && decimal(n, 9)
+	case len(args) == 5 && eq(args[:3], "stash", "store", "--message"):
+		return storeMessage(args[3]) && fullHash(args[4])
 	}
 	return false
 }
@@ -160,6 +182,12 @@ func shelfMessage(msg string) bool {
 	}
 	parts := strings.Split(rest, " ")
 	return len(parts) == 2 && plain(parts[0]) && !strings.ContainsFunc(parts[0], control) && decimal(parts[1], 18)
+}
+
+// storeMessage accepts one line of at most 1000 bytes that does not start
+// with "-".
+func storeMessage(msg string) bool {
+	return plain(msg) && len(msg) <= 1000 && !strings.ContainsFunc(msg, control)
 }
 
 func control(r rune) bool { return r < 0x20 || r == 0x7f }
