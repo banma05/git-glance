@@ -77,7 +77,9 @@ function trunk(name: string, over: Partial<TrunkView>): TrunkView {
 
 export function mockView(repo: string): View {
   const now = Math.floor(Date.now() / 1000);
-  const c = (n: number, subject: string, ago: number) => ({ hash: hash(n), subject, time: now - ago * DAY });
+  // the author of commit n: the person whose branch it is on (n / 10 picks the branch)
+  const AUTHORS = ['', 'alice', 'bob', 'carol', 'alice', 'dave', 'erin', 'erin'];
+  const c = (n: number, subject: string, ago: number) => ({ hash: hash(n), subject, time: now - ago * DAY, author: AUTHORS[Math.floor(n / 10)] ?? 'alice' });
   const dir = repo.replace(/[\\/]+$/, '');
 
   const branches: Record<string, BranchView> = {};
@@ -306,7 +308,7 @@ export function withManyLanes(view: View): View {
       folderHead: i % 3 === 0 ? hash(600 + i) : '',
       dirty: i === 0 ? { changed: 3, untracked: 0, files: ['a.ts', 'b.ts', 'c.ts'] } : null,
       behind: i === 1 ? 2 : 0,
-      own: [{ hash: hash(510 + i), subject: `Change number ${i + 1}`, time: now - (i + 2) * DAY }],
+      own: [{ hash: hash(510 + i), subject: `Change number ${i + 1}`, time: now - (i + 2) * DAY, author: name.split('/')[0] }],
       forkHash: hash(520),
       lastCommit: now - (i + 2) * DAY,
     });
@@ -322,6 +324,29 @@ export function withManyLanes(view: View): View {
     sections: [...view.sections, { trunk: 'v2', lanes: names.length + 1, rows }],
   };
 }
+
+// trunkLog is the newest commits on the trunk, newest first.
+function trunkLog() {
+  const now = Math.floor(Date.now() / 1000);
+  const entries: Array<[string, string]> = [
+    ['Merge feature/search into main', 'carol'],
+    ['Fix login redirect after a timeout', 'bob'],
+    ['Add footer links', 'dave'],
+    ['Update build tooling', 'erin'],
+    ['Rename the session helper', 'alice'],
+    ['Tidy the settings page', 'frank'],
+    ['Add a changelog', 'grace'],
+    ['Speed up the search index', 'carol'],
+  ];
+  return entries.map(([subject, author], i) => ({ hash: hash(950 + i), subject, time: now - (i * 7 + 3) * 3600, author }));
+}
+
+const NEWS_FILES = [
+  { path: 'src/search.ts', status: 'A' },
+  { path: 'src/login.ts', status: 'M' },
+  { path: 'docs/old notes.md', status: 'D' },
+  { path: 'build/config.json', status: 'M' },
+];
 
 export function mockHost(): Host {
   const q = new URLSearchParams(location.search);
@@ -435,6 +460,25 @@ export function mockHost(): Host {
         return (await delay(mockView(String(p.repo ?? repo)).settings)) as T;
       case 'switch':
         return (await delay({ ok: true, reason: '', files: [], path: '', detail: '', logError: '' })) as T;
+      case 'trunkNews': {
+        // as many trunk commits as the view says the branch is behind
+        const name = String(p.branch ?? '').replace(/^refs\/heads\//, '');
+        const behind = mockView(repo).branches[name]?.behindTrunk ?? 0;
+        return (await delay({
+          commits: trunkLog().slice(0, behind),
+          total: behind,
+          base: hash(202),
+          tip: hash(100),
+          files: behind === 0 ? [] : NEWS_FILES,
+          filesTruncated: false,
+        })) as T;
+      }
+      case 'recentCommits':
+        return (await delay(trunkLog().slice(0, Number(p.limit) || 50))) as T;
+      case 'commitFiles':
+        return (await delay({ parent: hash(999), files: NEWS_FILES.slice(1), truncated: false })) as T;
+      case 'fileAt':
+        return (await delay({ text: ['# Demo', '', 'A first line.', ''].join('\n'), binary: false, truncated: false })) as T;
       case 'trunkCommits':
         return (await delay([
           { hash: hash(901), subject: 'Update docs', time: nowSec() - 2 * DAY },

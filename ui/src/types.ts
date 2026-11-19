@@ -7,6 +7,7 @@ export interface CommitInfo {
   hash: string;
   subject: string;
   time: number;
+  author: string; // author name (%an)
 }
 
 export interface DirtyCounts {
@@ -247,6 +248,24 @@ export interface FileDiffResult {
   truncated: boolean;
 }
 
+// trunkNews: the trunk commits a branch lacks, and the files the trunk changed
+// since the branch started.
+export interface TrunkNews {
+  commits: CommitInfo[]; // newest first, at most 200
+  total: number; // all trunk commits the branch lacks
+  base: string; // merge-base hash, "" when the histories share no commit
+  tip: string; // trunk tip hash
+  files: FileChange[]; // base..tip; [] when base is ""
+  filesTruncated: boolean;
+}
+
+// commitFiles: the files of one commit against its first parent.
+export interface CommitFiles {
+  parent: string; // "" for a root commit (its files are all additions)
+  files: FileChange[];
+  truncated: boolean;
+}
+
 export interface BackupsInfo {
   dir: string;
   bytes: number;
@@ -291,6 +310,9 @@ export interface Methods {
   defaultFolder: { path: string };
   remoteBranches: string[];
   trunkCommits: CommitInfo[];
+  trunkNews: TrunkNews;
+  recentCommits: CommitInfo[];
+  commitFiles: CommitFiles;
   backups: BackupsInfo;
   clearBackups: Record<string, never>;
   openInEditor: Record<string, never>;

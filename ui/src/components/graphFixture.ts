@@ -65,7 +65,7 @@ export function branchOf(name: string, own: CommitInfo[], over: Partial<BranchVi
   };
 }
 
-const ci = (hash: string, time: number): CommitInfo => ({ hash, subject: 'commit ' + hash, time });
+const ci = (hash: string, time: number): CommitInfo => ({ hash, subject: 'commit ' + hash, time, author: 'alice' });
 
 export const layoutBranches: Record<string, BranchView> = {
   A: branchOf('A', [ci('a2', 1_700_000_099), ci('a1', 1_700_000_098)], { color: 0, folder: '/w/wt-a' }),

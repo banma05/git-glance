@@ -154,7 +154,11 @@ export function App({ host }: { host: Host }) {
           )}
         </div>
       )}
-      {view && <Details t={t} view={view} state={state} actions={actions} />}
+      {view && (
+        <div class="details-area">
+          <Details t={t} host={host} view={view} state={state} actions={actions} />
+        </div>
+      )}
       <Dialogs t={t} host={host} state={state} actions={actions} />
     </div>
   );

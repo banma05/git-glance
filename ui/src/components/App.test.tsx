@@ -630,3 +630,23 @@ describe('dragging a trunk header', () => {
     expect(rule(".trunk-head[draggable='true']::after")).toMatch(/content:/);
   });
 });
+
+describe('trunk news in the wide window', () => {
+  const NEWS = { commits: [{ hash: 'f'.repeat(40), subject: 'Add a footer', time: 1_700_000_100, author: 'alice' }], total: 1, base: '0'.repeat(40), tip: 'f'.repeat(40), files: [], filesTruncated: false };
+
+  it('opens in the details area under the branch details and closes on another repository', async () => {
+    const { host, calls } = scriptedHost((method, repo) => (method === 'view' ? mockView(repo) : method === 'trunkNews' ? NEWS : okFetch));
+    const { container } = render(<App host={host} />);
+    fireEvent.click(await screen.findByText(named('fix/timeout')));
+    fireEvent.click(screen.getByRole('button', { name: 'Trunk news (6)' }));
+    await screen.findByText('Add a footer');
+    expect(calls).toContain('trunkNews:/a');
+    const area = container.querySelector('.details-area')!;
+    expect(area.querySelector('.detail')!.nextElementSibling!.classList.contains('news')).toBe(true);
+    fireEvent.click(screen.getByRole('tab', { name: 'b' }));
+    await waitFor(() => expect(screen.queryByText('Add a footer')).toBeNull());
+    fireEvent.click(await screen.findByText(named('fix/timeout')));
+    expect(screen.queryByText('Add a footer')).toBeNull();
+    expect(container.querySelector('.news')).toBeNull();
+  });
+});

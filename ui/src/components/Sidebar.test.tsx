@@ -133,6 +133,39 @@ describe('sidebar trunk details', () => {
   });
 });
 
+describe('sidebar trunk news', () => {
+  const NEWS = { commits: [{ hash: 'f'.repeat(40), subject: 'Add a footer', time: 1_700_000_100, author: 'alice' }], total: 1, base: '0'.repeat(40), tip: 'f'.repeat(40), files: [], filesTruncated: false };
+
+  it('opens the trunk news of a branch right under its details, through the trunk remote ref', async () => {
+    const { host, calls } = sidebarHost({ repos: ['/demo/repo'], trunkNews: NEWS });
+    const { container } = render(<App host={host} />);
+    fireEvent.click(await screen.findByText(named('fix/timeout')));
+    fireEvent.click(screen.getByRole('button', { name: 'Trunk news (6)' }));
+    await screen.findByText('Add a footer');
+    expect(calls.find((c) => c.method === 'trunkNews')?.params).toEqual({
+      repo: '/demo/repo',
+      trunk: 'refs/remotes/origin/main',
+      branch: 'refs/heads/bob/fix/timeout',
+    });
+    const detail = container.querySelector('.fish .detail')!;
+    expect(detail.nextElementSibling!.classList.contains('news')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Trunk news (6)' }));
+    expect(screen.queryByText('Add a footer')).toBeNull();
+  });
+
+  it('opens the recent commits of a trunk under the trunk details', async () => {
+    const { host, calls } = sidebarHost({ repos: ['/demo/repo'], recentCommits: NEWS.commits });
+    const { container } = render(<App host={host} />);
+    await screen.findByText(named('feature/login'));
+    fireEvent.click(screen.getByRole('button', { name: /^Trunk develop ?\(2\)$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Recent commits' }));
+    await screen.findByText('Add a footer');
+    expect(calls.find((c) => c.method === 'recentCommits')?.params).toEqual({ repo: '/demo/repo', ref: 'refs/remotes/origin/develop', limit: 50 });
+    const detail = container.querySelector('.group > .detail')!;
+    expect(detail.nextElementSibling!.classList.contains('news')).toBe(true);
+  });
+});
+
 describe('narrow layout rules', () => {
   const css = fs.readFileSync(path.resolve(__dirname, '../app.css'), 'utf8');
   const rule = (selector: string) => {

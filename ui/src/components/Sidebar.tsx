@@ -7,7 +7,7 @@ import { trunkKey } from '../state';
 import type { Actions, AppState } from '../state';
 import type { BranchView } from '../types';
 import { DetailPanel } from './DetailPanel';
-import { Details, assignOf } from './Details';
+import { Details, NewsPanel, assignOf } from './Details';
 import { GraphView } from './GraphView';
 import { GroupHead, branchColor } from './ListView';
 import { AddRepo } from './RepoTabs';
@@ -21,7 +21,7 @@ interface Props {
   children?: ComponentChildren; // status lines, shown right under the header
 }
 
-function Fish({ t, b, state, actions }: Omit<Props, 'host'> & { b: BranchView }) {
+function Fish({ t, host, b, state, actions }: Props & { b: BranchView }) {
   const first = chips(b, t)[0];
   const sub = [b.folder ? baseName(b.folder) : '', first?.text ?? ''].filter(Boolean).join(' · ');
   const open = state.selected === b.name;
@@ -39,6 +39,7 @@ function Fish({ t, b, state, actions }: Omit<Props, 'host'> & { b: BranchView })
         </span>
       </button>
       {open && state.view && <DetailPanel t={t} branch={b} state={state} actions={actions} assign={assignOf(state.view, b)} />}
+      {open && state.view && <NewsPanel t={t} host={host} view={state.view} state={state} actions={actions} />}
     </div>
   );
 }
@@ -52,7 +53,7 @@ export function Sidebar({ t, host, state, actions, children }: Props) {
     names
       .map((n) => view?.branches[n])
       .filter((b): b is BranchView => !!b)
-      .map((b) => <Fish key={b.name} t={t} b={b} state={state} actions={actions} />);
+      .map((b) => <Fish key={b.name} t={t} host={host} b={b} state={state} actions={actions} />);
   // a trunk's group shows the trunk's details right under its header, folded or not
   const group = (key: string, title: string, names: string[], trunk = '') => (
     <section class="group">
@@ -68,7 +69,7 @@ export function Sidebar({ t, host, state, actions, children }: Props) {
             : undefined
         }
       />
-      {trunk && view && state.selectedTrunk === trunk && <Details t={t} view={view} state={state} actions={actions} />}
+      {trunk && view && state.selectedTrunk === trunk && <Details t={t} host={host} view={view} state={state} actions={actions} />}
       {!state.collapsed[key] && list(names)}
     </section>
   );
@@ -114,7 +115,7 @@ export function Sidebar({ t, host, state, actions, children }: Props) {
             onTrunk={actions.selectTrunk}
             trunk={state.selectedTrunk}
             onShowTrunk={actions.showTrunk}
-            inline={state.selected || state.selectedTrunk || state.pick ? <Details t={t} view={view} state={state} actions={actions} /> : undefined}
+            inline={state.selected || state.selectedTrunk || state.pick ? <Details t={t} host={host} view={view} state={state} actions={actions} /> : undefined}
           />
         </>
       )}

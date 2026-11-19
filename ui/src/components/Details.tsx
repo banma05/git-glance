@@ -1,11 +1,16 @@
 import { dateTime } from '../format';
+import type { Host } from '../host/types';
 import type { T } from '../i18n';
-import type { Actions, AppState } from '../state';
+import type { Actions, AppState, NewsTarget } from '../state';
 import type { Group, TrunkConfig, TrunkView, View } from '../types';
 import { DetailPanel } from './DetailPanel';
+import { trunkRef } from './dialogs/Compare';
+import { TrunkNews } from './TrunkNews';
+import type { NewsSource } from './TrunkNews';
 
 interface Props {
   t: T;
+  host: Host;
   view: View;
   state: AppState;
   actions: Actions;
@@ -70,13 +75,14 @@ interface TrunkDetailProps {
   t: T;
   group: Group;
   config?: TrunkConfig; // the trunk's roles as the settings name them; none for the default trunk
-  actions: Pick<Actions, 'openFolder' | 'copy' | 'openDialog'>;
+  newsOpen?: boolean; // its recent commits are listed
+  actions: Pick<Actions, 'openFolder' | 'copy' | 'openDialog' | 'toggleNews'>;
 }
 
 // TrunkDetail is what a click on a trunk's name shows: what it is compared
 // through, its latest commit, its local branch, its roles and its branches.
 // It only reads; none of its buttons changes anything.
-export function TrunkDetail({ t, group, config, actions }: TrunkDetailProps) {
+export function TrunkDetail({ t, group, config, newsOpen = false, actions }: TrunkDetailProps) {
   const tv = group.trunk;
   const notSet = <span class="muted">{t('trunk.notSet')}</span>;
   // The roles as set: the view keeps only the branches it found, so a role
@@ -148,9 +154,36 @@ export function TrunkDetail({ t, group, config, actions }: TrunkDetailProps) {
         <button class="btn" onClick={() => actions.openDialog('compare')}>
           {t('detail.compare')}
         </button>
+        <button class="btn" aria-pressed={newsOpen} onClick={() => actions.toggleNews({ kind: 'trunk', trunk: tv.name })}>
+          {t('news.recent')}
+        </button>
       </div>
     </div>
   );
+}
+
+// newsSource is what the open news list reads: the trunk commits a branch
+// lacks (through the trunk's compared ref), or a trunk's recent commits.
+export function newsSource(view: View, news: NewsTarget | null): NewsSource | null {
+  if (news?.kind === 'branch') {
+    const b = view.branches[news.branch];
+    const g = b ? view.groups.find((x) => x.trunk.name === b.trunk) : undefined;
+    if (!b || !g) return null;
+    return { kind: 'news', trunk: trunkRef(g.trunk), branch: `refs/heads/${b.name}`, trunkName: g.trunk.name, branchName: b.name };
+  }
+  if (news?.kind === 'trunk') {
+    const g = view.groups.find((x) => x.trunk.name === news.trunk);
+    return g ? { kind: 'recent', ref: trunkRef(g.trunk), trunkName: g.trunk.name } : null;
+  }
+  return null;
+}
+
+// NewsPanel is the open trunk news list, under the details it belongs to.
+export function NewsPanel({ t, host, view, state, actions }: Props) {
+  const source = newsSource(view, state.news);
+  if (!source || !state.news) return null;
+  const news = state.news;
+  return <TrunkNews t={t} host={host} repo={state.repo} source={source} fetchedAt={view.fetchedAt} onClose={() => actions.toggleNews(news)} />;
 }
 
 // assignOf is what the "belongs to trunk" control of a branch needs.
@@ -160,12 +193,23 @@ export function assignOf(view: View, branch: { name: string } | null): { trunks:
 }
 
 // Details shows what the selection is about: a trunk, a trunk commit, or a
-// branch (with the picked commit when there is one).
-export function Details({ t, view, state, actions }: Props) {
+// branch (with the picked commit when there is one), and under it the open
+// trunk news list.
+export function Details(props: Props) {
+  return (
+    <>
+      <Selection {...props} />
+      <NewsPanel {...props} />
+    </>
+  );
+}
+
+function Selection({ t, view, state, actions }: Props) {
   const group = state.selectedTrunk ? view.groups.find((g) => g.trunk.name === state.selectedTrunk) : undefined;
   if (group) {
     const config = view.settings.trunks.find((c) => c.name === group.trunk.name);
-    return <TrunkDetail t={t} group={group} config={config} actions={actions} />;
+    const newsOpen = state.news?.kind === 'trunk' && state.news.trunk === group.trunk.name;
+    return <TrunkDetail t={t} group={group} config={config} newsOpen={newsOpen} actions={actions} />;
   }
   if (state.pick?.kind === 'trunk') return <TrunkCommitDetail t={t} view={view} pick={state.pick} />;
   const branch = state.selected ? (view.branches[state.selected] ?? null) : null;

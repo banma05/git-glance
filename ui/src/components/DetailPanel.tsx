@@ -4,13 +4,14 @@ import type { T } from '../i18n';
 import { errorText, reasonText } from '../reasons';
 import type { Actions, AppState, Picked } from '../state';
 import type { BranchView, OpResult } from '../types';
+import { NEWS_LIST_CAP } from './TrunkNews';
 
 interface Props {
   t: T;
   branch: BranchView | null;
-  state: Pick<AppState, 'busy' | 'switchResult'> & Partial<Pick<AppState, 'gitProblem' | 'assignResult'>>;
+  state: Pick<AppState, 'busy' | 'switchResult'> & Partial<Pick<AppState, 'gitProblem' | 'assignResult' | 'news'>>;
   pick?: Picked | null; // a commit of this branch picked in the graph
-  actions: Pick<Actions, 'switchTo' | 'openFolder' | 'copy' | 'openDialog' | 'assign'>;
+  actions: Pick<Actions, 'switchTo' | 'openFolder' | 'copy' | 'openDialog' | 'assign' | 'toggleNews'>;
   assign?: { trunks: string[]; current: string }; // the trunks, and the one this branch was put under by hand ("" none)
 }
 
@@ -237,6 +238,15 @@ export function DetailPanel({ t, branch, state, actions, pick = null, assign }: 
         <button class="btn" onClick={() => actions.openDialog('compare')}>
           {t('detail.compare')}
         </button>
+        {b.trunk && (
+          <button
+            class="btn"
+            aria-pressed={state.news?.kind === 'branch' && state.news.branch === b.name}
+            onClick={() => actions.toggleNews({ kind: 'branch', branch: b.name })}
+          >
+            {t('news.open', { n: b.behindTrunk > NEWS_LIST_CAP ? `${NEWS_LIST_CAP}+` : b.behindTrunk })}
+          </button>
+        )}
         <button class="btn" disabled={!b.canRemoveFolder || locked} onClick={() => actions.openDialog('remove')}>
           {b.canRemoveFolder ? t('detail.remove') : t('detail.removeBlocked', { reason: blockText(b.removeBlock, t) })}
         </button>

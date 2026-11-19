@@ -111,6 +111,30 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
 .detail .files { margin: 0; padding-left: 16px; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .detail .hint { margin: 0 0 8px; }
+.details-area { flex: none; max-height: 55vh; overflow: auto; }
+
+/* the trunk news list, under the details it belongs to */
+.news { border-top: 1px solid var(--border); padding: 8px 12px; background: var(--surface); }
+.fish .news, .group > .news { margin-left: 10px; }
+.news-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.news-title { flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere; }
+.news-tools { display: flex; gap: 6px; margin-left: auto; }
+.news-asof { margin: 2px 0 6px; font-size: 11px; }
+.news-modes { margin-bottom: 4px; }
+.news-count { margin: 4px 0; }
+.news-list { list-style: none; margin: 0; padding: 0; }
+.news-commit { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; background: none; border: none; border-left: 3px solid transparent; color: var(--fg); font: inherit; padding: 3px 6px; cursor: pointer; }
+.news-commit:hover { background: var(--bg); }
+.news-commit[aria-expanded='true'] { border-left-color: var(--tone-info); }
+.news-commit:focus-visible { outline: 2px solid var(--tone-info); outline-offset: -2px; }
+.news-line { overflow-wrap: anywhere; }
+.news-meta { font-size: 11px; }
+.news-body { margin: 2px 0 6px 12px; }
+.news .files { margin: 0; padding-left: 16px; }
+.news .link { background: none; border: none; color: var(--tone-info); font: inherit; cursor: pointer; padding: 0; text-align: left; overflow-wrap: anywhere; }
+.news .link .status { display: inline-block; width: 1.2em; color: var(--fg-mute); }
+.news pre { max-height: 40vh; overflow: auto; background: var(--bg); border: 1px solid var(--border); padding: 6px; margin: 4px 0; white-space: pre-wrap; word-break: break-all; }
+.news p { margin: 4px 0; }
 .switch-result { margin-top: 8px; }
 .switch-result .ok { color: var(--tone-ok); }
 .switch-result .bad { color: var(--tone-warn); }

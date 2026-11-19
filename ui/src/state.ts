@@ -43,6 +43,10 @@ export interface SettingsOutcome {
 export type TrunkPick = { trunk: string; hash: string; time: number; subject: string };
 export type Picked = ({ kind: 'trunk' } & TrunkPick) | { kind: 'commit'; branch: string; hash: string };
 
+// NewsTarget is what the open trunk news list is about: the trunk commits a
+// branch lacks, or the recent commits of a trunk. It belongs to the selection.
+export type NewsTarget = { kind: 'branch'; branch: string } | { kind: 'trunk'; trunk: string };
+
 // GitProblem is why the core refuses every change: git is older than 2.30
 // (version known), missing, or a write was refused with git-too-old.
 export type GitProblem = { kind: 'old' | 'missing' | 'refused'; version: string };
@@ -63,6 +67,7 @@ export interface AppState {
   selected: string; // branch name, "" when none
   selectedTrunk: string; // trunk whose details are shown, "" when none; never set together with selected or pick
   pick: Picked | null; // a commit or trunk commit picked in the graph
+  news: NewsTarget | null; // the trunk news list shown under the details, null when closed
   collapsed: Record<string, boolean>; // group key -> folded
   dialog: DialogName | null;
   alignReport: AlignReport | null;
@@ -89,6 +94,7 @@ export interface Actions {
   selectCommit(branch: string, hash: string): void;
   selectTrunk(p: TrunkPick): void;
   showTrunk(name: string): void; // the details of a trunk itself; again hides them
+  toggleNews(target: NewsTarget): void; // open the trunk news list; again closes it
   switchTo(branch: string): void; // switch the main folder to a branch
   openFolder(path: string): void;
   copy(text: string): void;
@@ -145,6 +151,7 @@ function initial(host: Host): AppState {
     selected: '',
     selectedTrunk: '',
     pick: null,
+    news: null,
     collapsed: {},
     dialog: null,
     alignReport: null,
@@ -205,6 +212,14 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     };
     const reasonOf = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
 
+    // newsOf is the open news list while it is about this selection, else null.
+    const newsOf = (selected: string, selectedTrunk: string): NewsTarget | null => {
+      const n = ref.current.news;
+      if (n?.kind === 'branch' && n.branch === selected) return n;
+      if (n?.kind === 'trunk' && n.trunk === selectedTrunk) return n;
+      return null;
+    };
+
     // stale is what of the selection a new view no longer has: a branch that is
     // gone, a commit no longer among its own, a trunk that is gone.
     const stale = (view: View): Partial<AppState> => {
@@ -214,6 +229,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       if (pick?.kind === 'commit' && !view.branches[pick.branch]?.own.some((c) => c.hash === pick.hash)) out.pick = null;
       if (pick?.kind === 'trunk' && !view.sections.some((s) => s.trunk === pick.trunk)) out.pick = null;
       if (selectedTrunk && !view.groups.some((g) => g.trunk.name === selectedTrunk)) out.selectedTrunk = '';
+      if (ref.current.news && !newsOf(out.selected ?? selected, out.selectedTrunk ?? selectedTrunk)) out.news = null;
       return out;
     };
 
@@ -248,7 +264,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
 
     const open = async (repo: string) => {
       // fetching is reset here: a refresh of the repository left behind drops its result
-      patch({ repo, view: null, selected: '', selectedTrunk: '', pick: null, fetchError: '', fetchSlow: false, error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
+      patch({ repo, view: null, selected: '', selectedTrunk: '', pick: null, news: null, fetchError: '', fetchSlow: false, error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
       try {
         await loadView(repo);
         if (!current(repo)) return;
@@ -329,7 +345,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         } else if (repos.length > 0) {
           await open(repos[0]);
         } else {
-          patch({ repo: '', view: null, selected: '', selectedTrunk: '', pick: null, loaded: true });
+          patch({ repo: '', view: null, selected: '', selectedTrunk: '', pick: null, news: null, loaded: true });
         }
       } catch (e) {
         fail(e);
@@ -372,36 +388,37 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       },
       // a picked commit belongs to the graph it was clicked in; the branch or trunk stays selected
       setMode: (mode) => patch(mode === ref.current.mode ? {} : { mode, pick: null }),
-      select: (selected) =>
-        patch({
-          selected: ref.current.selected === selected && !ref.current.pick ? '' : selected,
-          selectedTrunk: '',
-          pick: null,
-          switchResult: null,
-          assignResult: null,
-        }),
+      select: (branch) => {
+        const selected = ref.current.selected === branch && !ref.current.pick ? '' : branch;
+        patch({ selected, selectedTrunk: '', pick: null, news: newsOf(selected, ''), switchResult: null, assignResult: null });
+      },
       selectCommit: (branch, hash) => {
         const p = ref.current.pick;
         const same = p?.kind === 'commit' && p.branch === branch && p.hash === hash;
         patch(
           same
-            ? { selected: '', pick: null, switchResult: null }
-            : { selected: branch, selectedTrunk: '', pick: { kind: 'commit', branch, hash }, switchResult: null },
+            ? { selected: '', pick: null, news: null, switchResult: null }
+            : { selected: branch, selectedTrunk: '', pick: { kind: 'commit', branch, hash }, news: newsOf(branch, ''), switchResult: null },
         );
       },
       selectTrunk: (p) => {
         const cur = ref.current.pick;
         const same = cur?.kind === 'trunk' && cur.hash === p.hash;
-        patch(same ? { selected: '', pick: null } : { selected: '', selectedTrunk: '', pick: { kind: 'trunk', ...p }, switchResult: null });
+        patch(
+          same
+            ? { selected: '', pick: null, news: null }
+            : { selected: '', selectedTrunk: '', pick: { kind: 'trunk', ...p }, news: null, switchResult: null },
+        );
       },
-      showTrunk: (name) =>
-        patch({
-          selectedTrunk: ref.current.selectedTrunk === name ? '' : name,
-          selected: '',
-          pick: null,
-          switchResult: null,
-          assignResult: null,
-        }),
+      showTrunk: (name) => {
+        const selectedTrunk = ref.current.selectedTrunk === name ? '' : name;
+        patch({ selectedTrunk, selected: '', pick: null, news: newsOf('', selectedTrunk), switchResult: null, assignResult: null });
+      },
+      toggleNews: (target) => {
+        const n = ref.current.news;
+        const same = n?.kind === target.kind && (n.kind === 'branch' ? n.branch : n.trunk) === (target.kind === 'branch' ? target.branch : target.trunk);
+        patch({ news: same ? null : target });
+      },
       switchTo: (branch) => {
         const { repo, view } = ref.current;
         if (!repo || !view || !canWrite()) return;

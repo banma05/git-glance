@@ -27,7 +27,7 @@ function actions(): Actions {
   });
 }
 
-type Extra = Pick<AppState, 'busy' | 'switchResult'>;
+type Extra = Pick<AppState, 'busy' | 'switchResult'> & Partial<Pick<AppState, 'news'>>;
 const idle: Extra = { busy: false, switchResult: null };
 
 function renderPanel(branch: BranchView | null, state: Extra = idle, t = zh, a: Actions = actions()) {
@@ -154,7 +154,7 @@ describe('DetailPanel', () => {
   });
 
   it('lists the changed files, the matching step per commit and the release state', () => {
-    const c = { hash: 'abcdef1234', subject: 'Add form', time: 1 };
+    const c = { hash: 'abcdef1234', subject: 'Add form', time: 1, author: 'alice' };
     renderPanel(
       branchOf('x', [c], {
         folder: '/w/wt-x',
@@ -171,6 +171,29 @@ describe('DetailPanel', () => {
     expect(screen.getByText(/same change/)).toBeTruthy();
     expect(screen.getByText(/In: main/)).toBeTruthy();
     expect(screen.getByText(/Not in: release\/1/)).toBeTruthy();
+  });
+
+  it('offers the trunk news of a branch that has a trunk, with how many trunk commits it lacks', () => {
+    const a = actions();
+    renderPanel(branchOf('x', [], { trunk: 'main', behindTrunk: 3 }), idle, en, a);
+    const news = screen.getByRole('button', { name: 'Trunk news (3)' });
+    expect(news.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(news);
+    expect(a.toggleNews).toHaveBeenCalledWith({ kind: 'branch', branch: 'x' });
+    cleanup();
+    renderPanel(branchOf('x', [], { trunk: 'main', behindTrunk: 200 }), idle, en);
+    expect(screen.getByRole('button', { name: 'Trunk news (200)' })).toBeTruthy();
+    cleanup();
+    renderPanel(branchOf('x', [], { trunk: 'main', behindTrunk: 205 }), idle, zh);
+    expect(screen.getByRole('button', { name: zh('news.open', { n: '200+' }) })).toBeTruthy();
+    cleanup();
+    renderPanel(branchOf('x', [], { trunk: '' }), idle, en);
+    expect(screen.queryByRole('button', { name: /Trunk news/ })).toBeNull();
+  });
+
+  it('shows the trunk news button pressed while the news of this branch is open', () => {
+    renderPanel(branchOf('x', [], { trunk: 'main' }), { ...idle, news: { kind: 'branch', branch: 'x' } }, en);
+    expect(screen.getByRole('button', { name: 'Trunk news (0)' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('has no push, pull, sync, merge or rebase button', () => {

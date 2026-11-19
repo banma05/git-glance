@@ -6,8 +6,10 @@ import { makeT } from '../i18n';
 import type { Actions, AppState } from '../state';
 import { dateTime } from '../format';
 import type { TrunkView, View } from '../types';
+import type { Host } from '../host/types';
 
 const t = makeT('en');
+const host = {} as Host; // never called: no news is open in these tests
 const actions = () => new Proxy({} as Actions, { get: () => vi.fn() });
 const state = (over: Partial<AppState>) => ({ selected: '', selectedTrunk: '', pick: null, busy: false, switchResult: null, ...over }) as AppState;
 
@@ -19,7 +21,7 @@ describe('Details', () => {
     view.branches.A.forkHash = 'F1';
     view.branches.B.forkHash = 'F1';
     render(
-      <Details t={t} view={view} actions={actions()} state={state({ pick: { kind: 'trunk', trunk: 'main', hash: 'F1', time: 1_700_000_090, subject: 'Fix it' } })} />,
+      <Details host={host} t={t} view={view} actions={actions()} state={state({ pick: { kind: 'trunk', trunk: 'main', hash: 'F1', time: 1_700_000_090, subject: 'Fix it' } })} />,
     );
     expect(screen.getByText('F1')).toBeTruthy();
     expect(screen.getByText('Fix it')).toBeTruthy();
@@ -29,14 +31,14 @@ describe('Details', () => {
   });
 
   it('says so when no branch starts at a trunk commit', () => {
-    render(<Details t={t} view={layoutView()} actions={actions()} state={state({ pick: { kind: 'trunk', trunk: 'main', hash: 'H', time: 0, subject: '' } })} />);
+    render(<Details host={host} t={t} view={layoutView()} actions={actions()} state={state({ pick: { kind: 'trunk', trunk: 'main', hash: 'H', time: 0, subject: '' } })} />);
     expect(screen.getByText('No branch starts here')).toBeTruthy();
   });
 
   it('shows the picked commit of a branch above the branch details', () => {
     const view = layoutView();
-    view.branches.A.test = { state: 'some', matched: 1, total: 2, per: [{ hash: 'a2', subject: 'commit a2', time: 1_700_000_099, by: 'patch' }, { hash: 'a1', subject: 'commit a1', time: 1_700_000_098, by: '' }] };
-    const { container } = render(<Details t={t} view={view} actions={actions()} state={state({ selected: 'A', pick: { kind: 'commit', branch: 'A', hash: 'a2' } })} />);
+    view.branches.A.test = { state: 'some', matched: 1, total: 2, per: [{ hash: 'a2', subject: 'commit a2', time: 1_700_000_099, author: 'alice', by: 'patch' }, { hash: 'a1', subject: 'commit a1', time: 1_700_000_098, author: 'alice', by: '' }] };
+    const { container } = render(<Details host={host} t={t} view={view} actions={actions()} state={state({ selected: 'A', pick: { kind: 'commit', branch: 'A', hash: 'a2' } })} />);
     expect(container.querySelector('.detail-commit code')!.textContent).toBe('a2');
     expect(container.querySelector('.detail-commit')!.textContent).toContain('same change');
     expect(screen.getAllByText('commit a2').length).toBeGreaterThan(0);
@@ -69,7 +71,7 @@ describe('trunk details', () => {
     return new Proxy({} as Actions, { get: (_, k: string) => (made[k] ??= vi.fn()) });
   };
   const show = (view: View, a: Actions = spies(), locale = 'en') =>
-    render(<Details t={makeT(locale)} view={view} actions={a} state={state({ selectedTrunk: 'main' })} />);
+    render(<Details host={host} t={makeT(locale)} view={view} actions={a} state={state({ selectedTrunk: 'main' })} />);
   // dd is the value next to a label of the details grid
   const dd = (label: string) => screen.getByText(label, { selector: 'dt' }).nextElementSibling!.textContent;
 
@@ -160,7 +162,16 @@ describe('trunk details', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Compare with…' }));
     expect(a.openDialog).toHaveBeenCalledWith('compare');
     const buttons = Array.from(container.querySelectorAll('button')).map((b) => b.textContent);
-    expect(buttons).toEqual(['Copy branch name', 'Compare with…']);
+    expect(buttons).toEqual(['Copy branch name', 'Compare with…', 'Recent commits']);
+  });
+
+  it('opens the recent commits of the trunk', () => {
+    const a = spies();
+    show(trunkView(), a);
+    const recent = screen.getByRole('button', { name: 'Recent commits' });
+    expect(recent.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(recent);
+    expect(a.toggleNews).toHaveBeenCalledWith({ kind: 'trunk', trunk: 'main' });
   });
 
   it('speaks Chinese in a Chinese editor', () => {
@@ -171,7 +182,7 @@ describe('trunk details', () => {
   });
 
   it('shows a branch again once the trunk is no longer selected', () => {
-    render(<Details t={t} view={trunkView()} actions={actions()} state={state({ selected: 'A' })} />);
+    render(<Details host={host} t={t} view={trunkView()} actions={actions()} state={state({ selected: 'A' })} />);
     expect(screen.queryByText('Compared through')).toBeNull();
   });
 });
