@@ -40,6 +40,7 @@ func (h *Handler) table() map[string]method {
 		"fetch":           write(h.fetch),
 		"align":           write(h.align),
 		"switch":          write(h.switchBranch),
+		"switchState":     read(h.switchState),
 		"createFolder":    write(h.createFolder),
 		"removeFolder":    write(h.removeFolder),
 		"compare":         read(h.compare),
@@ -301,8 +302,16 @@ func (h *Handler) align(ctx context.Context, raw json.RawMessage) (any, error) {
 	return rep, nil
 }
 
+// switchBranch switches folder to branch: {repo, folder, branch, latest?,
+// shelve?, remote?}. latest fast-forwards the branch to its own-name upstream
+// first; shelve puts uncommitted work into git's stash and back; remote
+// (such as "origin") creates the local branch from that remote's branch when
+// there is no local one. It answers ops.SwitchResult.
 func (h *Handler) switchBranch(ctx context.Context, raw json.RawMessage) (any, error) {
-	var p struct{ Repo, Folder, Branch string }
+	var p struct {
+		Repo, Folder, Branch, Remote string
+		Latest, Shelve               bool
+	}
 	if err := decode(raw, &p); err != nil {
 		return nil, err
 	}
@@ -312,15 +321,39 @@ func (h *Handler) switchBranch(ctx context.Context, raw json.RawMessage) (any, e
 	if err := plainName("branch", p.Branch); err != nil {
 		return nil, err
 	}
+	if p.Remote != "" {
+		if err := plainName("remote", p.Remote); err != nil {
+			return nil, err
+		}
+	}
 	root, err := h.repoRoot(ctx, p.Repo)
 	if err != nil {
 		return nil, err
 	}
-	res, err := ops.Switch(ctx, h.r, h.st, root, p.Folder, p.Branch, h.now)
+	opt := ops.SwitchOptions{Latest: p.Latest, Shelve: p.Shelve, Remote: p.Remote}
+	res, err := ops.Switch(ctx, h.r, h.st, root, p.Folder, p.Branch, opt, h.now)
 	if err != nil {
 		return nil, err
 	}
 	return res, nil
+}
+
+// switchState answers {previous, shelves} for {repo, folder}: the branch to
+// switch the folder back to ("" when none) and the shelves still in git's
+// stash. It changes nothing.
+func (h *Handler) switchState(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p struct{ Repo, Folder string }
+	if err := decode(raw, &p); err != nil {
+		return nil, err
+	}
+	if p.Folder == "" || hasControl(p.Folder) {
+		return nil, badParams("folder is required")
+	}
+	root, err := h.repoRoot(ctx, p.Repo)
+	if err != nil {
+		return nil, err
+	}
+	return ops.ReadSwitchState(ctx, h.r, h.st, root, p.Folder)
 }
 
 // trunkRef resolves a trunk name to the full ref its branches are compared

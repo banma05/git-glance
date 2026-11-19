@@ -58,7 +58,9 @@ func Allowed(args []string) error {
 	case "merge":
 		ok = len(args) == 5 && eq(args[:4], "merge", "--ff-only", "--no-overwrite-ignore", "--no-autostash") && plain(args[4])
 	case "switch":
-		ok = len(args) == 4 && args[1] == "--no-guess" && args[2] == "--no-overwrite-ignore" && plain(args[3])
+		ok = allowedSwitch(args)
+	case "stash":
+		ok = allowedStash(args)
 	case "worktree":
 		ok = allowedWorktree(args)
 	}
@@ -102,6 +104,77 @@ func allowedFetch(args []string) bool {
 	}
 	src, dst, _ := strings.Cut(spec, ":")
 	return strings.HasPrefix(src, "refs/remotes/") && strings.HasPrefix(dst, "refs/heads/")
+}
+
+// allowedSwitch permits switching to an existing local branch, and creating
+// one that tracks the remote-tracking branch of the same name:
+// switch --no-guess --no-overwrite-ignore -c <b> --track refs/remotes/<remote>/<b>.
+func allowedSwitch(args []string) bool {
+	if len(args) == 4 {
+		return args[1] == "--no-guess" && args[2] == "--no-overwrite-ignore" && plain(args[3])
+	}
+	if len(args) != 7 || !eq(args[:4], "switch", "--no-guess", "--no-overwrite-ignore", "-c") || args[5] != "--track" {
+		return false
+	}
+	branch, start := args[4], args[6]
+	remote, ok := strings.CutPrefix(start, "refs/remotes/")
+	if !plain(branch) || !ok {
+		return false
+	}
+	remote, ok = strings.CutSuffix(remote, "/"+branch)
+	return ok && remote != ""
+}
+
+// ShelfMessage is the stash message of a shelf: the only message the stash
+// push shape accepts.
+func ShelfMessage(branch string, unix int64) string {
+	return fmt.Sprintf("%s%s %d", shelfPrefix, branch, unix)
+}
+
+const shelfPrefix = "git-glance shelf "
+
+// allowedStash permits exactly: stash push --include-untracked --message
+// <shelf message>, stash apply --index <full hash>, stash list --format=%H
+// and stash drop stash@{<n>}.
+func allowedStash(args []string) bool {
+	switch {
+	case len(args) == 5 && eq(args[:4], "stash", "push", "--include-untracked", "--message"):
+		return shelfMessage(args[4])
+	case len(args) == 4 && eq(args[:3], "stash", "apply", "--index"):
+		return fullHash(args[3])
+	case eq(args, "stash", "list", "--format=%H"):
+		return true
+	case len(args) == 3 && args[1] == "drop":
+		n, ok := strings.CutPrefix(args[2], "stash@{")
+		n, ok2 := strings.CutSuffix(n, "}")
+		return ok && ok2 && decimal(n, 9)
+	}
+	return false
+}
+
+// shelfMessage accepts "git-glance shelf <branch> <unix time>" only.
+func shelfMessage(msg string) bool {
+	rest, ok := strings.CutPrefix(msg, shelfPrefix)
+	if !ok {
+		return false
+	}
+	parts := strings.Split(rest, " ")
+	return len(parts) == 2 && plain(parts[0]) && !strings.ContainsFunc(parts[0], control) && decimal(parts[1], 18)
+}
+
+func control(r rune) bool { return r < 0x20 || r == 0x7f }
+
+// decimal accepts 1 to limit digits without a leading zero, or "0".
+func decimal(s string, limit int) bool {
+	if s == "" || len(s) > limit || (len(s) > 1 && s[0] == '0') {
+		return false
+	}
+	return strings.Trim(s, "0123456789") == ""
+}
+
+// fullHash accepts a full lowercase SHA-1 or SHA-256 object name.
+func fullHash(s string) bool {
+	return (len(s) == 40 || len(s) == 64) && strings.Trim(s, "0123456789abcdef") == ""
 }
 
 func allowedWorktree(args []string) bool {

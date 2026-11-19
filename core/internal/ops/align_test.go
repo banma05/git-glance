@@ -617,7 +617,7 @@ func TestSubmoduleHiddenChangesStopAlignAndSwitch(t *testing.T) {
 		t.Fatalf("report %+v", rep)
 	}
 	f.r.Git(sub, "branch", "other")
-	res, err := Switch(context.Background(), f.run, f.st, sub, sub, "other", fixedNow)
+	res, err := Switch(context.Background(), f.run, f.st, sub, sub, "other", SwitchOptions{}, fixedNow)
 	if err != nil || res.OK || res.Reason != "hidden-changes" {
 		t.Fatalf("switch res = %+v, err = %v", res, err)
 	}

@@ -81,8 +81,8 @@ const (
 // commands must not be interrupted half way. args has passed Allowed.
 func localMutation(args []string) bool {
 	switch args[0] {
-	case "merge", "switch", "worktree":
-		return !(args[0] == "worktree" && args[1] == "list")
+	case "merge", "switch", "worktree", "stash":
+		return !(args[0] == "worktree" && args[1] == "list") && !(args[0] == "stash" && args[1] == "list")
 	case "fetch":
 		return args[1] == "."
 	}

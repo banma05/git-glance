@@ -146,6 +146,127 @@ func TestAllowed(t *testing.T) {
 	}
 }
 
+// The shapes that shelve, restore and drop uncommitted work, and create a
+// local branch from a remote one, are exact; every near miss is refused.
+func TestAllowedShelfAndTrackShapes(t *testing.T) {
+	sha1 := "0123456789abcdef0123456789abcdef01234567"
+	sha256 := sha1 + "89abcdef0123456789abcdef"
+	msg := "git-glance shelf feature/login 1700000000"
+	ok := [][]string{
+		{"stash", "push", "--include-untracked", "--message", msg},
+		{"stash", "push", "--include-untracked", "--message", "git-glance shelf main 0"},
+		{"stash", "apply", "--index", sha1},
+		{"stash", "apply", "--index", sha256},
+		{"stash", "list", "--format=%H"},
+		{"stash", "drop", "stash@{0}"},
+		{"stash", "drop", "stash@{12}"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--track", "refs/remotes/origin/v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "alice/feature/login", "--track", "refs/remotes/origin/alice/feature/login"},
+	}
+	for _, a := range ok {
+		if err := Allowed(a); err != nil {
+			t.Errorf("Allowed(%q) = %v, want nil", a, err)
+		}
+	}
+	bad := [][]string{
+		{"stash"},
+		{"stash", "pop"},
+		{"stash", "pop", "stash@{0}"},
+		{"stash", "clear"},
+		{"stash", "save", "x"},
+		{"stash", "-u"},
+		{"stash", "create"},
+		{"stash", "store", sha1},
+		{"stash", "branch", "x"},
+		{"stash", "show", sha1},
+		// push: exactly --include-untracked and a core-made message.
+		{"stash", "push"},
+		{"stash", "push", "--message", msg},
+		{"stash", "push", "--all", "--message", msg},
+		{"stash", "push", "--include-untracked", "--all", "--message", msg},
+		{"stash", "push", "--all", "--include-untracked", "--message", msg},
+		{"stash", "push", "-u", "-m", msg},
+		{"stash", "push", "--include-untracked", "-m", msg},
+		{"stash", "push", "--keep-index", "--message", msg},
+		{"stash", "push", "--include-untracked", "--message"},
+		{"stash", "push", "--include-untracked", "--message", msg, "--", "a.txt"},
+		{"stash", "push", "--include-untracked", "--message", msg, "a.txt"},
+		{"stash", "push", "--include-untracked", "--message", "my work"},
+		{"stash", "push", "--include-untracked", "--message", "git-glance shelf main"},
+		{"stash", "push", "--include-untracked", "--message", "git-glance shelf main 17x"},
+		{"stash", "push", "--include-untracked", "--message", "git-glance shelf main -1"},
+		{"stash", "push", "--include-untracked", "--message", "git-glance shelf -x 1"},
+		{"stash", "push", "--include-untracked", "--message", "git-glance shelf a b 1"},
+		{"stash", "push", "--include-untracked", "--message", "git-glance shelf  1"},
+		{"stash", "push", "--include-untracked", "--message", "git-glance shelf main 1\n"},
+		{"stash", "push", "--include-untracked", "--message=" + msg},
+		// apply: a full lowercase hash, never a stash@{n} that may have shifted.
+		{"stash", "apply"},
+		{"stash", "apply", "stash@{0}"},
+		{"stash", "apply", "--index", "stash@{0}"},
+		{"stash", "apply", sha1},
+		{"stash", "apply", "--index"},
+		{"stash", "apply", "--index", sha1, "x"},
+		{"stash", "apply", "--index", sha1[:39]},
+		{"stash", "apply", "--index", sha1 + "0"},
+		{"stash", "apply", "--index", "0123456789ABCDEF0123456789abcdef01234567"},
+		{"stash", "apply", "--index", "0123456789abcdeg0123456789abcdef01234567"},
+		{"stash", "apply", "--index", "HEAD"},
+		{"stash", "apply", "--quiet", "--index", sha1},
+		{"stash", "apply", sha1, "--index"},
+		// list: exactly the hash format.
+		{"stash", "list"},
+		{"stash", "list", "-p"},
+		{"stash", "list", "--format=%H", "-p"},
+		{"stash", "list", "--format=%H", "--output=x"},
+		{"stash", "list", "--format=%s"},
+		// drop: one stash@{<n>} with decimal digits only.
+		{"stash", "drop"},
+		{"stash", "drop", "--all"},
+		{"stash", "drop", "-q", "stash@{0}"},
+		{"stash", "drop", "stash@{0}", "stash@{1}"},
+		{"stash", "drop", sha1},
+		{"stash", "drop", "stash@{}"},
+		{"stash", "drop", "stash@{x}"},
+		{"stash", "drop", "stash@{-1}"},
+		{"stash", "drop", "stash@{+1}"},
+		{"stash", "drop", "stash@{01}"},
+		{"stash", "drop", "stash@{0"},
+		{"stash", "drop", "stash@{0}x"},
+		{"stash", "drop", "refs/stash@{0}"},
+		{"stash", "drop", "stash@{1.hour.ago}"},
+		{"stash", "drop", "stash@{1234567890}"},
+		// switch -c: exactly --track to the remote-tracking ref of the same name.
+		{"switch", "-C", "v2"},
+		{"switch", "--force", "v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "--force", "v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "refs/remotes/origin/v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-C", "v2", "--track", "refs/remotes/origin/v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--track", "refs/heads/v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--track", "origin/v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--track", "refs/remotes/origin/v3"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--track", "refs/remotes//v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--track", "refs/remotes/v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--track", "refs/remotes/originv2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--track=inherit", "refs/remotes/origin/v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--no-track", "refs/remotes/origin/v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "v2", "--track", "refs/remotes/origin/v2", "x"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "-x", "--track", "refs/remotes/origin/-x"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "-c", "", "--track", "refs/remotes/origin/"},
+		{"switch", "-c", "v2", "--track", "refs/remotes/origin/v2"},
+		{"switch", "--no-guess", "-c", "v2", "--track", "refs/remotes/origin/v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "--orphan", "v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "--detach", "v2"},
+		{"switch", "--no-guess", "--no-overwrite-ignore", "--track", "refs/remotes/origin/v2", "-c", "v2"},
+	}
+	for _, a := range bad {
+		if err := Allowed(a); !errors.Is(err, ErrNotAllowed) {
+			t.Errorf("Allowed(%q) = %v, want ErrNotAllowed", a, err)
+		}
+	}
+}
+
 func TestAllowedInput(t *testing.T) {
 	if err := allowedInput([]string{"patch-id", "--stable"}); err != nil {
 		t.Errorf("patch-id --stable rejected: %v", err)

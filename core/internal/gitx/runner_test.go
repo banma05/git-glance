@@ -206,7 +206,7 @@ func TestLocalMutationsIgnoreCancellation(t *testing.T) {
 
 func TestRunCappedRefusesMutations(t *testing.T) {
 	r := ExecRunner{Git: "definitely-not-a-binary"}
-	for _, a := range [][]string{{"push"}, {"fetch", "--all", "--prune", "--no-prune-tags"}, {"merge", "--ff-only", "--no-overwrite-ignore", "--no-autostash", "x"}, {"worktree", "remove", "x"}, {"symbolic-ref", "-q", "--short", "HEAD"}} {
+	for _, a := range [][]string{{"push"}, {"fetch", "--all", "--prune", "--no-prune-tags"}, {"merge", "--ff-only", "--no-overwrite-ignore", "--no-autostash", "x"}, {"worktree", "remove", "x"}, {"symbolic-ref", "-q", "--short", "HEAD"}, {"stash", "list", "--format=%H"}, {"stash", "drop", "stash@{0}"}} {
 		_, _, err := r.RunCapped(context.Background(), t.TempDir(), 10, a...)
 		if !errors.Is(err, ErrNotAllowed) {
 			t.Fatalf("RunCapped(%q) err = %v, want ErrNotAllowed", a, err)
@@ -248,6 +248,10 @@ func TestTimeouts(t *testing.T) {
 		{[]string{"fetch", "--all", "--prune", "--no-prune-tags"}, 15 * time.Minute},
 		{[]string{"fetch", ".", "refs/remotes/origin/x:refs/heads/x"}, 30 * time.Minute},
 		{[]string{"worktree", "remove", "p"}, 30 * time.Minute},
+		{[]string{"stash", "push", "--include-untracked", "--message", "git-glance shelf main 1"}, 30 * time.Minute},
+		{[]string{"stash", "apply", "--index", "0123456789abcdef0123456789abcdef01234567"}, 30 * time.Minute},
+		{[]string{"stash", "drop", "stash@{0}"}, 30 * time.Minute},
+		{[]string{"stash", "list", "--format=%H"}, 60 * time.Second},
 	}
 	for _, c := range cases {
 		if got := r.timeoutFor(c.args); got != c.want {
