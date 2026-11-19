@@ -433,6 +433,17 @@ describe('CreateFolder', () => {
     expect((screen.getByLabelText(en('dialog.create.trunk')) as HTMLSelectElement).value).toBe('main');
   });
 
+  it('preselects the trunk of the selected branch, or the selected trunk', async () => {
+    const trunkOf = () => (screen.getByLabelText(en('dialog.create.trunk')) as HTMLSelectElement).value;
+    render(<Harness host={fakeHost().host} open="create" select="erin/feature/billing" />);
+    await type('feature/new');
+    expect(trunkOf()).toBe('develop');
+    cleanup();
+    render(<Harness host={fakeHost().host} open="create" trunk="develop" />);
+    await type('feature/new');
+    expect(trunkOf()).toBe('develop');
+  });
+
   it('shows the reason of a refusal', async () => {
     const h = fakeHost({ createFolder: { ok: false, reason: 'branch-exists', files: [], path: '', logError: '' } });
     render(<Harness host={h.host} open="create" />);

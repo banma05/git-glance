@@ -141,6 +141,29 @@ describe('narrow layout rules', () => {
     return css.slice(at, css.indexOf('}', at));
   };
 
+  it('shows the status chips in the details of an open branch; only compact rows hide chips', async () => {
+    const style = document.createElement('style');
+    style.textContent = css;
+    document.head.appendChild(style);
+    try {
+      const { host } = sidebarHost({ repos: ['/demo/repo'] });
+      const { container } = render(<App host={host} />);
+      fireEvent.click(await screen.findByText(named('feature/search')));
+      const chips = [...container.querySelectorAll('.list.compact .detail .chip')];
+      expect(chips.length).toBeGreaterThan(0);
+      for (const c of chips) expect(getComputedStyle(c).display, c.textContent!).not.toBe('none');
+      // a chip in a row of a compact list stays hidden: the rows show names only
+      const list = document.createElement('div');
+      list.className = 'list compact';
+      list.innerHTML = '<button class="row"><span class="chip">x</span></button>';
+      document.body.appendChild(list);
+      expect(getComputedStyle(list.querySelector('.chip')!).display).toBe('none');
+      list.remove();
+    } finally {
+      style.remove();
+    }
+  });
+
   it('never wraps the text of a toggle button', () => {
     expect(rule('.seg .btn')).toMatch(/white-space:\s*nowrap/);
   });

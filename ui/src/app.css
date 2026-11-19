@@ -35,7 +35,7 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
 .detail { border-top: 1px solid var(--border); padding: 8px 12px; min-height: 90px; background: var(--surface); }
 .placeholder { color: var(--fg-mute); padding: 12px; }
 
-.list.compact .chip { display: none; }
+.list.compact .row .chip { display: none; } /* the rows show names only; details keep their chips */
 .group-head { display: block; width: 100%; text-align: left; background: var(--surface); color: var(--fg); border: none; border-bottom: 1px solid var(--border); padding: 5px 10px; font: inherit; font-weight: 600; cursor: pointer; }
 .group-head[draggable='true'] { cursor: grab; }
 .trunk-head { display: flex; align-items: stretch; padding: 0; }

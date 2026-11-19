@@ -19,8 +19,9 @@ interface Props {
 export function CreateFolder({ t, host, state, actions, existing = false }: Props) {
   const view = state.view;
   const trunks = view ? view.groups.map((g) => g.trunk.name) : [];
-  const selectedTrunk = view && state.selected ? (view.branches[state.selected]?.trunk ?? '') : '';
-  const [trunk, setTrunk] = useState(trunks.includes(selectedTrunk) ? selectedTrunk : (trunks[0] ?? ''));
+  // the selected trunk, or the trunk of the selected branch
+  const wanted = state.selectedTrunk || (view && state.selected ? (view.branches[state.selected]?.trunk ?? '') : '');
+  const [trunk, setTrunk] = useState(trunks.includes(wanted) ? wanted : (trunks[0] ?? ''));
   const [branch, setBranch] = useState(() => (existing ? state.selected : ''));
   const [repo] = useState(state.repo); // the repository the dialog was opened for
   const moved = repo !== state.repo;
