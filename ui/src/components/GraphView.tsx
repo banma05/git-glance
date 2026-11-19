@@ -1,5 +1,5 @@
 import type { ComponentChildren } from 'preact';
-import { useRef, useState } from 'preact/hooks';
+import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { rpc } from '../api';
 import { chips, topChip } from '../format';
 import type { Host } from '../host/types';
@@ -7,11 +7,10 @@ import type { T } from '../i18n';
 import { errorText } from '../reasons';
 import type { Picked, TrunkPick } from '../state';
 import type { BranchView, CommitInfo, Row, View } from '../types';
-import { EXPANDED_H, LANE_STEP, LANE_X, heightOf, laneX, rowGeometry, spansOf } from './graphGeometry';
-import type { Curve, Seg } from './graphGeometry';
+import { BranchName } from './BranchName';
+import { EXPANDED_H, heightOf, laneLayout, laneX, nodeSizes, rowGeometry, spansOf } from './graphGeometry';
+import type { Curve, NodeSizes, Seg } from './graphGeometry';
 import { branchColor } from './ListView';
-
-const HIT_R = 10; // the clickable circle around a dot is 20px wide
 
 interface GutterProps {
   width: number;
@@ -81,6 +80,21 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
   const fetched = useRef<Record<string, Fetched>>({});
   const [, redraw] = useState(0);
   const [hover, setHover] = useState('');
+  // The width of the rows: the lanes take at most 40% of it (see laneLayout).
+  // 0 until it was measured, which keeps the wide spacing.
+  const box = useRef<HTMLDivElement>(null);
+  const [available, setAvailable] = useState(0);
+  const drawn = view.sections.length > 0;
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const watch = new ResizeObserver((entries) => {
+      const w = Math.round(entries[0]?.contentRect.width ?? 0);
+      setAvailable((old) => (old === w ? old : w));
+    });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [drawn]);
   let placed = false; // the inline details go under one row only
   const put = (key: string, value: Fetched | undefined) => {
     if (value) fetched.current[key] = value;
@@ -104,13 +118,15 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
     );
   };
 
-  if (view.sections.length === 0) return <div class="muted pad">{t('graph.empty')}</div>;
+  if (!drawn) return <div class="muted pad">{t('graph.empty')}</div>;
   return (
-    <div class="graph">
+    <div class="graph" ref={box}>
       {view.sections.map((section) => {
         const rows = section.rows;
         const spans = spansOf(rows);
-        const width = LANE_X + section.lanes * LANE_STEP;
+        const lanes = laneLayout(available, section.lanes);
+        const { width, x0 } = lanes;
+        const size = nodeSizes(lanes.step);
         const colorOf = (name: string) => {
           const b = view.branches[name];
           return b ? branchColor(theme, b) : '';
@@ -119,8 +135,8 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
 
         const nodes = rows.map((r, i) => {
           const h = heightOf(r.kind);
-          const geo = rowGeometry(rows, spans, i);
-          const x = laneX(r.lane);
+          const geo = rowGeometry(rows, spans, i, false, 0, lanes);
+          const x = laneX(r.lane, lanes);
           const cy = h / 2;
           const b: BranchView | undefined = r.branch ? view.branches[r.branch] : undefined;
           const color = b ? branchColor(theme, b) : '';
@@ -142,7 +158,7 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
           let anchored = false; // the inline details go right after this row (and its opened list)
 
           const hit = (tip: string) => (
-            <circle class="g-hit" cx={r.kind === 'head' || r.kind === 'fork' ? LANE_X : x} cy={cy} r={HIT_R}>
+            <circle class="g-hit" cx={r.kind === 'head' || r.kind === 'fork' ? x0 : x} cy={cy} r={size.hit}>
               <title>{tip}</title>
             </circle>
           );
@@ -161,7 +177,7 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
             click = () => onTrunk({ trunk: section.trunk, hash: r.hash, time: r.time, subject: '' });
             marks = (
               <>
-                <circle class={`g-dot g-trunk-dot${ring}`} cx={x} cy={cy} r={5} />
+                <circle class={`g-dot g-trunk-dot${ring}`} cx={x} cy={cy} r={size.head} />
                 {hit(tip)}
               </>
             );
@@ -172,7 +188,7 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
             click = () => onTrunk({ trunk: section.trunk, hash: r.hash, time: r.time, subject: '' });
             marks = (
               <>
-                <circle class={`g-dot g-hollow${ring}`} cx={LANE_X} cy={cy} r={4} />
+                <circle class={`g-dot g-hollow${ring}`} cx={x0} cy={cy} r={size.hollow} />
                 {hit(tip)}
               </>
             );
@@ -183,16 +199,16 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
                 <path
                   class={`g-line g-hook${hl}`}
                   style={{ stroke: color || undefined }}
-                  d={`M ${x} ${cy} C ${x - 14} ${cy}, ${LANE_X} ${cy}, ${LANE_X} ${h}`}
+                  d={`M ${x} ${cy} C ${x - Math.min(14, (x - x0) * 0.64)} ${cy}, ${x0} ${cy}, ${x0} ${h}`}
                   fill="none"
                   stroke-dasharray="3 3"
                   opacity={0.5}
                 />
-                <circle class={`g-dot g-faint${ring}${hl}`} style={{ fill: color || undefined }} cx={x} cy={cy} r={3} />
+                <circle class={`g-dot g-faint${ring}${hl}`} style={{ fill: color || undefined }} cx={x} cy={cy} r={size.faint} />
                 {hit(tip)}
               </>
             );
-            text = <span class="g-name">{b?.short ?? r.branch}</span>;
+            text = <BranchName class="g-name" name={b?.short ?? r.branch} full={b?.name ?? r.branch} />;
           } else if (r.kind === 'more-own') {
             textClass += ' dim italic';
             text = <span class="g-name">{t('graph.moreOwn', { n: r.count })}</span>;
@@ -213,7 +229,9 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
                   state={state}
                   total={r.count}
                   width={width}
-                  segs={rowGeometry(rows, spans, i, true, EXPANDED_H).segs}
+                  segs={rowGeometry(rows, spans, i, true, EXPANDED_H, lanes).segs}
+                  x0={x0}
+                  size={size}
                   hover={hover}
                   colorOf={colorOf}
                   picked={pick?.kind === 'trunk' ? pick.hash : ''}
@@ -226,7 +244,7 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
             // commit: the first row of a branch is the branch, the others are its commits
             marks = (
               <>
-                <circle class={`g-dot${ring}${hl}`} style={{ fill: color || undefined }} cx={x} cy={cy} r={4} />
+                <circle class={`g-dot${ring}${hl}`} style={{ fill: color || undefined }} cx={x} cy={cy} r={size.dot} />
                 {hit(tip)}
               </>
             );
@@ -235,7 +253,7 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
               click = () => onCommit(r.branch, r.hash);
               text = (
                 <>
-                  <span class="g-name">{b?.short ?? r.branch}</span>
+                  <BranchName class="g-name" name={b?.short ?? r.branch} full={b?.name ?? r.branch} />
                   {top && <span class={`chip ${top.tone}`}>{top.text}</span>}
                 </>
               );
@@ -303,6 +321,8 @@ interface ExpandedProps {
   total: number;
   width: number;
   segs: Seg[];
+  x0: number; // the trunk's x
+  size: NodeSizes;
   hover: string;
   colorOf(branch: string): string;
   picked: string; // hash of the picked trunk commit
@@ -310,7 +330,7 @@ interface ExpandedProps {
   onRetry(): void;
 }
 
-function Expanded({ t, state, total, width, segs, hover, colorOf, picked, onPick, onRetry }: ExpandedProps) {
+function Expanded({ t, state, total, width, segs, x0, size, hover, colorOf, picked, onPick, onRetry }: ExpandedProps) {
   const note = (text: ComponentChildren) => (
     <div class="g-row g-expanded" style={{ height: `${EXPANDED_H}px` }}>
       <Gutter width={width} height={EXPANDED_H} segs={segs} hover={hover} colorOf={colorOf} />
@@ -340,8 +360,8 @@ function Expanded({ t, state, total, width, segs, hover, colorOf, picked, onPick
           onClick={() => onPick(c)}
         >
           <Gutter width={width} height={EXPANDED_H} segs={segs} hover={hover} colorOf={colorOf}>
-            <circle class={`g-dot g-trunk-dot${picked === c.hash ? ' g-ring' : ''}`} cx={LANE_X} cy={EXPANDED_H / 2} r={2.5} />
-            <circle class="g-hit" cx={LANE_X} cy={EXPANDED_H / 2} r={HIT_R} />
+            <circle class={`g-dot g-trunk-dot${picked === c.hash ? ' g-ring' : ''}`} cx={x0} cy={EXPANDED_H / 2} r={size.small} />
+            <circle class="g-hit" cx={x0} cy={EXPANDED_H / 2} r={size.hit} />
           </Gutter>
           <span class="g-text">
             <span class="g-name">{c.subject}</span>

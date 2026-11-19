@@ -4,7 +4,8 @@ import type { BranchView, Global, Group, Row, Section, TrunkView, View } from '.
 
 // Invented, generic data for developing the UI without a core: ?mock=1.
 // Add &mode=sidebar for the narrow layout, &theme=light for the light theme and
-// &lang=zh-CN for Chinese and &repos=0 for a start without any repository.
+// &lang=zh-CN for Chinese, &repos=0 for a start without any repository and
+// &lanes=many for a third trunk with eight branches with long names side by side.
 
 const DAY = 86400;
 // A deterministic pseudo hash: 40 hex digits derived from n.
@@ -280,6 +281,47 @@ export function mockView(repo: string): View {
   };
 }
 
+// withManyLanes adds a trunk "v2" whose eight branches, with long names, are all
+// open at once: eight lanes next to each other, as on a busy repository.
+export function withManyLanes(view: View): View {
+  const now = Math.floor(Date.now() / 1000);
+  const names = [
+    'alice/platform-migration/checkout-summary-redesign',
+    'bob/feature/login-page-redesign',
+    'carol/fix/session-timeout-on-mobile',
+    'dave/chore/upgrade-build-tooling',
+    'erin/feature/export-csv-reports',
+    'frank/fix/typo-in-footer',
+    'grace/feature/search-filters-and-sort',
+    'heidi/spike/cache-warmup',
+  ];
+  const branches = { ...view.branches };
+  const rows: Row[] = [{ kind: 'head', lane: 0, branch: '', hash: hash(500), time: now - DAY, count: 0, ends: [] }];
+  names.forEach((name, i) => {
+    branches[name] = branch(name, {
+      color: i,
+      trunk: 'v2',
+      folder: i % 3 === 0 ? `/home/dev/demo-${i}` : '',
+      folderHead: i % 3 === 0 ? hash(600 + i) : '',
+      dirty: i === 0 ? { changed: 3, untracked: 0, files: ['a.ts', 'b.ts', 'c.ts'] } : null,
+      behind: i === 1 ? 2 : 0,
+      own: [{ hash: hash(510 + i), subject: `Change number ${i + 1}`, time: now - (i + 2) * DAY }],
+      forkHash: hash(520),
+      lastCommit: now - (i + 2) * DAY,
+    });
+    rows.push({ kind: 'commit', lane: i + 1, branch: name, hash: hash(510 + i), time: now - (i + 2) * DAY, count: 0, ends: [] });
+  });
+  rows.push({ kind: 'more', lane: 0, branch: '', hash: '', time: now - 11 * DAY, count: 40, ends: [] });
+  rows.push({ kind: 'fork', lane: 0, branch: '', hash: hash(520), time: now - 12 * DAY, count: 0, ends: names.map((_, i) => i + 1) });
+  return {
+    ...view,
+    settings: { ...view.settings, trunks: [...view.settings.trunks, { name: 'v2', test: '', releases: [] }] },
+    groups: [...view.groups, { trunk: trunk('v2', { hash: hash(500), time: now - DAY }), branches: names }],
+    branches,
+    sections: [...view.sections, { trunk: 'v2', lanes: names.length + 1, rows }],
+  };
+}
+
 export function mockHost(): Host {
   const q = new URLSearchParams(location.search);
   const listeners: Array<(t: ThemeKind) => void> = [];
@@ -301,8 +343,10 @@ export function mockHost(): Host {
         return { core: 'mock', git: '2.45', gitOK: true } as T;
       case 'repos':
         return (await delay(global.repos)) as T;
-      case 'view':
-        return (await delay(mockView(String(p.repo ?? repo)))) as T;
+      case 'view': {
+        const view = mockView(String(p.repo ?? repo));
+        return (await delay(q.get('lanes') === 'many' ? withManyLanes(view) : view)) as T;
+      }
       case 'fetch':
         return (await delay({ ok: true, attempts: 1, error: '', at: nowSec() })) as T;
       case 'getGlobal':

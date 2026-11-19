@@ -43,8 +43,18 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
 .row.selected { background: var(--surface); border-left-color: var(--tone-info); }
 .row.merged { opacity: 0.6; }
 .dot { flex: none; width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; }
-.row-main { display: flex; flex-direction: column; min-width: 0; }
+.row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; container: rowtext / inline-size; }
 .row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A branch name cut from the front (BranchName): the folders shrink first, to a
+   leading "…" (rtl ellipsis; the bdi keeps the text in its own order), then the
+   last segment is cut at its end. The huge shrink factor lets the last segment
+   keep its width until the folders reached their minimum. */
+.bname { display: flex; min-width: 0; overflow: hidden; white-space: nowrap; }
+.bname-pre { flex: 0 1000000 auto; min-width: 1em; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: right; }
+.bname-pre > bdi { direction: ltr; unicode-bidi: isolate; }
+.bname-last { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Text for assistive technology only (the whole branch name of a BranchName). */
+.vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .row-sub { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; }
 .fish .detail { margin-left: 10px; }
 
@@ -101,7 +111,24 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
 /* while a branch is hovered, the dots, hooks and names of the others fade */
 .g-row.g-faded .g-dot, .g-row.g-faded .g-hook, .g-row.g-faded .g-text { opacity: 0.4; }
 .g-hit { fill: transparent; stroke: none; }
-.g-text { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; line-height: 1.25; white-space: nowrap; }
+.g-text { flex: 1; min-width: 0; display: flex; align-items: center; line-height: 1.25; white-space: nowrap; container: rowtext / inline-size; }
+.g-text > * + * { margin-left: 6px; }
+/* In a graph row the parts of the branch name and the status chip share one
+   flex line. The chip gives way first (down to a few characters, in its colour;
+   the row's tooltip has it all), then the folders, then the last segment. The
+   shrink factors are that order, so far apart that a later part never loses
+   even a fraction of a pixel before the earlier ones reached their minimum.
+   Chip first: a cut folder name is only a sliver of its end ("…x/"), which
+   tells less than a cut status. */
+.g-text > .bname { display: contents; }
+.g-text > .bname > .bname-pre { flex: 0 1e6 auto; }
+.g-text > .chip { flex: 0 1e12 auto; min-width: 3.6em; overflow: hidden; text-overflow: ellipsis; }
+/* Row text (graph or list) too narrow for a useful piece of the folders: drop
+   them whole, "…/last". */
+@container rowtext (max-width: 17em) {
+  .bname-pre { display: none; }
+  .bname-pre + .bname-last::before { content: '…'; }
+}
 .g-text.dim { opacity: 0.65; }
 .g-text.italic .g-name { font-style: italic; }
 .g-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

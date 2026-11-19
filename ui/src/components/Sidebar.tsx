@@ -11,6 +11,7 @@ import { Details, assignOf } from './Details';
 import { GraphView } from './GraphView';
 import { branchColor } from './ListView';
 import { AddRepo } from './RepoTabs';
+import { BranchName } from './BranchName';
 
 interface Props {
   t: T;
@@ -33,7 +34,7 @@ function Fish({ t, b, state, actions }: Omit<Props, 'host'> & { b: BranchView })
       >
         <span class="dot" style={{ background: branchColor(state.theme, b) }} />
         <span class="row-main">
-          <span class="row-name">{b.topic}</span>
+          <BranchName class="row-name" name={b.short} full={b.name} />
           {sub && <span class="row-sub muted">{sub}</span>}
         </span>
       </button>

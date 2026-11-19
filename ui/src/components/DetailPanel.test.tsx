@@ -11,6 +11,11 @@ import type { Host } from '../host/types';
 import type { Actions, AppState } from '../state';
 import type { BranchView, OpResult } from '../types';
 
+// named finds a branch name, which BranchName writes in two parts.
+const named = (n: string) => (_: string, el: Element | null) =>
+  !!el?.classList.contains('bname') && [...el.querySelectorAll('[aria-hidden="true"]')].map((x) => x.textContent).join('') === n;
+
+
 const zh = makeT('zh-cn');
 const en = makeT('en');
 
@@ -217,7 +222,7 @@ describe('DetailPanel in the app', () => {
     let finish: (r: OpResult) => void = () => undefined;
     const { host, calls } = appHost(() => new Promise<OpResult>((r) => (finish = r)));
     render(<App host={host} />);
-    fireEvent.click(await screen.findByText('feature/search'));
+    fireEvent.click(await screen.findByText(named('feature/search')));
     fireEvent.click(await screen.findByRole('button', { name: '切换到这里' }));
     await waitFor(() => expect(switchBtn().disabled).toBe(true));
     fireEvent.click(switchBtn());
@@ -238,7 +243,7 @@ describe('DetailPanel in the app', () => {
   it('reloads the view after a successful switch', async () => {
     const { host, calls } = appHost(async () => ({ ok: true, reason: '', files: [], path: '', detail: '', logError: '' }));
     render(<App host={host} />);
-    fireEvent.click(await screen.findByText('feature/search'));
+    fireEvent.click(await screen.findByText(named('feature/search')));
     await waitFor(() => expect(calls.filter((c) => c.method === 'view')).toHaveLength(2));
     fireEvent.click(await screen.findByRole('button', { name: '切换到这里' }));
     await waitFor(() => expect(calls.filter((c) => c.method === 'view')).toHaveLength(3));

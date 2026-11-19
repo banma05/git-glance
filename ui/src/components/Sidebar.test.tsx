@@ -8,6 +8,11 @@ import { HostError } from '../host/types';
 import type { Host } from '../host/types';
 import { mockView } from '../host/mock';
 
+// named finds a branch name, which BranchName writes in two parts.
+const named = (n: string) => (_: string, el: Element | null) =>
+  !!el?.classList.contains('bname') && [...el.querySelectorAll('[aria-hidden="true"]')].map((x) => x.textContent).join('') === n;
+
+
 const en = makeT('en');
 const zh = makeT('zh-cn');
 
@@ -65,7 +70,7 @@ describe('sidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: en('repo.addSubmit') }));
     await waitFor(() => expect(calls.find((c) => c.method === 'addRepo')?.params).toEqual({ path: '/found/repo' }));
     expect(calls.find((c) => c.method === 'discover')?.params).toEqual({ path: '/some/sub/folder' });
-    expect(await screen.findByText('login')).toBeTruthy();
+    expect(await screen.findByText(named('feature/login'))).toBeTruthy();
   });
 
   it('shows the empty state right under its header, not at the bottom', async () => {

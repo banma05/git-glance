@@ -2,6 +2,7 @@ import { useRef } from 'preact/hooks';
 import type { T } from '../i18n';
 import { chips } from '../format';
 import { PALETTE } from '../palette';
+import { BranchName } from './BranchName';
 import { baseName } from '../reasons';
 import { trunkKey } from '../state';
 import type { Actions, AppState } from '../state';
@@ -35,7 +36,7 @@ function BranchRow({ t, b, theme, selected, compact, onSelect }: RowProps) {
     <button class={`row${selected ? ' selected' : ''}${b.merged ? ' merged' : ''}`} onClick={onSelect} title={b.name}>
       <span class="dot" style={{ background: branchColor(theme, b) }} />
       <span class="row-main">
-        <span class="row-name">{b.short}</span>
+        <BranchName class="row-name" name={b.short} full={b.name} />
         {!compact && (
           <span class="row-sub">
             {b.folder && <span class="muted">{baseName(b.folder)}</span>}

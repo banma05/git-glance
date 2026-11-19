@@ -6,6 +6,11 @@ import type { Host } from '../host/types';
 import { mockView } from '../host/mock';
 import type { FetchResult } from '../types';
 
+// named finds a branch name, which BranchName writes in two parts.
+const named = (n: string) => (_: string, el: Element | null) =>
+  !!el?.classList.contains('bname') && [...el.querySelectorAll('[aria-hidden="true"]')].map((x) => x.textContent).join('') === n;
+
+
 function fakeHost(over: Record<string, unknown> = {}, locale = 'en') {
   const calls: string[] = [];
   const host: Host = {
@@ -60,7 +65,7 @@ describe('the repository list', () => {
     expect(await screen.findByText(/The core did not answer in time/)).toBeTruthy();
     expect(screen.queryByText(/No repository yet/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(await screen.findByText(named('feature/login'))).toBeTruthy();
     expect(calls.filter((c) => c === 'repos')).toHaveLength(2);
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -111,7 +116,7 @@ describe('the repository list', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add repository' }));
     fireEvent.input(screen.getByLabelText('Full path of the repository folder'), { target: { value: '/w/project/app' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(await screen.findByText(named('feature/login'))).toBeTruthy();
     expect(screen.queryByText(/w\\project\\app/)).toBeNull();
     expect(screen.getByText(/\/w\/other/)).toBeTruthy();
   });
@@ -147,11 +152,11 @@ describe('git too old', () => {
     const { host } = fakeHost({ version: { core: '0.1.0', git: '2.29', gitOK: false } });
     render(<App host={host} />);
     expect(await screen.findByText(/Git 2\.29 is too old/)).toBeTruthy();
-    await screen.findByText('feature/login');
+    await screen.findByText(named('feature/login'));
     expect(byName('Align all with remote').disabled).toBe(true);
     expect(byName('New requirement folder').disabled).toBe(true);
     expect(byName('Compare two branches').disabled).toBe(false);
-    fireEvent.click(screen.getByText('feature/search'));
+    fireEvent.click(screen.getByText(named('feature/search')));
     expect(byName('Switch here').disabled).toBe(true);
   });
 
@@ -161,7 +166,7 @@ describe('git too old', () => {
       fetch: new HostError('git-too-old', 'changes need git 2.30 or newer'),
     });
     render(<App host={host} />);
-    await screen.findByText('feature/login');
+    await screen.findByText(named('feature/login'));
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByText(/Could not read the remote/)).toBeNull();
     expect(screen.getAllByRole('alert')).toHaveLength(1);
@@ -180,7 +185,7 @@ describe('git too old', () => {
       align: new HostError('git-too-old', 'changes need git 2.30 or newer'),
     });
     render(<App host={host} />);
-    await screen.findByText('feature/login');
+    await screen.findByText(named('feature/login'));
     expect(screen.queryByText(/too old/)).toBeNull();
     fireEvent.click(byName('Align all with remote'));
     expect(await screen.findByText(/Git is too old/)).toBeTruthy();
@@ -193,7 +198,7 @@ describe('App', () => {
     const { host, calls } = fakeHost();
     render(<App host={host} />);
     await waitFor(() => expect(core(calls)).toEqual(['view', 'fetch', 'view']));
-    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(await screen.findByText(named('feature/login'))).toBeTruthy();
   });
 
   it('shows a retry line when the fetch fails and fetches again on click', async () => {
@@ -274,7 +279,7 @@ describe('App failures and repo switching', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByText(/late-from-a/)).toBeNull();
     expect(screen.queryByText('Reading the remote…')).toBeNull();
-    expect(screen.queryByText('feature/login')).toBeNull();
+    expect(screen.queryByText(named('feature/login'))).toBeNull();
     const retry = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
     expect(retry.disabled).toBe(false);
   });
@@ -324,7 +329,7 @@ describe('App failures and repo switching', () => {
     render(<App host={host} />);
     expect(await screen.findByText(/Failed to fetch/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(await screen.findByText(named('feature/login'))).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
@@ -337,7 +342,7 @@ describe('App failures and repo switching', () => {
     expect(await screen.findByText('No repository yet; click + to add one')).toBeTruthy();
     repos = ['/demo/repo'];
     await act(async () => refresh());
-    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(await screen.findByText(named('feature/login'))).toBeTruthy();
     expect(screen.queryByText('No repository yet; click + to add one')).toBeNull();
     expect(core(calls)).toEqual(['view', 'fetch', 'view']);
   });
@@ -347,7 +352,7 @@ describe('App failures and repo switching', () => {
     const { host, calls } = scriptedHost((method, repo) => (method === 'view' ? mockView(repo) : okFetch));
     host.onRefresh = (cb) => (refresh = cb);
     render(<App host={host} />);
-    await screen.findByText('feature/login');
+    await screen.findByText(named('feature/login'));
     fireEvent.click(screen.getByRole('tab', { name: 'b' }));
     await waitFor(() => expect(calls.filter((c) => c === 'view:/b').length).toBe(2));
     const before = calls.length;
@@ -364,7 +369,7 @@ describe('App failures and repo switching', () => {
       return method === 'view' ? mockView(repo) : okFetch;
     });
     render(<App host={host} />);
-    await screen.findByText('feature/login');
+    await screen.findByText(named('feature/login'));
     fireEvent.click(screen.getByRole('button', { name: /Align all with remote/ }));
     fireEvent.click(screen.getByRole('tab', { name: 'b' }));
     await act(async () => finish(report));
@@ -377,7 +382,7 @@ describe('App failures and repo switching', () => {
   it('drops a trunk commit pick when the mode changes', async () => {
     const { host } = scriptedHost((method, repo) => (method === 'view' ? mockView(repo) : okFetch));
     const { container } = render(<App host={host} />);
-    await screen.findByText('feature/login');
+    await screen.findByText(named('feature/login'));
     fireEvent.click(screen.getByRole('button', { name: 'Graph' }));
     fireEvent.click(container.querySelector('.g-row[data-kind="head"]')!);
     expect(await screen.findByText('Commit on the trunk')).toBeTruthy();
@@ -402,17 +407,17 @@ describe('App failures and repo switching', () => {
     });
     host.onRefresh = (cb) => (refresh = cb);
     render(<App host={host} />);
-    fireEvent.click(await screen.findByText('feature/search'));
+    fireEvent.click(await screen.findByText(named('feature/search')));
     expect(await screen.findByRole('button', { name: 'Switch here' })).toBeTruthy();
     gone = true;
     await act(async () => refresh());
-    await waitFor(() => expect(screen.queryByText('feature/search')).toBeNull());
+    await waitFor(() => expect(screen.queryByText(named('feature/search'))).toBeNull());
     expect(screen.queryByRole('button', { name: 'Switch here' })).toBeNull();
     expect(screen.getByText('Click a row to see details')).toBeTruthy();
     // the selection went with the branch: a later view that has it again does not bring it back
     gone = false;
     await act(async () => refresh());
-    await screen.findByText('feature/search');
+    await screen.findByText(named('feature/search'));
     expect(screen.queryByRole('button', { name: 'Switch here' })).toBeNull();
   });
 
@@ -442,10 +447,10 @@ describe('App failures and repo switching', () => {
     render(<App host={host} />);
     await waitFor(() => expect(n).toBe(1));
     await act(async () => refresh());
-    expect(await screen.findByText('feature/login')).toBeTruthy();
+    expect(await screen.findByText(named('feature/login'))).toBeTruthy();
     await act(async () => first([]));
     await new Promise((r) => setTimeout(r, 30));
-    expect(screen.getByText('feature/login')).toBeTruthy();
+    expect(screen.getByText(named('feature/login'))).toBeTruthy();
     expect(screen.queryByText(/No repository yet/)).toBeNull();
   });
 

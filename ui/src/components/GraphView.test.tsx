@@ -59,7 +59,13 @@ function setup(o: Opts = {}) {
 }
 
 // text of the row without the tooltips inside its SVG
-const words = (row: Element) => row.querySelector('.g-text')!.textContent;
+// shown is the text a row shows: without the name written for assistive technology only
+const shown = (el: Element) => {
+  const copy = el.cloneNode(true) as Element;
+  copy.querySelectorAll('.vh').forEach((x) => x.remove());
+  return copy.textContent;
+};
+const words = (row: Element) => shown(row.querySelector('.g-text')!);
 const rows = (c: Element) => Array.from(c.querySelectorAll<HTMLElement>('.g-row:not(.g-expanded)'));
 
 // the color a browser would paint for a hex value, in the same notation as the DOM gives back
@@ -70,6 +76,52 @@ function painted(hex: string): string {
 }
 
 afterEach(cleanup);
+
+// widthIs makes the next GraphView measure its container at `px` wide.
+function widthIs(px: number) {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      constructor(private cb: (e: Array<{ contentRect: { width: number } }>) => void) {}
+      observe() {
+        this.cb([{ contentRect: { width: px } }]);
+      }
+      disconnect() {}
+    },
+  );
+}
+afterEach(() => vi.unstubAllGlobals());
+
+describe('GraphView at narrow widths', () => {
+  const eight: Section = {
+    trunk: 'main',
+    lanes: 8,
+    rows: [
+      { kind: 'head', lane: 0, branch: '', hash: 'H', time: 1, count: 0, ends: [] },
+      ...Array.from({ length: 7 }, (_, i) => ({ kind: 'commit' as const, lane: i + 1, branch: 'A', hash: `c${i}`, time: 1, count: 0, ends: [] })),
+    ],
+  };
+
+  it('gives a 300 px row the narrowest lanes, so the gutter stays within 30%, with the dots on their lanes', () => {
+    widthIs(300);
+    const { container } = setup({ section: eight });
+    const svg = container.querySelector('.g-gutter')!;
+    const width = Number(svg.getAttribute('width'));
+    expect(width).toBe(8 * 9);
+    const r = rows(container);
+    const step = width / 9;
+    expect(Number(r[0].querySelector('.g-dot')!.getAttribute('cx'))).toBe(step);
+    expect(Number(r[7].querySelector('.g-dot')!.getAttribute('cx'))).toBe(step * 8);
+    expect(Number(r[7].querySelector('.g-hit')!.getAttribute('cx'))).toBe(step * 8);
+  });
+
+  it('is unchanged on a wide row', () => {
+    widthIs(1400);
+    const { container } = setup();
+    expect(rows(container)[1].querySelector('.g-dot')!.getAttribute('cx')).toBe('44');
+    expect(container.querySelector('.g-gutter')!.getAttribute('width')).toBe(String(22 * 5));
+  });
+});
 
 describe('GraphView rows', () => {
   it('renders one row per layout row, with the dots on their lanes', () => {
@@ -95,7 +147,7 @@ describe('GraphView rows', () => {
     expect(container.querySelector('.g-date')).toBeNull();
     for (const row of rows(container)) expect(row.querySelectorAll('.chip').length).toBeLessThanOrEqual(1);
     const a = rows(container)[1];
-    expect(a.querySelector('.g-name')!.textContent).toBe('A');
+    expect(shown(a.querySelector('.g-name')!)).toBe('A');
     expect(a.getAttribute('title')).toContain('A');
     expect(a.textContent).not.toContain('wt-a');
   });
