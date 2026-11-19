@@ -1,6 +1,6 @@
 import { HostError } from './types';
 import type { Host, ThemeKind } from './types';
-import type { BranchView, Global, Group, Row, Section, TrunkView, View } from '../types';
+import type { BranchView, Global, Group, Row, Section, Shelf, SwitchResult, TrunkView, View } from '../types';
 
 // Invented, generic data for developing the UI without a core: ?mock=1.
 // Add &mode=sidebar for the narrow layout, &theme=light for the light theme and
@@ -361,6 +361,25 @@ export function mockHost(): Host {
   const delay = <T,>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 150));
   const nowSec = () => Math.floor(Date.now() / 1000);
   let backupBytes = 4 * 1024 * 1024 + 300 * 1024;
+  // The main folder: the branch it is on, its uncommitted files, the branch it
+  // was switched away from and the work shelved on the way.
+  const main = { on: 'main', dirty: ['src/app.ts', 'notes/todo.md'], previous: '', shelves: [] as Shelf[] };
+  const switchMain = (branch: string, shelve: boolean, latest: boolean): SwitchResult => {
+    const answer = (over: Partial<SwitchResult>): SwitchResult => ({
+      ok: true, reason: '', files: [], path: repo, detail: '', logError: '',
+      shelved: null, restored: null, keptShelf: null, fastForwarded: false, aheadNote: '', ...over,
+    });
+    if (main.dirty.length > 0 && (!shelve || branch === main.on)) return answer({ ok: false, reason: 'dirty', files: [...main.dirty] });
+    const shelved: Shelf | null = main.dirty.length
+      ? { folder: repo, branch: main.on, hash: hash(990), base: hash(100), time: nowSec(), files: [...main.dirty], why: '' }
+      : null;
+    const restored = main.shelves.find((x) => x.branch === branch) ?? null;
+    main.shelves = [...(shelved ? [shelved] : []), ...main.shelves.filter((x) => x !== restored)];
+    main.previous = main.on;
+    main.on = branch;
+    main.dirty = [];
+    return answer({ shelved, restored, fastForwarded: latest && !restored });
+  };
 
   const call = async <T,>(method: string, params?: object): Promise<T> => {
     const p = (params ?? {}) as Record<string, unknown>;
@@ -459,7 +478,9 @@ export function mockHost(): Host {
       case 'assign':
         return (await delay(mockView(String(p.repo ?? repo)).settings)) as T;
       case 'switch':
-        return (await delay({ ok: true, reason: '', files: [], path: '', detail: '', logError: '' })) as T;
+        return (await delay(switchMain(String(p.branch ?? ''), p.shelve === true, p.latest === true))) as T;
+      case 'switchState':
+        return (await delay({ previous: main.previous, shelves: main.shelves })) as T;
       case 'trunkNews': {
         // as many trunk commits as the view says the branch is behind
         const name = String(p.branch ?? '').replace(/^refs\/heads\//, '');

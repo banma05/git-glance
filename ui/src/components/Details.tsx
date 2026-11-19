@@ -4,6 +4,7 @@ import type { T } from '../i18n';
 import type { Actions, AppState, NewsTarget } from '../state';
 import type { Group, TrunkConfig, TrunkView, View } from '../types';
 import { DetailPanel } from './DetailPanel';
+import { SwitchOutcome } from './SwitchOutcome';
 import { trunkRef } from './dialogs/Compare';
 import { TrunkNews } from './TrunkNews';
 import type { NewsSource } from './TrunkNews';
@@ -76,13 +77,21 @@ interface TrunkDetailProps {
   group: Group;
   config?: TrunkConfig; // the trunk's roles as the settings name them; none for the default trunk
   newsOpen?: boolean; // its recent commits are listed
-  actions: Pick<Actions, 'openFolder' | 'copy' | 'openDialog' | 'toggleNews'>;
+  locked?: boolean; // no change can start now
+  switched?: AppState['switchResult']; // the last switch, shown when it went to this trunk or its test branch
+  actions: Pick<Actions, 'openFolder' | 'copy' | 'openDialog' | 'toggleNews' | 'switchTo'>;
+}
+
+// remoteOf is the remote a trunk is compared through ("origin" for
+// origin/main), "" when it has no remote copy.
+function remoteOf(tv: TrunkView): string {
+  return tv.ref !== tv.name && tv.ref.endsWith('/' + tv.name) ? tv.ref.slice(0, -(tv.name.length + 1)) : '';
 }
 
 // TrunkDetail is what a click on a trunk's name shows: what it is compared
 // through, its latest commit, its local branch, its roles and its branches.
 // It only reads; none of its buttons changes anything.
-export function TrunkDetail({ t, group, config, newsOpen = false, actions }: TrunkDetailProps) {
+export function TrunkDetail({ t, group, config, newsOpen = false, locked = false, switched = null, actions }: TrunkDetailProps) {
   const tv = group.trunk;
   const notSet = <span class="muted">{t('trunk.notSet')}</span>;
   // The roles as set: the view keeps only the branches it found, so a role
@@ -143,6 +152,11 @@ export function TrunkDetail({ t, group, config, newsOpen = false, actions }: Tru
         <p class="muted hint">{t('trunk.rolesHint', { settings: t('toolbar.settings'), roles: t('dialog.settings.roles') })}</p>
       )}
       <div class="detail-actions">
+        {[tv.name, ...(tv.test ? [tv.test] : [])].map((branch) => (
+          <button class="btn" disabled={locked} onClick={() => actions.switchTo(branch, { latest: true, remote: remoteOf(tv) })}>
+            {t('switch.latest', { branch })}
+          </button>
+        ))}
         {tv.folder && (
           <button class="btn" onClick={() => actions.openFolder(tv.folder)}>
             {t('detail.open')}
@@ -158,6 +172,9 @@ export function TrunkDetail({ t, group, config, newsOpen = false, actions }: Tru
           {t('news.recent')}
         </button>
       </div>
+      {switched && !switched.back && (switched.branch === tv.name || switched.branch === tv.test) && (
+        <SwitchOutcome t={t} branch={switched.branch} result={switched.result} inPlace={switched.inPlace} />
+      )}
     </div>
   );
 }
@@ -209,7 +226,8 @@ function Selection({ t, view, state, actions }: Props) {
   if (group) {
     const config = view.settings.trunks.find((c) => c.name === group.trunk.name);
     const newsOpen = state.news?.kind === 'trunk' && state.news.trunk === group.trunk.name;
-    return <TrunkDetail t={t} group={group} config={config} newsOpen={newsOpen} actions={actions} />;
+    const locked = state.busy || !!state.gitProblem;
+    return <TrunkDetail t={t} group={group} config={config} newsOpen={newsOpen} locked={locked} switched={state.switchResult} actions={actions} />;
   }
   if (state.pick?.kind === 'trunk') return <TrunkCommitDetail t={t} view={view} pick={state.pick} />;
   const branch = state.selected ? (view.branches[state.selected] ?? null) : null;

@@ -44,12 +44,13 @@ node scripts/build.mjs all --targets host
 
 - 绝不推送，绝不删除或修改远程分支，对远程只做 `fetch`。打开仓库、读取失败后点重试、以及对齐时，会运行 `git fetch --all --prune --no-prune-tags`：它更新远程跟踪分支（`refs/remotes/...`），并删掉远程上已删除的分支对应的远程跟踪分支；和普通的 `git fetch` 一样，可能会新增指向所取历史的标签。它不改你自己的分支，也不删除任何标签。
 - 只做快进（fast-forward）。
-- 拒绝处理有未提交、未跟踪或隐藏（assume-unchanged / skip-worktree）改动的文件夹。
+- 拒绝处理有未提交、未跟踪或隐藏（assume-unchanged / skip-worktree）改动的文件夹；唯一的例外是切换主文件夹时，在你确认文件清单之后把没提交的改动收起（见下面）。
 - 绝不删除分支。
 
 ## 安全说明
 
 - **删除文件夹**（删除工作树文件夹）会先把被忽略的文件备份，构建产物文件夹除外：`node_modules`、`target`、`build`、`dist`、`out`、`.gradle`、`__pycache__`、`.pytest_cache`、`.mypy_cache`、`.tox`、`.next`、`.nuxt`、`coverage`、`.venv`、`venv`；备份成功后才删除。删除前会再检查一遍：分支和提交和确认弹窗显示的一样、没有未提交的改动、没有进行中的操作（rebase、merge、cherry-pick、revert、bisect）、构建产物文件夹里没有独立的 git 仓库、没有只在这个文件夹里的提交、文件夹本身不是链接。备份之后再检查一次：被忽略文件的清单和每个备份文件的大小与修改时间、分支和提交、进行中的操作、“忽略改动”标记、只在这个文件夹里的提交、构建产物里有没有 git 仓库、文件夹是不是变成了链接；有任何变化就什么都不删。构建产物文件夹里的改动不检查（反正会删掉）。就在这一刻被改动的已跟踪或未跟踪文件会让 git 拒绝删除，这时文件夹里的链接可能已经删掉了（只删链接本身，从不动它指向的内容）。备份放在 `<Git Glance 主目录>/backups/` 下：主目录是环境变量 `GITGLANCE_HOME`（若设置），否则是用户配置目录里的 `git-glance`（Linux 上如 `~/.config/git-glance`，macOS 上 `~/Library/Application Support/git-glance`，Windows 上 `%AppData%\git-glance`）。要清理备份，删掉这个 `backups` 文件夹即可。
+- **收起改动**：主文件夹有没提交的改动时切换，Git Glance 先列出这些文件，你确认后用 `git stash push --include-untracked` 收起（包括没跟踪的新文件，被忽略的文件不动；这条记录的说明以 `git-glance shelf` 开头）。切回那个分支时，只有分支没动过、文件夹干净，才用 `git stash apply --index` 放回，放回后才删掉这一条（按提交号找到的那一条）。否则改动留在 `git stash list` 里，Git Glance 会告诉你是哪一条。
 - 你仓库自己的钩子（hooks）和 fsmonitor 会和你自己用 git 时一样运行。
 - Git Glance 把自己的设置、操作记录和备份放在上面的主目录里，不会在你的仓库里写它自己的文件。它对仓库做的改动，只有你点击的那些 git 操作。
 

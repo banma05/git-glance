@@ -154,7 +154,7 @@ describe('trunk details', () => {
     expect(screen.queryByRole('button', { name: 'Open in editor' })).toBeNull();
   });
 
-  it('copies the trunk name and opens Compare, and has no button that changes anything', () => {
+  it('copies the trunk name and opens Compare; the only buttons that change something switch the main folder', () => {
     const a = spies();
     const { container } = show(trunkView(), a);
     fireEvent.click(screen.getByRole('button', { name: 'Copy branch name' }));
@@ -162,7 +162,7 @@ describe('trunk details', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Compare with…' }));
     expect(a.openDialog).toHaveBeenCalledWith('compare');
     const buttons = Array.from(container.querySelectorAll('button')).map((b) => b.textContent);
-    expect(buttons).toEqual(['Copy branch name', 'Compare with…', 'Recent commits']);
+    expect(buttons).toEqual(['Switch to main latest', 'Copy branch name', 'Compare with…', 'Recent commits']);
   });
 
   it('opens the recent commits of the trunk', () => {

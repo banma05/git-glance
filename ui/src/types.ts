@@ -205,6 +205,34 @@ export interface OpResult {
   logError: string;
 }
 
+// Shelf is uncommitted work a switch shelved with git stash.
+export interface Shelf {
+  folder: string;
+  branch: string; // the branch the work was on
+  hash: string; // the stash commit (40 or 64 hex)
+  base: string; // HEAD when it was shelved
+  time: number;
+  files: string[];
+  why: string; // "" or why it is not (or will not be) put back automatically
+}
+
+// SwitchResult is the answer of switch. Every key is always there.
+export interface SwitchResult extends OpResult {
+  shelved: Shelf | null; // work shelved on the way out
+  restored: Shelf | null; // work put back: the arrival branch's, or the just-taken one after a failed move
+  keptShelf: Shelf | null; // work that was not put back; why says why
+  fastForwarded: boolean;
+  aheadNote: string; // "" or why the branch was not fast-forwarded
+}
+
+// SwitchState is what the core knows of a folder's switches: the branch it
+// was last switched away from ("" when none or already there) and the
+// repository's shelves still in git stash list, newest first.
+export interface SwitchState {
+  previous: string;
+  shelves: Shelf[];
+}
+
 export interface RemoveFolderResult {
   ok: boolean;
   reason: string;
@@ -294,7 +322,8 @@ export interface Methods {
   view: View;
   fetch: FetchResult;
   align: AlignReport;
-  switch: OpResult;
+  switch: SwitchResult;
+  switchState: SwitchState;
   createFolder: OpResult;
   removeFolder: RemoveFolderResult;
   compare: CompareResult;

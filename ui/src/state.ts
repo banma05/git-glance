@@ -3,11 +3,12 @@ import { rpc } from './api';
 import { HostError } from './host/types';
 import type { DiscoveryProblem, Host, ThemeKind } from './host/types';
 import { baseName } from './reasons';
-import type { AlignReport, Global, OpResult, RemoveFolderResult, Theme, View } from './types';
+import type { AlignReport, DirtyCounts, Global, OpResult, RemoveFolderResult, SwitchResult, SwitchState, Theme, View } from './types';
 
 export type ViewMode = 'list' | 'graph';
 // create: a new branch from a trunk; createExisting: a folder for the selected local branch.
-export type DialogName = 'align' | 'create' | 'createExisting' | 'compare' | 'oplog' | 'settings' | 'remove';
+// shelve: the confirm that lists the uncommitted changes a switch would shelve.
+export type DialogName = 'align' | 'create' | 'createExisting' | 'compare' | 'oplog' | 'settings' | 'remove' | 'shelve';
 
 // WriteOutcome is what a create or remove write ended with: the core's answer,
 // or the error of the call. It lives in the state so that a dialog closed while
@@ -47,6 +48,46 @@ export type Picked = ({ kind: 'trunk' } & TrunkPick) | { kind: 'commit'; branch:
 // branch lacks, or the recent commits of a trunk. It belongs to the selection.
 export type NewsTarget = { kind: 'branch'; branch: string } | { kind: 'trunk'; trunk: string };
 
+// SwitchTarget is where a switch of the main folder goes: a branch at its
+// latest (after a read of the remote) or as it is, through a remote when the
+// branch exists only there. back: the "switch back" control asked.
+export interface SwitchTarget {
+  branch: string;
+  latest: boolean;
+  remote: string;
+  back: boolean;
+}
+
+// ShelveAsk is a switch waiting for the user to confirm that the listed
+// uncommitted changes are shelved first.
+export interface ShelveAsk {
+  repo: string;
+  target: SwitchTarget;
+  folder: string;
+  files: string[];
+  more: number; // changed files not listed
+  fetched: boolean; // the remote was read for this switch already
+}
+
+// MainFolder is what the view says of the repository's main folder: where it
+// is and, when it is on a branch the view lists, that branch and its changes.
+export interface MainFolder {
+  folder: string;
+  branch: string; // "" when the view cannot tell
+  dirty: DirtyCounts | null; // null: clean, or not known (the folder is on a trunk)
+}
+
+// mainFolderOf finds the main folder: the folder of the branch checked out
+// there, else the repository path; and which branch it is on.
+export function mainFolderOf(view: View, repo: string): MainFolder {
+  const b = Object.values(view.branches).find((x) => x.mainFolder && x.folder);
+  if (b) return { folder: b.folder, branch: b.name, dirty: b.dirty };
+  const trunk = view.groups.find((g) => g.trunk.folder && samePath(g.trunk.folder, repo));
+  return { folder: repo, branch: trunk?.trunk.name ?? '', dirty: null };
+}
+
+const samePath = (a: string, b: string) => inside(a, b) && inside(b, a);
+
 // GitProblem is why the core refuses every change: git is older than 2.30
 // (version known), missing, or a write was refused with git-too-old.
 export type GitProblem = { kind: 'old' | 'missing' | 'refused'; version: string };
@@ -76,7 +117,10 @@ export interface AppState {
   removeOutcome: WriteOutcome<RemoveFolderResult> | null;
   settingsOutcome: SettingsOutcome | null;
   notice: Notice | null;
-  switchResult: { branch: string; result: OpResult } | null; // the last switch, shown in the detail area
+  // the last switch: shown in the details of its branch, or with the switch-back control (back)
+  switchResult: { branch: string; result: SwitchResult; back?: boolean; inPlace?: boolean } | null;
+  switchState: SwitchState | null; // the main folder's previous branch and the shelves; null until read
+  ask: ShelveAsk | null; // a switch waiting for the shelving confirm
   assignResult: { branch: string; error: unknown } | null; // the last failed "belongs to trunk", shown in the detail area
   global: Global | null;
   theme: ThemeKind;
@@ -95,7 +139,10 @@ export interface Actions {
   selectTrunk(p: TrunkPick): void;
   showTrunk(name: string): void; // the details of a trunk itself; again hides them
   toggleNews(target: NewsTarget): void; // open the trunk news list; again closes it
-  switchTo(branch: string): void; // switch the main folder to a branch
+  // switch the main folder to a branch, by default at its latest (the remote is read first)
+  switchTo(branch: string, opt?: { latest?: boolean; remote?: string }): void;
+  switchBack(): void; // switch the main folder back to the branch it was switched away from
+  confirmShelve(): void; // the user confirmed the files a waiting switch shelves
   openFolder(path: string): void;
   copy(text: string): void;
   toggleGroup(key: string): void;
@@ -161,6 +208,8 @@ function initial(host: Host): AppState {
     settingsOutcome: null,
     notice: null,
     switchResult: null,
+    switchState: null,
+    ask: null,
     assignResult: null,
     global: null,
     theme: host.theme(),
@@ -198,6 +247,8 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     const canWrite = () => !ref.current.busy && !ref.current.gitProblem;
     // gitRan: the reasons of a result after which git did run, so the view changed.
     const gitRan = (r: OpResult) => r.ok || r.reason === 'git-failed' || r.reason === 'verify-failed';
+    // switchRan: git changed something (a switch, a shelf taken or put back)
+    const switchRan = (r: SwitchResult) => gitRan(r) || !!r.shelved || !!r.restored || !!r.keptShelf || r.reason === 'restore-failed';
     const current = (repo: string) => ref.current.repo === repo;
 
     // failFor reports a failure of a call made for `repo`; once the user has moved
@@ -262,9 +313,77 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       }
     };
 
+    // readSwitchState reads where the main folder was switched away from and
+    // the shelves; a failed or odd answer leaves what the page showed.
+    const readSwitchState = async (repo: string) => {
+      const view = ref.current.view;
+      if (!view) return;
+      try {
+        const s = await rpc(host, 'switchState', { repo, folder: mainFolderOf(view, repo).folder });
+        if (current(repo) && typeof s?.previous === 'string' && Array.isArray(s.shelves)) patch({ switchState: s });
+      } catch {
+        // the switch-back line stays as it was
+      }
+    };
+
+    // readRemote reads the remote before a switch to the latest. A failure is
+    // shown in the fetch line; the switch then goes to what was read before.
+    const readRemote = async (repo: string) => {
+      try {
+        const f = await rpc(host, 'fetch', { repo });
+        if (current(repo)) patch({ fetchError: f.ok ? '' : f.error || 'unknown', fetchSlow: false });
+      } catch (e) {
+        if (!current(repo) || noteGit(e) || (e instanceof HostError && e.code === 'cancelled')) return;
+        if (e instanceof HostError && e.code === 'still-running') patch({ fetchSlow: true });
+        else if (e instanceof HostError && e.code === 'no-token') throw e;
+        else patch({ fetchError: reasonOf(e) });
+      }
+    };
+
+    // switchMain switches the main folder. Without the user's confirm nothing
+    // is shelved: the first try never shelves, and when the folder has changes
+    // the confirm lists them; only its button sends the switch that shelves.
+    const switchMain = async (target: SwitchTarget, shelve: boolean, fetched: boolean) => {
+      const { repo, view } = ref.current;
+      if (!repo || !view || !canWrite()) return;
+      const main = mainFolderOf(view, repo);
+      const away = main.branch !== target.branch;
+      if (!shelve && away && main.dirty) {
+        // the view knows there are changes: ask before anything is sent
+        const files = main.dirty.files;
+        const more = Math.max(0, main.dirty.changed + main.dirty.untracked - files.length);
+        patch({ ask: { repo, target, folder: main.folder, files, more, fetched }, dialog: 'shelve', switchResult: null });
+        return;
+      }
+      patch({ busy: true, switchResult: null, ask: null });
+      try {
+        if (target.latest && !fetched) {
+          await readRemote(repo);
+          fetched = true;
+        }
+        if (!current(repo)) return;
+        const params = { repo, folder: main.folder, branch: target.branch, latest: target.latest, shelve, remote: target.remote };
+        const result = await rpc(host, 'switch', params);
+        if (!current(repo)) return;
+        // a dirty folder that is already on the branch cannot be updated under shelved work
+        const inPlace = !result.ok && result.reason === 'dirty' && (shelve || !away);
+        if (!result.ok && result.reason === 'dirty' && !inPlace) {
+          patch({ ask: { repo, target, folder: main.folder, files: result.files, more: 0, fetched }, dialog: 'shelve' });
+        } else {
+          patch({ switchResult: { branch: target.branch, result, back: target.back, inPlace } });
+        }
+        if (fetched || switchRan(result)) await loadView(repo);
+        if (switchRan(result)) await readSwitchState(repo);
+      } catch (e) {
+        failFor(repo, e);
+      } finally {
+        patch({ busy: false });
+      }
+    };
+
     const open = async (repo: string) => {
       // fetching is reset here: a refresh of the repository left behind drops its result
-      patch({ repo, view: null, selected: '', selectedTrunk: '', pick: null, news: null, fetchError: '', fetchSlow: false, error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
+      patch({ repo, view: null, selected: '', selectedTrunk: '', pick: null, news: null, switchState: null, ask: null, fetchError: '', fetchSlow: false, error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
       try {
         await loadView(repo);
         if (!current(repo)) return;
@@ -273,6 +392,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         failFor(repo, e);
         return;
       }
+      void readSwitchState(repo);
       await refresh(repo);
       if (current(repo) && ref.current.global === null) {
         try {
@@ -419,23 +539,15 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         const same = n?.kind === target.kind && (n.kind === 'branch' ? n.branch : n.trunk) === (target.kind === 'branch' ? target.branch : target.trunk);
         patch({ news: same ? null : target });
       },
-      switchTo: (branch) => {
-        const { repo, view } = ref.current;
-        if (!repo || !view || !canWrite()) return;
-        // the branch is checked out in the main folder: the one whose branch says so, else the repository path
-        const folder = Object.values(view.branches).find((b) => b.mainFolder && b.folder)?.folder ?? repo;
-        patch({ busy: true, switchResult: null });
-        void (async () => {
-          try {
-            const result = await rpc(host, 'switch', { repo, folder, branch });
-            if (current(repo)) patch({ switchResult: { branch, result } });
-            if (gitRan(result)) await loadView(repo);
-          } catch (e) {
-            failFor(repo, e);
-          } finally {
-            patch({ busy: false });
-          }
-        })();
+      switchTo: (branch, opt = {}) => void switchMain({ branch, latest: opt.latest ?? true, remote: opt.remote ?? '', back: false }, false, false),
+      switchBack: () => {
+        const previous = ref.current.switchState?.previous;
+        if (previous) void switchMain({ branch: previous, latest: false, remote: '', back: true }, false, false);
+      },
+      confirmShelve: () => {
+        const a = ref.current.ask;
+        patch({ ask: null, dialog: null });
+        if (a && current(a.repo)) void switchMain(a.target, true, a.fetched);
       },
       openFolder: (path) => {
         host.openFolder(path).catch(fail);
@@ -587,7 +699,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
           }
         })();
       },
-      closeDialog: () => patch({ dialog: null }),
+      closeDialog: () => patch({ dialog: null, ask: null }),
       align: () => {
         const repo = ref.current.repo;
         if (!repo || !canWrite()) return;

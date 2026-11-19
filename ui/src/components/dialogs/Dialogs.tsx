@@ -8,6 +8,7 @@ import { CreateFolder } from './CreateFolder';
 import { OpLog } from './OpLog';
 import { RemoveFolderConfirm } from './RemoveFolderConfirm';
 import { Settings } from './Settings';
+import { ShelveConfirm } from './ShelveConfirm';
 
 const TITLES: Record<DialogName, Key> = {
   align: 'toolbar.align',
@@ -17,6 +18,7 @@ const TITLES: Record<DialogName, Key> = {
   oplog: 'toolbar.oplog',
   settings: 'toolbar.settings',
   remove: 'dialog.remove.title',
+  shelve: 'dialog.shelve.title',
 };
 
 interface Props {
@@ -49,6 +51,7 @@ export function Dialogs({ t, host, state, actions }: Props) {
   else if (name === 'remove') body = <RemoveFolderConfirm t={t} host={host} state={state} actions={actions} />;
   else if (name === 'compare') body = <Compare t={t} host={host} state={state} />;
   else if (name === 'settings') body = <Settings t={t} host={host} state={state} actions={actions} />;
+  else if (name === 'shelve') body = <ShelveConfirm t={t} state={state} actions={actions} />;
   else body = <OpLog t={t} host={host} repo={state.repo} />;
 
   return (

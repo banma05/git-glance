@@ -9,7 +9,7 @@ import { mockView } from '../host/mock';
 import { HostError } from '../host/types';
 import type { Host } from '../host/types';
 import type { Actions, AppState } from '../state';
-import type { BranchView, OpResult } from '../types';
+import type { BranchView, OpResult, SwitchResult } from '../types';
 
 // named finds a branch name, which BranchName writes in two parts.
 const named = (n: string) => (_: string, el: Element | null) =>
@@ -28,6 +28,8 @@ function actions(): Actions {
 }
 
 type Extra = Pick<AppState, 'busy' | 'switchResult'> & Partial<Pick<AppState, 'news'>>;
+// sw is a switch answer with nothing shelved or put back
+const sw = (r: OpResult): SwitchResult => ({ shelved: null, restored: null, keptShelf: null, fastForwarded: false, aheadNote: '', ...r });
 const idle: Extra = { busy: false, switchResult: null };
 
 function renderPanel(branch: BranchView | null, state: Extra = idle, t = zh, a: Actions = actions()) {
@@ -113,20 +115,20 @@ describe('DetailPanel', () => {
 
   it('shows the switch failure reason and the returned path', () => {
     const result: OpResult = { ok: false, reason: 'checked-out-elsewhere', files: [], path: '/x', detail: '', logError: '' };
-    renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'x', result } });
+    renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'x', result: sw(result) } });
     expect(screen.getByText(/这个分支已经放在别的文件夹里了/)).toBeTruthy();
     expect(screen.getByText(/\/x/)).toBeTruthy();
   });
 
   it('shows the log error of a switch', () => {
     const result: OpResult = { ok: true, reason: '', files: [], path: '', detail: '', logError: 'disk full' };
-    renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'x', result } }, en);
+    renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'x', result: sw(result) } }, en);
     expect(screen.getByText(/disk full/)).toBeTruthy();
   });
 
   it('shows what git said when a switch failed', () => {
     const result: OpResult = { ok: false, reason: 'git-failed', files: [], path: '/w', detail: 'error: would be overwritten', logError: '' };
-    renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'x', result } }, en);
+    renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'x', result: sw(result) } }, en);
     expect(screen.getByText(en('switch.reason.git-failed'))).toBeTruthy();
     expect(screen.getByText(/would be overwritten/)).toBeTruthy();
   });
@@ -138,7 +140,7 @@ describe('DetailPanel', () => {
 
   it('does not show the result of another branch', () => {
     const result: OpResult = { ok: false, reason: 'dirty', files: [], path: '', detail: '', logError: '' };
-    renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'other', result } }, en);
+    renderPanel(branchOf('x', []), { busy: false, switchResult: { branch: 'other', result: sw(result) } }, en);
     expect(screen.queryByText(/uncommitted/)).toBeNull();
   });
 
@@ -250,7 +252,9 @@ describe('DetailPanel in the app', () => {
     fireEvent.click(await screen.findByRole('button', { name: '切换到这里' }));
     await waitFor(() => expect(switchBtn().disabled).toBe(true));
     fireEvent.click(switchBtn());
-    expect(calls.filter((c) => c.method === 'switch')).toHaveLength(1);
+    // the remote is read first, then the folder is switched once
+    await waitFor(() => expect(calls.filter((c) => c.method === 'switch')).toHaveLength(1));
+    expect(calls.filter((c) => c.method === 'fetch')).toHaveLength(2);
     expect(calls.find((c) => c.method === 'switch')!.params).toMatchObject({
       repo: '/demo/repo',
       folder: '/demo/repo',
@@ -261,7 +265,8 @@ describe('DetailPanel in the app', () => {
     expect(await screen.findByText(/这个分支已经放在别的文件夹里了/)).toBeTruthy();
     expect(screen.getByText(/\/x/)).toBeTruthy();
     await waitFor(() => expect(switchBtn().disabled).toBe(false));
-    expect(calls.filter((c) => c.method === 'view')).toHaveLength(2); // a refusal does not reload
+    // the refusal changed nothing, but the remote was just read: the view is read once more
+    await waitFor(() => expect(calls.filter((c) => c.method === 'view')).toHaveLength(3));
   });
 
   it('reloads the view after a successful switch', async () => {
@@ -271,5 +276,13 @@ describe('DetailPanel in the app', () => {
     await waitFor(() => expect(calls.filter((c) => c.method === 'view')).toHaveLength(2));
     fireEvent.click(await screen.findByRole('button', { name: '切换到这里' }));
     await waitFor(() => expect(calls.filter((c) => c.method === 'view')).toHaveLength(3));
+    expect(calls.filter((c) => c.method === 'switch')[0].params).toEqual({
+      repo: '/demo/repo',
+      folder: '/demo/repo',
+      branch: 'carol/feature/search',
+      latest: true,
+      shelve: false,
+      remote: '',
+    });
   });
 });

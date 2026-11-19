@@ -8,6 +8,7 @@ import { useApp } from '../state';
 import type { AppState, GitProblem } from '../state';
 import { Dialogs } from './dialogs/Dialogs';
 import { NoticeLine } from './NoticeLine';
+import { MainFolderLine } from './SwitchOutcome';
 import { Details } from './Details';
 import { GraphView } from './GraphView';
 import { ListView } from './ListView';
@@ -103,6 +104,7 @@ export function App({ host }: { host: Host }) {
           {fetchLine}
           {errorLine}
           {noticeLine}
+          <MainFolderLine t={t} state={state} actions={actions} />
           <Status t={t} state={state} />
         </Sidebar>
         <Dialogs t={t} host={host} state={state} actions={actions} />
@@ -135,6 +137,7 @@ export function App({ host }: { host: Host }) {
       {fetchLine}
       {errorLine}
       {noticeLine}
+      <MainFolderLine t={t} state={state} actions={actions} />
       <Status t={t} state={state} />
       {view && (
         <div class="main">

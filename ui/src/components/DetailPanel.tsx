@@ -3,7 +3,8 @@ import { blockText, chips, dateTime } from '../format';
 import type { T } from '../i18n';
 import { errorText, reasonText } from '../reasons';
 import type { Actions, AppState, Picked } from '../state';
-import type { BranchView, OpResult } from '../types';
+import type { BranchView } from '../types';
+import { SwitchOutcome } from './SwitchOutcome';
 import { NEWS_LIST_CAP } from './TrunkNews';
 
 interface Props {
@@ -38,24 +39,6 @@ function remoteText(b: BranchView, t: T): string {
     .map((c) => c.text);
   if (parts.length === 0 && !b.hasUpstream) return t('chip.unpushed');
   return parts.join(' · ');
-}
-
-function SwitchResult({ t, result }: { t: T; result: OpResult }) {
-  return (
-    <div class="switch-result" role="status">
-      <div class={result.ok ? 'ok' : 'bad'}>{result.ok ? t('detail.switched') : reasonText('switch.reason', result.reason, t)}</div>
-      {result.path && <div class="muted">{t('detail.path', { path: result.path })}</div>}
-      {result.files.length > 0 && (
-        <ul class="files">
-          {result.files.map((f) => (
-            <li>{f}</li>
-          ))}
-        </ul>
-      )}
-      {result.detail && <div class="muted">{t('dialog.detail', { detail: result.detail })}</div>}
-      {result.logError && <div class="bad">{t('detail.logError', { message: result.logError })}</div>}
-    </div>
-  );
 }
 
 interface AssignProps {
@@ -98,7 +81,7 @@ function AssignTrunk({ t, branch, trunks, current, locked, error, onApply }: Ass
 export function DetailPanel({ t, branch, state, actions, pick = null, assign }: Props) {
   if (!branch) return <div class="detail placeholder">{t('detail.none')}</div>;
   const b = branch;
-  const result = state.switchResult && state.switchResult.branch === b.name ? state.switchResult.result : null;
+  const switched = state.switchResult && !state.switchResult.back && state.switchResult.branch === b.name ? state.switchResult : null;
   const dirty = b.dirty;
   const hidden = dirty ? dirty.changed + dirty.untracked - dirty.files.length : 0;
   const note = sourceNote(b.trunkSource, t);
@@ -251,7 +234,7 @@ export function DetailPanel({ t, branch, state, actions, pick = null, assign }: 
           {b.canRemoveFolder ? t('detail.remove') : t('detail.removeBlocked', { reason: blockText(b.removeBlock, t) })}
         </button>
       </div>
-      {result && <SwitchResult t={t} result={result} />}
+      {switched && <SwitchOutcome t={t} branch={b.name} result={switched.result} inPlace={switched.inPlace} />}
     </div>
   );
 }

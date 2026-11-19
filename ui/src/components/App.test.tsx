@@ -47,7 +47,9 @@ function fakeHost(over: Record<string, unknown> = {}, locale = 'en') {
   return { host, calls };
 }
 
-const core = (calls: string[]) => calls.filter((c) => c !== 'repos' && c !== 'getGlobal' && c !== 'version');
+// core drops the reads around a repository's view: the list, the settings, the
+// git version and where the main folder was switched from
+const core = (calls: string[]) => calls.filter((c) => c !== 'repos' && c !== 'getGlobal' && c !== 'version' && c !== 'switchState');
 
 afterEach(cleanup);
 
@@ -218,6 +220,7 @@ describe('App', () => {
     render(<App host={host} />);
     await waitFor(() => expect(core(calls)).toEqual(['view', 'fetch', 'view']));
     expect(await screen.findByText(named('feature/login'))).toBeTruthy();
+    expect(calls.filter((c) => c === 'switchState')).toHaveLength(1); // read once the first view is there
   });
 
   it('shows a retry line when the fetch fails and fetches again on click', async () => {
