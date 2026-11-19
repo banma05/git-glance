@@ -444,7 +444,7 @@ func legacyOwnCommits(ctx context.Context, m *Matcher, trunkRef, branchRef strin
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("fork time: %w", err)
 	}
-	out, err = m.run(ctx, "log", noSignature, "--format=%H%x00%s%x00%ct", "-n", strconv.Itoa(maxOwnCommits), fork+".."+branchRef, "--")
+	out, err = m.run(ctx, "log", noSignature, "--format=%H%x00%s%x00%ct%x00%an", "-n", strconv.Itoa(maxOwnCommits), fork+".."+branchRef, "--")
 	if err != nil {
 		return nil, "", 0, err
 	}

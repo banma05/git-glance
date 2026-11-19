@@ -88,12 +88,19 @@ func TestBadRevisionMakesNoGitCall(t *testing.T) {
 			{"fileDiff", map[string]any{"repo": r.Dir, "a": "a", "b": bad, "path": "a.txt"}},
 			{"trunkCommits", map[string]any{"repo": r.Dir, "newer": bad, "older": "a", "limit": 5}},
 			{"trunkCommits", map[string]any{"repo": r.Dir, "newer": "a", "older": bad, "limit": 5}},
+			{"trunkNews", map[string]any{"repo": r.Dir, "trunk": bad, "branch": "a"}},
+			{"trunkNews", map[string]any{"repo": r.Dir, "trunk": "main", "branch": bad}},
+			{"recentCommits", map[string]any{"repo": r.Dir, "ref": bad, "limit": 5}},
+			{"commitFiles", map[string]any{"repo": r.Dir, "hash": bad}},
 		}
 		for _, tc := range calls {
 			if code := c.errCode(tc.method, tc.params); code != "bad-params" {
 				t.Errorf("%s %q gave %s", tc.method, bad, code)
 			}
 		}
+	}
+	if code := c.errCode("recentCommits", map[string]any{"repo": r.Dir, "ref": "main", "limit": -1}); code != "bad-params" {
+		t.Errorf("recentCommits limit -1 gave %s", code)
 	}
 	if got := rec.snapshot(); len(got) != 0 {
 		t.Fatalf("git ran for refused revisions: %v", got)
@@ -109,6 +116,9 @@ func TestReadCommandsCarrySafetyFlags(t *testing.T) {
 	c.ok("fileAt", map[string]any{"repo": r.Dir, "ref": "b", "path": "b1.txt"}, nil)
 	c.ok("fileDiff", map[string]any{"repo": r.Dir, "a": "a", "b": "b", "path": "b1.txt"}, nil)
 	c.ok("trunkCommits", map[string]any{"repo": r.Dir, "newer": "b", "older": "main", "limit": 5}, nil)
+	c.ok("trunkNews", map[string]any{"repo": r.Dir, "trunk": "b", "branch": "a"}, nil)
+	c.ok("recentCommits", map[string]any{"repo": r.Dir, "ref": "b", "limit": 5}, nil)
+	c.ok("commitFiles", map[string]any{"repo": r.Dir, "hash": "b"}, nil)
 	seen := map[string]int{}
 	for _, args := range rec.snapshot() {
 		sub := args[0]

@@ -12,11 +12,12 @@ import (
 	"github.com/banma05/git-glance/core/internal/gitx"
 )
 
-// CommitInfo describes one commit.
+// CommitInfo describes one commit. Author is the author's name.
 type CommitInfo struct {
 	Hash    string `json:"hash"`
 	Subject string `json:"subject"`
 	Time    int64  `json:"time"`
+	Author  string `json:"author"`
 }
 
 // Ref is a local or remote branch. Upstream is the full name of a local

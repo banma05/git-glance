@@ -23,7 +23,7 @@ const (
 	stateAll          = "all"
 	stateSome         = "some"
 	stateNone         = "none"
-	ownFields         = "--format=%m%H%x00%s%x00%ct" // %m: ">" in the range, "-" on its boundary
+	ownFields         = "--format=%m%H%x00%s%x00%ct%x00%an" // %m: ">" in the range, "-" on its boundary
 	hashAndSubject    = "--format=%H%x00%s"
 	literalPathPrefix = ":(literal)"
 	// noSignature goes on every log/show: log.showSignature=true in the user's
@@ -65,14 +65,14 @@ func parseCommits(out string) ([]repo.CommitInfo, error) {
 	commits := []repo.CommitInfo{}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(line, "\r"), "\x00")
-		if len(f) != 3 || f[0] == "" {
+		if len(f) != 4 || f[0] == "" {
 			continue
 		}
 		ts, err := strconv.ParseInt(f[2], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("commit time of %s: %w", f[0], err)
 		}
-		commits = append(commits, repo.CommitInfo{Hash: f[0], Subject: f[1], Time: ts})
+		commits = append(commits, repo.CommitInfo{Hash: f[0], Subject: f[1], Time: ts, Author: f[3]})
 	}
 	return commits, nil
 }
@@ -133,7 +133,7 @@ func parseOwn(out string) ([]repo.CommitInfo, map[string]int64, error) {
 			lines = append(lines, line[1:])
 		case strings.HasPrefix(line, "-"):
 			f := strings.Split(line[1:], "\x00")
-			if len(f) != 3 {
+			if len(f) != 4 {
 				continue
 			}
 			ts, err := strconv.ParseInt(f[2], 10, 64)
