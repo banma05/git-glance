@@ -234,7 +234,7 @@ export function DetailPanel({ t, branch, state, actions, pick = null, assign }: 
           {b.canRemoveFolder ? t('detail.remove') : t('detail.removeBlocked', { reason: blockText(b.removeBlock, t) })}
         </button>
       </div>
-      {switched && <SwitchOutcome t={t} branch={b.name} result={switched.result} inPlace={switched.inPlace} />}
+      {switched && <SwitchOutcome t={t} branch={b.name} result={switched.result} inPlace={switched.inPlace} stale={switched.stale} />}
     </div>
   );
 }

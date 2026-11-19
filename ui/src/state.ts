@@ -67,6 +67,7 @@ export interface ShelveAsk {
   files: string[];
   more: number; // changed files not listed
   fetched: boolean; // the remote was read for this switch already
+  stale: boolean; // that read failed: the switch goes to what was read before
 }
 
 // MainFolder is what the view says of the repository's main folder: where it
@@ -118,7 +119,8 @@ export interface AppState {
   settingsOutcome: SettingsOutcome | null;
   notice: Notice | null;
   // the last switch: shown in the details of its branch, or with the switch-back control (back)
-  switchResult: { branch: string; result: SwitchResult; back?: boolean; inPlace?: boolean } | null;
+  // stale: the remote could not be read first, so a "latest" went to what was read before
+  switchResult: { branch: string; result: SwitchResult; back?: boolean; inPlace?: boolean; stale?: boolean } | null;
   switchState: SwitchState | null; // the main folder's previous branch and the shelves; null until read
   ask: ShelveAsk | null; // a switch waiting for the shelving confirm
   assignResult: { branch: string; error: unknown } | null; // the last failed "belongs to trunk", shown in the detail area
@@ -326,24 +328,27 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       }
     };
 
-    // readRemote reads the remote before a switch to the latest. A failure is
-    // shown in the fetch line; the switch then goes to what was read before.
-    const readRemote = async (repo: string) => {
+    // readRemote reads the remote before a switch to the latest; true when it
+    // was read. A failure is shown in the fetch line, and the switch then goes
+    // to what was read before.
+    const readRemote = async (repo: string): Promise<boolean> => {
       try {
         const f = await rpc(host, 'fetch', { repo });
         if (current(repo)) patch({ fetchError: f.ok ? '' : f.error || 'unknown', fetchSlow: false });
+        return f.ok;
       } catch (e) {
-        if (!current(repo) || noteGit(e) || (e instanceof HostError && e.code === 'cancelled')) return;
+        if (!current(repo) || noteGit(e) || (e instanceof HostError && e.code === 'cancelled')) return false;
         if (e instanceof HostError && e.code === 'still-running') patch({ fetchSlow: true });
         else if (e instanceof HostError && e.code === 'no-token') throw e;
         else patch({ fetchError: reasonOf(e) });
+        return false;
       }
     };
 
     // switchMain switches the main folder. Without the user's confirm nothing
     // is shelved: the first try never shelves, and when the folder has changes
     // the confirm lists them; only its button sends the switch that shelves.
-    const switchMain = async (target: SwitchTarget, shelve: boolean, fetched: boolean) => {
+    const switchMain = async (target: SwitchTarget, shelve: boolean, fetched: boolean, stale = false) => {
       const { repo, view } = ref.current;
       if (!repo || !view || !canWrite()) return;
       const main = mainFolderOf(view, repo);
@@ -352,13 +357,13 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         // the view knows there are changes: ask before anything is sent
         const files = main.dirty.files;
         const more = Math.max(0, main.dirty.changed + main.dirty.untracked - files.length);
-        patch({ ask: { repo, target, folder: main.folder, files, more, fetched }, dialog: 'shelve', switchResult: null });
+        patch({ ask: { repo, target, folder: main.folder, files, more, fetched, stale }, dialog: 'shelve', switchResult: null });
         return;
       }
       patch({ busy: true, switchResult: null, ask: null });
       try {
         if (target.latest && !fetched) {
-          await readRemote(repo);
+          stale = !(await readRemote(repo));
           fetched = true;
         }
         if (!current(repo)) return;
@@ -368,9 +373,9 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         // a dirty folder that is already on the branch cannot be updated under shelved work
         const inPlace = !result.ok && result.reason === 'dirty' && (shelve || !away);
         if (!result.ok && result.reason === 'dirty' && !inPlace) {
-          patch({ ask: { repo, target, folder: main.folder, files: result.files, more: 0, fetched }, dialog: 'shelve' });
+          patch({ ask: { repo, target, folder: main.folder, files: result.files, more: 0, fetched, stale }, dialog: 'shelve' });
         } else {
-          patch({ switchResult: { branch: target.branch, result, back: target.back, inPlace } });
+          patch({ switchResult: { branch: target.branch, result, back: target.back, inPlace, stale } });
         }
         if (fetched || switchRan(result)) await loadView(repo);
         if (switchRan(result)) await readSwitchState(repo);
@@ -462,6 +467,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         const cur = ref.current.repo;
         if (cur && repos.includes(cur)) {
           await loadView(cur).catch((e) => failFor(cur, e));
+          await readSwitchState(cur); // the folder may have been switched outside the page
         } else if (repos.length > 0) {
           await open(repos[0]);
         } else {
@@ -547,7 +553,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       confirmShelve: () => {
         const a = ref.current.ask;
         patch({ ask: null, dialog: null });
-        if (a && current(a.repo)) void switchMain(a.target, true, a.fetched);
+        if (a && current(a.repo)) void switchMain(a.target, true, a.fetched, a.stale);
       },
       openFolder: (path) => {
         host.openFolder(path).catch(fail);

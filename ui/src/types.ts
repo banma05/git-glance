@@ -213,7 +213,14 @@ export interface Shelf {
   base: string; // HEAD when it was shelved
   time: number;
   files: string[];
-  why: string; // "" or why it is not (or will not be) put back automatically
+  // pending | kept | superseded | restored | restored-entry-kept | orphan;
+  // only pending is ever put back automatically; orphan only in switchState (folder "")
+  state: string;
+  // "" | base-moved | not-on-branch | folder-dirty | path-exists | check-failed | entry-gone |
+  // apply-failed | apply-partial | apply-mismatch | entry-ambiguous | drop-failed | drop-shifted |
+  // superseded | no-record
+  whyCode: string;
+  why: string; // the English detail; "" exactly when whyCode is ""
 }
 
 // SwitchResult is the answer of switch. Every key is always there.
@@ -222,12 +229,14 @@ export interface SwitchResult extends OpResult {
   restored: Shelf | null; // work put back: the arrival branch's, or the just-taken one after a failed move
   keptShelf: Shelf | null; // work that was not put back; why says why
   fastForwarded: boolean;
-  aheadNote: string; // "" or why the branch was not fast-forwarded
+  noFastForward: string; // "" | ahead | no-upstream | shelf-pending
+  aheadNote: string; // "" or, with noFastForward ahead, the count and the upstream
 }
 
 // SwitchState is what the core knows of a folder's switches: the branch it
 // was last switched away from ("" when none or already there) and the
-// repository's shelves still in git stash list, newest first.
+// repository's shelves still in git stash list (every folder, orphans
+// included), in stash order, newest first.
 export interface SwitchState {
   previous: string;
   shelves: Shelf[];

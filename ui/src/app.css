@@ -139,6 +139,10 @@ select { background: var(--surface); color: var(--fg); border: 1px solid var(--b
 .main-folder { display: flex; flex-direction: column; gap: 2px; padding: 4px 12px; border-bottom: 1px solid var(--border); }
 .main-folder .switch-result { margin-top: 2px; }
 .main-away { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.shelf-row { margin-top: 2px; }
+.by-hand { overflow-wrap: anywhere; }
+.core-detail { font-size: 11px; color: var(--fg-mute); overflow-wrap: anywhere; }
+.core-detail summary { cursor: pointer; }
 .switch-result .ok { color: var(--tone-ok); }
 .switch-result .bad { color: var(--tone-warn); }
 

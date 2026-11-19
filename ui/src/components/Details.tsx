@@ -173,7 +173,7 @@ export function TrunkDetail({ t, group, config, newsOpen = false, locked = false
         </button>
       </div>
       {switched && !switched.back && (switched.branch === tv.name || switched.branch === tv.test) && (
-        <SwitchOutcome t={t} branch={switched.branch} result={switched.result} inPlace={switched.inPlace} />
+        <SwitchOutcome t={t} branch={switched.branch} result={switched.result} inPlace={switched.inPlace} stale={switched.stale} />
       )}
     </div>
   );

@@ -29,7 +29,7 @@ function actions(): Actions {
 
 type Extra = Pick<AppState, 'busy' | 'switchResult'> & Partial<Pick<AppState, 'news'>>;
 // sw is a switch answer with nothing shelved or put back
-const sw = (r: OpResult): SwitchResult => ({ shelved: null, restored: null, keptShelf: null, fastForwarded: false, aheadNote: '', ...r });
+const sw = (r: OpResult): SwitchResult => ({ shelved: null, restored: null, keptShelf: null, fastForwarded: false, noFastForward: '', aheadNote: '', ...r });
 const idle: Extra = { busy: false, switchResult: null };
 
 function renderPanel(branch: BranchView | null, state: Extra = idle, t = zh, a: Actions = actions()) {

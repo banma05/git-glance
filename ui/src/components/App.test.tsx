@@ -379,7 +379,8 @@ describe('App failures and repo switching', () => {
     await waitFor(() => expect(calls.filter((c) => c === 'view:/b').length).toBe(2));
     const before = calls.length;
     await act(async () => refresh());
-    await waitFor(() => expect(calls.slice(before)).toEqual(['repos:', 'view:/b']));
+    // the view and where the main folder was switched from
+    await waitFor(() => expect(calls.slice(before)).toEqual(['repos:', 'view:/b', 'switchState:/b']));
     expect(screen.getByRole('tab', { name: 'b' }).getAttribute('aria-selected')).toBe('true');
   });
 

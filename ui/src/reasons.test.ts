@@ -15,7 +15,10 @@ const CODES: Record<ReasonKind, string[]> = {
     'dirty', 'ahead', 'diverged', 'upstream-gone', 'folder-missing', 'checked-out-twice', 'hidden-changes', 'git-failed',
     'in-progress', 'tracks-other-branch', 'verify-failed',
   ],
-  'switch.reason': ['dirty', 'folder-missing', 'checked-out-elsewhere', 'no-branch', 'detached', 'hidden-changes', 'git-failed', 'verify-failed'],
+  'switch.reason': [
+    'dirty', 'folder-missing', 'checked-out-elsewhere', 'no-branch', 'detached', 'hidden-changes', 'git-failed', 'verify-failed',
+    'in-progress', 'shelf-failed', 'restore-failed', 'unsaved-editors',
+  ],
   'create.reason': [
     'bad-name', 'branch-exists', 'path-exists', 'path-inside-folder',
     'no-branch', 'checked-out-elsewhere', 'in-progress', 'git-failed', 'verify-failed',
