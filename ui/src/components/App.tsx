@@ -144,7 +144,7 @@ export function App({ host }: { host: Host }) {
                 <ListView t={t} view={view} state={state} actions={actions} compact />
               </aside>
               <div class="center">
-                <GraphView t={t} host={host} repo={state.repo} view={view} theme={state.theme} selected={state.selected} pick={state.pick} onSelect={actions.select} onCommit={actions.selectCommit} onTrunk={actions.selectTrunk} />
+                <GraphView t={t} host={host} repo={state.repo} view={view} theme={state.theme} selected={state.selected} pick={state.pick} onSelect={actions.select} onCommit={actions.selectCommit} onTrunk={actions.selectTrunk} trunk={state.selectedTrunk} onShowTrunk={actions.showTrunk} />
               </div>
             </>
           ) : (

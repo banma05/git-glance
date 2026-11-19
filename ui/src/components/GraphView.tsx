@@ -67,16 +67,18 @@ interface Props {
   onSelect(branch: string): void;
   onCommit(branch: string, hash: string): void;
   onTrunk(p: TrunkPick): void;
+  trunk?: string; // the trunk whose details are shown, "" when none
+  onShowTrunk?(name: string): void; // a click on a trunk's title; without it the title is plain text
   inline?: ComponentChildren; // details shown right under the row the selection is about (the narrow layout)
 }
 
 // GraphView draws one block per trunk, one line per row. A row is one button:
 // the lanes as a small SVG, then a name and at most one chip. The details of
 // whatever was clicked live in the detail area, or with `inline` right under the
-// row they are about: the ringed node, or the opened list of hidden trunk
-// commits that holds the picked one. Nothing remembers a row by its position,
-// so a new view never puts the details under the wrong row.
-export function GraphView({ t, host, repo, view, theme, selected, pick = null, onSelect, onCommit, onTrunk, inline }: Props) {
+// row they are about: the trunk's title, the ringed node, or the opened list of
+// hidden trunk commits that holds the picked one. Nothing remembers a row by its
+// position, so a new view never puts the details under the wrong row.
+export function GraphView({ t, host, repo, view, theme, selected, pick = null, onSelect, onCommit, onTrunk, trunk = '', onShowTrunk, inline }: Props) {
   const fetched = useRef<Record<string, Fetched>>({});
   const [, redraw] = useState(0);
   const [hover, setHover] = useState('');
@@ -132,6 +134,9 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
           return b ? branchColor(theme, b) : '';
         };
         const seen = new Set<string>(); // the first row of a branch carries its name and chip
+        const shown = !!trunk && trunk === section.trunk; // this trunk's own details are shown
+        const atTitle = !!inline && shown && !placed;
+        if (atTitle) placed = true;
 
         const nodes = rows.map((r, i) => {
           const h = heightOf(r.kind);
@@ -294,9 +299,22 @@ export function GraphView({ t, host, repo, view, theme, selected, pick = null, o
           );
         });
 
+        const name = t('group.trunk', { name: section.trunk });
         return (
           <section class="g-section" key={section.trunk}>
-            <div class="g-title">{t('group.trunk', { name: section.trunk })}</div>
+            {onShowTrunk ? (
+              <button
+                class={`g-title${shown ? ' selected' : ''}`}
+                aria-pressed={shown}
+                title={t('group.showTrunk')}
+                onClick={() => onShowTrunk(section.trunk)}
+              >
+                {name}
+              </button>
+            ) : (
+              <div class="g-title">{name}</div>
+            )}
+            {atTitle && <div class="g-inline">{inline}</div>}
             {nodes}
           </section>
         );

@@ -9,7 +9,7 @@ import type { BranchView } from '../types';
 import { DetailPanel } from './DetailPanel';
 import { Details, assignOf } from './Details';
 import { GraphView } from './GraphView';
-import { branchColor } from './ListView';
+import { GroupHead, branchColor } from './ListView';
 import { AddRepo } from './RepoTabs';
 import { BranchName } from './BranchName';
 
@@ -53,13 +53,22 @@ export function Sidebar({ t, host, state, actions, children }: Props) {
       .map((n) => view?.branches[n])
       .filter((b): b is BranchView => !!b)
       .map((b) => <Fish key={b.name} t={t} b={b} state={state} actions={actions} />);
-  const group = (key: string, title: string, names: string[]) => (
+  // a trunk's group shows the trunk's details right under its header, folded or not
+  const group = (key: string, title: string, names: string[], trunk = '') => (
     <section class="group">
-      <button class="group-head" aria-expanded={!state.collapsed[key]} onClick={() => actions.toggleGroup(key)}>
-        <span aria-hidden="true">{state.collapsed[key] ? '▸' : '▾'} </span>
-        {title}
-        <span class="muted"> ({names.length})</span>
-      </button>
+      <GroupHead
+        t={t}
+        title={title}
+        count={names.length}
+        folded={!!state.collapsed[key]}
+        onFold={() => actions.toggleGroup(key)}
+        trunk={
+          trunk
+            ? { name: trunk, selected: state.selectedTrunk === trunk, hint: t('group.showTrunk'), onShow: () => actions.showTrunk(trunk) }
+            : undefined
+        }
+      />
+      {trunk && view && state.selectedTrunk === trunk && <Details t={t} view={view} state={state} actions={actions} />}
       {!state.collapsed[key] && list(names)}
     </section>
   );
@@ -103,13 +112,15 @@ export function Sidebar({ t, host, state, actions, children }: Props) {
             onSelect={actions.select}
             onCommit={actions.selectCommit}
             onTrunk={actions.selectTrunk}
-            inline={state.selected || state.pick ? <Details t={t} view={view} state={state} actions={actions} /> : undefined}
+            trunk={state.selectedTrunk}
+            onShowTrunk={actions.showTrunk}
+            inline={state.selected || state.selectedTrunk || state.pick ? <Details t={t} view={view} state={state} actions={actions} /> : undefined}
           />
         </>
       )}
       {view && state.mode === 'list' && (
         <div class="list compact">
-          {view.groups.map((g) => group(trunkKey(g.trunk.name), t('group.trunk', { name: g.trunk.name }), g.branches))}
+          {view.groups.map((g) => group(trunkKey(g.trunk.name), t('group.trunk', { name: g.trunk.name }), g.branches, g.trunk.name))}
           {view.unknown.length > 0 && group('unknown', t('group.unknown'), view.unknown)}
           {view.old.length > 0 && group('old', t('group.old'), view.old)}
         </div>

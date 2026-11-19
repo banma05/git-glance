@@ -203,11 +203,11 @@ export function mockView(repo: string): View {
 
   const groups: Group[] = [
     {
-      trunk: trunk('main', { time: now - 5 * DAY, test: 'test', releases: ['release/1.0'] }),
+      trunk: trunk('main', { time: now - 5 * DAY, folder: dir, test: 'test', releases: ['release/1.0'] }),
       branches: ['alice/feature/login', 'bob/fix/timeout', 'carol/feature/search', 'alice/fix/typo'],
     },
     {
-      trunk: trunk('develop', { time: now - 2 * DAY, localBehind: 3 }),
+      trunk: trunk('develop', { hash: hash(102), time: now - 2 * DAY, localBehind: 3 }),
       branches: ['dave/feature/export', 'erin/feature/billing'],
     },
   ];

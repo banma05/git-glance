@@ -92,6 +92,47 @@ describe('sidebar', () => {
   });
 });
 
+describe('sidebar trunk details', () => {
+  const pressed = (el: Element) => el.getAttribute('aria-pressed');
+
+  it('shows a trunk under its header in the list; the arrow only folds', async () => {
+    const { host } = sidebarHost({ repos: ['/demo/repo'] });
+    render(<App host={host} />);
+    await screen.findByText(named('feature/login'));
+    const name = screen.getByRole('button', { name: /^Trunk develop ?\(2\)$/ }); // jsdom drops the space
+    fireEvent.click(name);
+    expect(pressed(name)).toBe('true');
+    const head = name.closest('.group-head')!;
+    expect(head.nextElementSibling!.classList.contains('detail')).toBe(true);
+    expect(head.nextElementSibling!.textContent).toContain('Behind the remote by 3');
+
+    const arrow = screen.getByRole('button', { name: 'Show or hide the branches under develop' });
+    fireEvent.click(arrow);
+    expect(arrow.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText(named('feature/export'))).toBeNull();
+    expect(pressed(name)).toBe('true'); // folding keeps the trunk shown
+    expect(screen.getByText('Behind the remote by 3')).toBeTruthy();
+
+    fireEvent.click(screen.getByText(named('feature/login')));
+    expect(pressed(name)).toBe('false');
+    expect(screen.queryByText('Behind the remote by 3')).toBeNull();
+  });
+
+  it('shows a trunk right under its title in the graph', async () => {
+    const { host } = sidebarHost({ repos: ['/demo/repo'] });
+    const { container } = render(<App host={host} />);
+    await screen.findByText(named('feature/login'));
+    fireEvent.click(screen.getByRole('button', { name: 'Graph' }));
+    const title = screen.getByRole('button', { name: 'Trunk main' });
+    fireEvent.click(title);
+    expect(pressed(title)).toBe('true');
+    const after = title.nextElementSibling!;
+    expect(after.classList.contains('g-inline')).toBe(true);
+    expect(after.textContent).toContain('Compared through');
+    expect(container.querySelectorAll('.g-inline')).toHaveLength(1);
+  });
+});
+
 describe('narrow layout rules', () => {
   const css = fs.readFileSync(path.resolve(__dirname, '../app.css'), 'utf8');
   const rule = (selector: string) => {

@@ -11,8 +11,8 @@ import type { BranchView, View } from '../types';
 interface Props {
   t: T;
   view: View;
-  state: Pick<AppState, 'selected' | 'collapsed' | 'theme'>;
-  actions: Pick<Actions, 'select' | 'toggleGroup' | 'moveTrunk'>;
+  state: Pick<AppState, 'selected' | 'selectedTrunk' | 'collapsed' | 'theme'>;
+  actions: Pick<Actions, 'select' | 'toggleGroup' | 'moveTrunk' | 'showTrunk'>;
   compact?: boolean; // the left column next to the graph: names only
 }
 
@@ -50,8 +50,47 @@ function BranchRow({ t, b, theme, selected, compact, onSelect }: RowProps) {
   );
 }
 
+interface HeadProps {
+  t: T;
+  title: string;
+  count: number;
+  folded: boolean;
+  onFold(): void;
+  // a trunk's group: its name shows the trunk's details, the arrow folds
+  trunk?: { name: string; selected: boolean; hint: string; onShow(): void };
+  drag?: Record<string, unknown>; // what makes the header draggable
+}
+
+// GroupHead is the header of a group. The header of a trunk has two buttons:
+// the arrow only folds the group, the name shows (or hides) the trunk's details.
+export function GroupHead({ t, title, count, folded, onFold, trunk, drag }: HeadProps) {
+  const arrow = <span aria-hidden="true">{folded ? '▸' : '▾'} </span>;
+  if (!trunk) {
+    return (
+      <button class="group-head" aria-expanded={!folded} onClick={onFold}>
+        {arrow}
+        {title}
+        <span class="muted"> ({count})</span>
+      </button>
+    );
+  }
+  const foldLabel = t('group.fold', { name: trunk.name });
+  return (
+    <div class={`group-head trunk-head${trunk.selected ? ' selected' : ''}`} {...drag}>
+      <button class="group-fold" aria-expanded={!folded} aria-label={foldLabel} title={foldLabel} onClick={onFold}>
+        {arrow}
+      </button>
+      <button class="group-name" aria-pressed={trunk.selected} title={trunk.hint} onClick={trunk.onShow}>
+        {title}
+        <span class="muted"> ({count})</span>
+      </button>
+    </div>
+  );
+}
+
 // ListView is the branches grouped by trunk, then "cannot tell" and "old
-// branches". Trunk groups fold and can be dragged to a new place.
+// branches". Trunk groups fold, show their trunk's details and can be dragged
+// to a new place.
 export function ListView({ t, view, state, actions, compact = false }: Props) {
   const dragFrom = useRef('');
 
@@ -71,12 +110,8 @@ export function ListView({ t, view, state, actions, compact = false }: Props) {
         />
       ));
 
-  const header = (key: string, title: string, count: number, extra?: Record<string, unknown>) => (
-    <button class="group-head" aria-expanded={!state.collapsed[key]} onClick={() => actions.toggleGroup(key)} {...extra}>
-      <span aria-hidden="true">{state.collapsed[key] ? '▸' : '▾'} </span>
-      {title}
-      <span class="muted"> ({count})</span>
-    </button>
+  const header = (key: string, title: string, count: number) => (
+    <GroupHead t={t} title={title} count={count} folded={!!state.collapsed[key]} onFold={() => actions.toggleGroup(key)} />
   );
 
   return (
@@ -95,13 +130,25 @@ export function ListView({ t, view, state, actions, compact = false }: Props) {
               if (from && from !== g.trunk.name) actions.moveTrunk(from, index);
             }}
           >
-            {header(key, t('group.trunk', { name: g.trunk.name }), g.branches.length, {
-              draggable: true,
-              title: t('group.dragHint'),
-              onDragStart: () => {
-                dragFrom.current = g.trunk.name;
-              },
-            })}
+            <GroupHead
+              t={t}
+              title={t('group.trunk', { name: g.trunk.name })}
+              count={g.branches.length}
+              folded={!!state.collapsed[key]}
+              onFold={() => actions.toggleGroup(key)}
+              trunk={{
+                name: g.trunk.name,
+                selected: state.selectedTrunk === g.trunk.name,
+                hint: t('group.dragHint'),
+                onShow: () => actions.showTrunk(g.trunk.name),
+              }}
+              drag={{
+                draggable: true,
+                onDragStart: () => {
+                  dragFrom.current = g.trunk.name;
+                },
+              }}
+            />
             {!state.collapsed[key] && (list.length > 0 ? list : <div class="muted pad">{t('group.empty')}</div>)}
           </section>
         );

@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import { Details } from './Details';
 import { layoutView } from './graphFixture';
 import { makeT } from '../i18n';
 import type { Actions, AppState } from '../state';
+import { dateTime } from '../format';
+import type { TrunkView, View } from '../types';
 
 const t = makeT('en');
 const actions = () => new Proxy({} as Actions, { get: () => vi.fn() });
-const state = (over: Partial<AppState>) => ({ selected: '', pick: null, busy: false, switchResult: null, ...over }) as AppState;
+const state = (over: Partial<AppState>) => ({ selected: '', selectedTrunk: '', pick: null, busy: false, switchResult: null, ...over }) as AppState;
 
 afterEach(cleanup);
 
@@ -39,5 +41,112 @@ describe('Details', () => {
     expect(container.querySelector('.detail-commit')!.textContent).toContain('same change');
     expect(screen.getAllByText('commit a2').length).toBeGreaterThan(0);
     expect(container.querySelector('.detail-name strong')!.textContent).toBe('A');
+  });
+});
+
+describe('trunk details', () => {
+  const trunkView = (over: Partial<TrunkView> = {}, branches = ['A', 'B']) => {
+    const view = layoutView();
+    const trunk: TrunkView = {
+      name: 'main',
+      ref: 'origin/main',
+      hash: 'abcdef1234567890abcdef1234567890abcdef12',
+      time: 1_700_000_100,
+      hasLocal: true,
+      localAhead: 0,
+      localBehind: 0,
+      folder: '',
+      test: '',
+      releases: [],
+      ...over,
+    };
+    view.groups = [{ trunk, branches }];
+    return view;
+  };
+  // spies hands out one mock per action, so a test can look at its calls
+  const spies = () => {
+    const made: Record<string, ReturnType<typeof vi.fn>> = {};
+    return new Proxy({} as Actions, { get: (_, k: string) => (made[k] ??= vi.fn()) });
+  };
+  const show = (view: View, a: Actions = spies(), locale = 'en') =>
+    render(<Details t={makeT(locale)} view={view} actions={a} state={state({ selectedTrunk: 'main' })} />);
+  // dd is the value next to a label of the details grid
+  const dd = (label: string) => screen.getByText(label, { selector: 'dt' }).nextElementSibling!.textContent;
+
+  it('shows the name, the ref it is compared through, its latest commit and how many branches it has', () => {
+    const { container } = show(trunkView());
+    expect(container.querySelector('.detail-name strong')!.textContent).toBe('main');
+    expect(dd('Compared through')).toBe('origin/main');
+    expect(dd('Latest commit')).toContain('abcdef1');
+    expect(dd('Latest commit')).toContain(dateTime(1_700_000_100));
+    expect(dd('Branches under it')).toBe('2');
+    expect(screen.queryByText('Folder', { selector: 'dt' })).toBeNull();
+  });
+
+  it('says how the local branch stands against the remote', () => {
+    const cases: Array<[Partial<TrunkView>, string]> = [
+      [{ hasLocal: false }, 'None; only on the remote'],
+      [{ ref: 'main' }, 'Local only; nothing on the remote to compare with'],
+      [{}, 'Same as the remote'],
+      [{ localAhead: 2 }, 'Ahead of the remote by 2'],
+      [{ localBehind: 3 }, 'Behind the remote by 3'],
+      [{ localAhead: 1, localBehind: 4 }, 'Ahead of the remote by 1 · Behind the remote by 4'],
+    ];
+    for (const [over, text] of cases) {
+      show(trunkView(over));
+      expect(dd('Local branch'), text).toBe(text);
+      cleanup();
+    }
+  });
+
+  it('names the local branch as what it is compared through when the remote has none', () => {
+    show(trunkView({ ref: 'main' }));
+    expect(dd('Compared through')).toBe('main (the local branch; the remote has none)');
+  });
+
+  it('shows the test and release branches, or that they are not set and where to set them', () => {
+    show(trunkView({ test: 'test', releases: ['release/1.0', 'release/2.0'] }));
+    expect(dd('Test branch')).toBe('test');
+    expect(dd('Release branches')).toBe('release/1.0, release/2.0');
+    expect(screen.queryByText(/Settings → Branch roles/)).toBeNull();
+    cleanup();
+    show(trunkView());
+    expect(dd('Test branch')).toBe('Not set');
+    expect(dd('Release branches')).toBe('Not set');
+    expect(screen.getByText('Set them in Settings → Branch roles')).toBeTruthy();
+  });
+
+  it('offers Open in editor only when a folder has the trunk checked out', () => {
+    const a = spies();
+    show(trunkView({ folder: '/w/repo' }), a);
+    expect(dd('Folder')).toBe('/w/repo');
+    fireEvent.click(screen.getByRole('button', { name: 'Open in editor' }));
+    expect(a.openFolder).toHaveBeenCalledWith('/w/repo');
+    cleanup();
+    show(trunkView());
+    expect(screen.queryByRole('button', { name: 'Open in editor' })).toBeNull();
+  });
+
+  it('copies the trunk name and opens Compare, and has no button that changes anything', () => {
+    const a = spies();
+    const { container } = show(trunkView(), a);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy branch name' }));
+    expect(a.copy).toHaveBeenCalledWith('main');
+    fireEvent.click(screen.getByRole('button', { name: 'Compare with…' }));
+    expect(a.openDialog).toHaveBeenCalledWith('compare');
+    const buttons = Array.from(container.querySelectorAll('button')).map((b) => b.textContent);
+    expect(buttons).toEqual(['Copy branch name', 'Compare with…']);
+  });
+
+  it('speaks Chinese in a Chinese editor', () => {
+    const zh = makeT('zh-cn');
+    show(trunkView({ localBehind: 3 }), actions(), 'zh-cn');
+    expect(dd(zh('trunk.local'))).toBe(zh('trunk.local.behind', { n: 3 }));
+    expect(dd(zh('trunk.test'))).toBe(zh('trunk.notSet'));
+  });
+
+  it('shows a branch again once the trunk is no longer selected', () => {
+    render(<Details t={t} view={trunkView()} actions={actions()} state={state({ selected: 'A' })} />);
+    expect(screen.queryByText('Compared through')).toBeNull();
   });
 });

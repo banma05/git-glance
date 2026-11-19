@@ -38,7 +38,7 @@ export function Compare({ t, host, state }: { t: T; host: Host; state: AppState 
     for (const n of Object.keys(view.branches)) if (!refs.has(n)) refs.set(n, `refs/heads/${n}`);
   }
   const names = [...refs.keys()];
-  const [a, setA] = useState(state.selected);
+  const [a, setA] = useState(state.selected || state.selectedTrunk); // what the details were about
   const [b, setB] = useState('');
   const [shown, setShown] = useState<Shown | null>(null);
   const [diff, setDiff] = useState<{ path: string; result: FileDiffResult } | null>(null);

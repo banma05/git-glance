@@ -61,6 +61,7 @@ export interface AppState {
   noToken: boolean;
   mode: ViewMode;
   selected: string; // branch name, "" when none
+  selectedTrunk: string; // trunk whose details are shown, "" when none; never set together with selected or pick
   pick: Picked | null; // a commit or trunk commit picked in the graph
   collapsed: Record<string, boolean>; // group key -> folded
   dialog: DialogName | null;
@@ -87,6 +88,7 @@ export interface Actions {
   select(branch: string): void;
   selectCommit(branch: string, hash: string): void;
   selectTrunk(p: TrunkPick): void;
+  showTrunk(name: string): void; // the details of a trunk itself; again hides them
   switchTo(branch: string): void; // switch the main folder to a branch
   openFolder(path: string): void;
   copy(text: string): void;
@@ -141,6 +143,7 @@ function initial(host: Host): AppState {
     noToken: false,
     mode: 'list',
     selected: '',
+    selectedTrunk: '',
     pick: null,
     collapsed: {},
     dialog: null,
@@ -205,11 +208,12 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     // stale is what of the selection a new view no longer has: a branch that is
     // gone, a commit no longer among its own, a trunk that is gone.
     const stale = (view: View): Partial<AppState> => {
-      const { selected, pick } = ref.current;
+      const { selected, selectedTrunk, pick } = ref.current;
       const out: Partial<AppState> = {};
       if (selected && !view.branches[selected]) Object.assign(out, { selected: '', switchResult: null, assignResult: null });
       if (pick?.kind === 'commit' && !view.branches[pick.branch]?.own.some((c) => c.hash === pick.hash)) out.pick = null;
       if (pick?.kind === 'trunk' && !view.sections.some((s) => s.trunk === pick.trunk)) out.pick = null;
+      if (selectedTrunk && !view.groups.some((g) => g.trunk.name === selectedTrunk)) out.selectedTrunk = '';
       return out;
     };
 
@@ -244,7 +248,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
 
     const open = async (repo: string) => {
       // fetching is reset here: a refresh of the repository left behind drops its result
-      patch({ repo, view: null, selected: '', pick: null, fetchError: '', fetchSlow: false, error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
+      patch({ repo, view: null, selected: '', selectedTrunk: '', pick: null, fetchError: '', fetchSlow: false, error: null, alignReport: null, switchResult: null, createOutcome: null, removeOutcome: null, fetching: false });
       try {
         await loadView(repo);
         if (!current(repo)) return;
@@ -325,7 +329,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         } else if (repos.length > 0) {
           await open(repos[0]);
         } else {
-          patch({ repo: '', view: null, selected: '', pick: null, loaded: true });
+          patch({ repo: '', view: null, selected: '', selectedTrunk: '', pick: null, loaded: true });
         }
       } catch (e) {
         fail(e);
@@ -366,20 +370,38 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
       refresh: () => {
         if (ref.current.repo && !ref.current.fetching) void refresh(ref.current.repo);
       },
-      // a picked commit belongs to the graph it was clicked in; the branch stays selected
+      // a picked commit belongs to the graph it was clicked in; the branch or trunk stays selected
       setMode: (mode) => patch(mode === ref.current.mode ? {} : { mode, pick: null }),
       select: (selected) =>
-        patch({ selected: ref.current.selected === selected && !ref.current.pick ? '' : selected, pick: null, switchResult: null, assignResult: null }),
+        patch({
+          selected: ref.current.selected === selected && !ref.current.pick ? '' : selected,
+          selectedTrunk: '',
+          pick: null,
+          switchResult: null,
+          assignResult: null,
+        }),
       selectCommit: (branch, hash) => {
         const p = ref.current.pick;
         const same = p?.kind === 'commit' && p.branch === branch && p.hash === hash;
-        patch(same ? { selected: '', pick: null, switchResult: null } : { selected: branch, pick: { kind: 'commit', branch, hash }, switchResult: null });
+        patch(
+          same
+            ? { selected: '', pick: null, switchResult: null }
+            : { selected: branch, selectedTrunk: '', pick: { kind: 'commit', branch, hash }, switchResult: null },
+        );
       },
       selectTrunk: (p) => {
         const cur = ref.current.pick;
         const same = cur?.kind === 'trunk' && cur.hash === p.hash;
-        patch(same ? { selected: '', pick: null } : { selected: '', pick: { kind: 'trunk', ...p }, switchResult: null });
+        patch(same ? { selected: '', pick: null } : { selected: '', selectedTrunk: '', pick: { kind: 'trunk', ...p }, switchResult: null });
       },
+      showTrunk: (name) =>
+        patch({
+          selectedTrunk: ref.current.selectedTrunk === name ? '' : name,
+          selected: '',
+          pick: null,
+          switchResult: null,
+          assignResult: null,
+        }),
       switchTo: (branch) => {
         const { repo, view } = ref.current;
         if (!repo || !view || !canWrite()) return;

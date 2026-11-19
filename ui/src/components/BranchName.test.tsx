@@ -94,7 +94,7 @@ describe('the rows that show branch names cut them from the front', () => {
     it(compact ? 'in the list beside the graph' : 'in the list', () => {
       const view = mockView('/demo/repo');
       const { container } = render(
-        <ListView t={t} view={view} state={{ selected: '', collapsed: {}, theme: 'dark' }} actions={actions} compact={compact} />,
+        <ListView t={t} view={view} state={{ selected: '', selectedTrunk: '', collapsed: {}, theme: 'dark' }} actions={actions} compact={compact} />,
       );
       const row = [...container.querySelectorAll('.row')].find((r) => r.getAttribute('title') === 'alice/feature/login')!;
       expect(parts(row.querySelector('.bname')!)).toEqual({ pre: 'feature', last: '/login' });

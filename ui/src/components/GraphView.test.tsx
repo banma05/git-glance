@@ -33,6 +33,7 @@ interface Opts {
   selected?: string;
   pick?: Picked | null;
   inline?: preact.ComponentChildren;
+  trunk?: string;
 }
 
 function setup(o: Opts = {}) {
@@ -40,6 +41,7 @@ function setup(o: Opts = {}) {
   const onSelect = vi.fn();
   const onCommit = vi.fn();
   const onTrunk = vi.fn();
+  const onShowTrunk = vi.fn();
   const utils = render(
     <GraphView
       t={makeT('en')}
@@ -52,10 +54,12 @@ function setup(o: Opts = {}) {
       onSelect={onSelect}
       onCommit={onCommit}
       onTrunk={onTrunk}
+      trunk={o.trunk ?? ''}
+      onShowTrunk={onShowTrunk}
       inline={o.inline}
     />,
   );
-  return { ...utils, calls, onSelect, onCommit, onTrunk };
+  return { ...utils, calls, onSelect, onCommit, onTrunk, onShowTrunk };
 }
 
 // text of the row without the tooltips inside its SVG
@@ -283,6 +287,23 @@ describe('GraphView clicks', () => {
     cleanup();
     r = setup({ inline });
     expect(r.container.querySelector('.probe')).toBeNull();
+  });
+
+  it('shows a trunk from its title, with the inline details right under it', () => {
+    const inline = <div class="probe">details</div>;
+    let r = setup({ inline });
+    const title = screen.getByRole('button', { name: 'Trunk main' });
+    expect(title.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(title);
+    expect(r.onShowTrunk).toHaveBeenCalledWith('main');
+    expect(r.onTrunk).not.toHaveBeenCalled();
+    cleanup();
+    r = setup({ trunk: 'main', inline });
+    const shown = screen.getByRole('button', { name: 'Trunk main' });
+    expect(shown.getAttribute('aria-pressed')).toBe('true');
+    expect(shown.classList.contains('selected')).toBe(true);
+    expect(shown.nextElementSibling!.querySelector('.probe')).toBeTruthy();
+    expect(r.container.querySelectorAll('.probe')).toHaveLength(1);
   });
 
   it('keeps the inline details with the branch when a new view moves its row', () => {

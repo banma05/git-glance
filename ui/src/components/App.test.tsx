@@ -480,3 +480,119 @@ describe('App failures and repo switching', () => {
     expect(calls.length).toBe(settled);
   });
 });
+
+describe('trunk details', () => {
+  // the name of a trunk group's header, "Trunk main (4)" (jsdom drops the space
+  // before the count); the graph's title is "Trunk main"
+  const headName = (trunk: string) => screen.getByRole('button', { name: new RegExp(`^Trunk ${trunk} ?\\(\\d+\\)$`) });
+  const arrow = (trunk: string) => screen.getByRole('button', { name: `Show or hide the branches under ${trunk}` });
+  const pressed = (el: Element) => el.getAttribute('aria-pressed');
+
+  it('shows a trunk when its name in the list is clicked; the arrow only folds', async () => {
+    const { host } = fakeHost();
+    render(<App host={host} />);
+    await screen.findByText(named('feature/login'));
+    expect(arrow('main').tagName).toBe('BUTTON');
+    expect(headName('main').tagName).toBe('BUTTON');
+    expect(arrow('main').getAttribute('aria-expanded')).toBe('true');
+    expect(pressed(headName('main'))).toBe('false');
+
+    fireEvent.click(arrow('main'));
+    expect(arrow('main').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText(named('feature/login'))).toBeNull();
+    expect(pressed(headName('main'))).toBe('false');
+    expect(screen.queryByText('Compared through')).toBeNull();
+    fireEvent.click(arrow('main'));
+
+    fireEvent.click(headName('main'));
+    expect(pressed(headName('main'))).toBe('true');
+    expect(headName('main').closest('.group-head')!.classList.contains('selected')).toBe(true);
+    expect(screen.getByText('Compared through')).toBeTruthy();
+    expect(screen.getByText('origin/main')).toBeTruthy();
+    expect(arrow('main').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText(named('feature/login'))).toBeTruthy();
+
+    fireEvent.click(headName('main'));
+    expect(pressed(headName('main'))).toBe('false');
+    expect(screen.getByText('Click a row to see details')).toBeTruthy();
+  });
+
+  it('never has a trunk and a branch selected at once', async () => {
+    const { host } = fakeHost();
+    const { container } = render(<App host={host} />);
+    await screen.findByText(named('feature/login'));
+    fireEvent.click(headName('main'));
+    fireEvent.click(screen.getByText(named('feature/search')));
+    expect(pressed(headName('main'))).toBe('false');
+    expect(screen.getByRole('button', { name: 'Switch here' })).toBeTruthy();
+    fireEvent.click(headName('develop'));
+    expect(container.querySelector('.row.selected')).toBeNull();
+    expect(screen.getByText('Behind the remote by 3')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Switch here' })).toBeNull();
+  });
+
+  it('shows a trunk from the graph title, and keeps it across the list and the graph', async () => {
+    const { host } = fakeHost();
+    const { container } = render(<App host={host} />);
+    await screen.findByText(named('feature/login'));
+    fireEvent.click(screen.getByRole('button', { name: 'Graph' }));
+    const title = () => screen.getByRole('button', { name: 'Trunk main' });
+    expect(pressed(title())).toBe('false');
+    fireEvent.click(title());
+    expect(pressed(title())).toBe('true');
+    expect(pressed(headName('main'))).toBe('true'); // the list beside the graph
+    expect(screen.getByText('Compared through')).toBeTruthy();
+
+    fireEvent.click(container.querySelector('.g-row[data-kind="head"]')!);
+    expect(await screen.findByText('Commit on the trunk')).toBeTruthy();
+    expect(pressed(title())).toBe('false');
+
+    fireEvent.click(title());
+    fireEvent.click(screen.getByRole('button', { name: 'List' }));
+    expect(pressed(headName('main'))).toBe('true');
+    expect(screen.getByText('Compared through')).toBeTruthy();
+  });
+
+  it('opens Compare with the trunk on the first side', async () => {
+    const { host } = fakeHost();
+    render(<App host={host} />);
+    await screen.findByText(named('feature/login'));
+    fireEvent.click(headName('develop'));
+    fireEvent.click(screen.getByRole('button', { name: 'Compare with…' }));
+    const a = (await screen.findByLabelText('Branch A')) as HTMLSelectElement;
+    expect(a.value).toBe('develop');
+  });
+
+  it('keeps the trunk on a refresh, drops it when the trunk is gone, and on another repository', async () => {
+    let refresh: () => void = () => undefined;
+    let gone = false;
+    const { host } = scriptedHost((method, repo) => {
+      if (method !== 'view') return okFetch;
+      const v = mockView(repo);
+      if (gone) v.groups = v.groups.filter((g) => g.trunk.name !== 'develop');
+      return v;
+    });
+    host.onRefresh = (cb) => (refresh = cb);
+    render(<App host={host} />);
+    await screen.findByText(named('feature/login'));
+    fireEvent.click(headName('develop'));
+    await act(async () => refresh());
+    expect(pressed(headName('develop'))).toBe('true');
+    expect(screen.getByText('Compared through')).toBeTruthy();
+
+    gone = true;
+    await act(async () => refresh());
+    await waitFor(() => expect(screen.queryByText('Compared through')).toBeNull());
+    expect(screen.getByText('Click a row to see details')).toBeTruthy();
+    // the selection went with the trunk: a view that has it again does not bring it back
+    gone = false;
+    await act(async () => refresh());
+    await waitFor(() => expect(pressed(headName('develop'))).toBe('false'));
+
+    fireEvent.click(headName('main'));
+    fireEvent.click(screen.getByRole('tab', { name: 'b' }));
+    await waitFor(() => expect(screen.queryByText('Compared through')).toBeNull());
+    await screen.findByText(named('feature/login'));
+    expect(pressed(headName('main'))).toBe('false');
+  });
+});

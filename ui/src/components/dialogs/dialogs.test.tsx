@@ -61,7 +61,7 @@ function fakeHost(over: Record<string, unknown> = {}, locale = 'en') {
   return { host, calls, openDiff, count: (m: string) => calls.filter((c) => c.method === m).length };
 }
 
-function Harness({ host, open, select }: { host: Host; open: DialogName; select?: string }) {
+function Harness({ host, open, select, trunk }: { host: Host; open: DialogName; select?: string; trunk?: string }) {
   const { state, actions } = useApp(host);
   const t = useMemo(() => makeT(host.locale), [host]);
   const done = useRef(false);
@@ -69,6 +69,7 @@ function Harness({ host, open, select }: { host: Host; open: DialogName; select?
     if (done.current || !state.view) return;
     done.current = true;
     if (select) actions.select(select);
+    if (trunk) actions.showTrunk(trunk);
     if (open === 'align') actions.align();
     else actions.openDialog(open);
   }, [state.view]);
@@ -384,6 +385,21 @@ describe('Compare', () => {
     });
     await screen.findByText('Only on A');
     expect(screen.getByText(en('dialog.compare.onlyB', { name: 'main' }))).toBeTruthy();
+  });
+
+  it('starts from the selected trunk, compared through its remote ref', async () => {
+    const h = fakeHost({ compare: result });
+    render(<Harness host={h.host} open="compare" trunk="main" />);
+    const a = (await screen.findByLabelText(en('dialog.compare.a'))) as HTMLSelectElement;
+    expect(a.value).toBe('main');
+    fireEvent.change(screen.getByLabelText(en('dialog.compare.b')), { target: { value: 'alice/feature/login' } });
+    fireEvent.click(screen.getByRole('button', { name: en('dialog.compare.run') }));
+    await waitFor(() => expect(h.count('compare')).toBe(1));
+    expect(h.calls.find((c) => c.method === 'compare')?.params).toEqual({
+      repo: REPO,
+      a: 'refs/remotes/origin/main',
+      b: 'refs/heads/alice/feature/login',
+    });
   });
 
   it('does not call fileDiff when the host opened the diff', async () => {
