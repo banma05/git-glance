@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/banma05/git-glance/core/internal/gitx"
@@ -10,28 +11,64 @@ import (
 
 const createdFrom = "branch: Created from "
 
-// creationRecord reads git's own note of where a local branch was created: the
-// oldest reflog entry, when it says "branch: Created from <start>". Anything
-// else (no reflog, an expired creation entry, a failed or cancelled read)
-// means no record and returns "".
-func creationRecord(ctx context.Context, r gitx.Runner, dir, branch string) string {
-	out, err := r.Run(ctx, dir, "log", "--walk-reflogs", "--format=%gs", "refs/heads/"+branch, "--")
-	if err != nil {
-		return ""
+// recordChunk caps the refs of one log call, to keep the command line well
+// under the Windows limit.
+const recordChunk = 200
+
+// creationRecords reads git's own note of where local branches were created:
+// per branch the start named by its oldest reflog entry, when that entry says
+// "branch: Created from <start>". Anything else (no reflog, an expired
+// creation entry, a failed or cancelled read) leaves the branch out; a failed
+// call costs only its own chunk.
+func creationRecords(ctx context.Context, r gitx.Runner, dir string, branches []string) map[string]string {
+	out := map[string]string{}
+	for len(branches) > 0 {
+		n := min(recordChunk, len(branches))
+		for branch, start := range readRecords(ctx, r, dir, branches[:n]) {
+			out[branch] = start
+		}
+		branches = branches[n:]
 	}
-	lines := strings.Split(string(out), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
+	return out
+}
+
+func readRecords(ctx context.Context, r gitx.Runner, dir string, branches []string) map[string]string {
+	args := []string{"log", "--walk-reflogs", noSignature, "--format=%gD%x00%gs"}
+	for _, b := range branches {
+		args = append(args, "refs/heads/"+b)
+	}
+	data, err := r.Run(ctx, dir, append(args, "--")...)
+	if err != nil {
+		return nil
+	}
+	// The oldest entry of a ref has the highest selector number.
+	oldest := map[string]int{}
+	subject := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		sel, msg, ok := strings.Cut(strings.TrimRight(line, "\r"), "\x00")
+		if !ok {
 			continue
 		}
-		start, ok := strings.CutPrefix(line, createdFrom)
-		if !ok {
-			return ""
+		at := strings.LastIndex(sel, "@{")
+		name, found := strings.CutPrefix(sel[:max(at, 0)], "refs/heads/")
+		if at < 0 || !found || !strings.HasSuffix(sel, "}") {
+			continue
 		}
-		return strings.TrimSpace(start)
+		n, err := strconv.Atoi(sel[at+2 : len(sel)-1])
+		if err != nil {
+			continue
+		}
+		if prev, seen := oldest[name]; !seen || n > prev {
+			oldest[name], subject[name] = n, strings.TrimSpace(msg)
+		}
 	}
-	return ""
+	res := map[string]string{}
+	for name, msg := range subject {
+		if start, ok := strings.CutPrefix(msg, createdFrom); ok {
+			res[name] = strings.TrimSpace(start)
+		}
+	}
+	return res
 }
 
 // trunkNamed returns the tied trunk that start names: the trunk's name, its

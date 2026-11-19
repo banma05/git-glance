@@ -121,9 +121,8 @@ type builder struct {
 	bulk     Counter // nil: ahead/behind are asked per branch
 	facts    gitFacts
 	workers  int
-	runner   gitx.Runner // nil: git's creation record is not read
-	remotes  []string
-	unpushed map[string]int // answered in one go; the others are asked per branch
+	records  map[string]string // branch -> trunk named by git's creation record
+	unpushed map[string]int    // answered in one go; the others are asked per branch
 }
 
 // Build assembles the view of snap without keeping anything for the next
@@ -135,7 +134,9 @@ func Build(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.Snapsho
 // BuildCached assembles the view of snap, keeping in c (which may be nil)
 // what the next build of the same repository can reuse. Git is asked about
 // the snapshot's commit hashes, never about short names, so a tag that
-// shares a branch's name cannot shadow it. (On git 2.41+ the ahead/behind
+// shares a branch's name cannot shadow it. The one exception is a single
+// batched, uncached reflog read per build, for the branches whose trunk is a
+// tie (see recordedTrunks). (On git 2.41+ the ahead/behind
 // counts that pick a branch's trunk come from one for-each-ref call over the
 // live refs, so a branch that moves during the build can be counted at its
 // new tip.) Branches are worked on by a few goroutines; the view does not
@@ -145,25 +146,19 @@ func BuildCached(ctx context.Context, r gitx.Runner, v gitx.Version, snap repo.S
 	if v.AtLeast(2, 41) {
 		bulk = bulkCounter{r, snap.Repo}
 	}
-	return buildWith(ctx, r, bulk, newHashFacts(ctx, r, snap, c), buildWorkers, snap, rs, now)
+	return build(ctx, r, bulk, newHashFacts(ctx, r, snap, c), buildWorkers, snap, rs, now)
 }
 
 // build assembles the view. bulk counts ahead/behind for all branches at once;
-// when nil, facts are asked per branch.
-func build(ctx context.Context, bulk Counter, facts gitFacts, workers int, snap repo.Snapshot, rs settings.RepoSettings, now int64) (View, error) {
-	return buildWith(ctx, nil, bulk, facts, workers, snap, rs, now)
-}
-
-// buildWith is build plus the runner that reads git's creation record for
-// branches whose trunk is a tie; with a nil runner no record is read.
-func buildWith(ctx context.Context, r gitx.Runner, bulk Counter, facts gitFacts, workers int, snap repo.Snapshot, rs settings.RepoSettings, now int64) (View, error) {
+// when nil, facts are asked per branch. r reads git's creation record of the
+// branches whose trunk is a tie, in one batched call.
+func build(ctx context.Context, r gitx.Runner, bulk Counter, facts gitFacts, workers int, snap repo.Snapshot, rs settings.RepoSettings, now int64) (View, error) {
 	rs = normalizeSettings(rs)
 	b := &builder{
 		ctx: ctx, snap: snap, rs: rs, now: now,
 		trunks:  uniqueTrunks(ResolveTrunks(snap, rs)),
 		folders: foldersByBranch(snap.Worktrees),
 		bulk:    bulk, facts: facts, workers: workers,
-		runner: r, remotes: remoteNames(snap),
 	}
 	features := featureRefs(snap.Local, rs, b.trunks)
 	if err := b.count(features); err != nil {
@@ -174,6 +169,7 @@ func buildWith(ctx context.Context, r gitx.Runner, bulk Counter, facts gitFacts,
 		Groups: []Group{}, Unknown: []string{}, Old: []string{},
 		Branches: map[string]BranchView{}, Sections: []graph.Section{},
 	}
+	b.records = b.recordedTrunks(r, features)
 	b.unpushed = facts.unpushedAll(ctx, features)
 	views := make([]BranchView, len(features))
 	errs := forEach(ctx, len(features), workers, func(i int) error {
@@ -353,30 +349,51 @@ func (b *builder) countAgainst(t Trunk, refs []repo.Ref, known map[tipPair]Ahead
 	return res, nil
 }
 
-func (b *builder) assign(branch string) Assignment {
-	ahead := map[string]int{}
-	order := make([]string, 0, len(b.trunks))
+// aheadCounts returns, per trunk, how many commits of branch the trunk lacks.
+func (b *builder) aheadCounts(branch string) (ahead map[string]int, order []string) {
+	ahead = map[string]int{}
+	order = make([]string, 0, len(b.trunks))
 	for _, t := range b.trunks {
 		order = append(order, t.Name)
 		if c, ok := b.counts[t.Name][branch]; ok {
 			ahead[t.Name] = c.Ahead
 		}
 	}
-	created, manual := b.rs.CreatedBase[branch], b.rs.ManualTrunk[branch]
-	return AssignTrunk(ahead, order, created, manual, b.recorded(branch, ahead, order, created, manual))
+	return ahead, order
 }
 
-// recorded asks git where branch was created, only when its trunk is a tie
-// that the creation record and the manual choice have not settled.
-func (b *builder) recorded(branch string, ahead map[string]int, order []string, created, manual string) string {
-	if b.runner == nil {
-		return ""
+func (b *builder) assign(branch string) Assignment {
+	ahead, order := b.aheadCounts(branch)
+	return AssignTrunk(ahead, order, b.rs.CreatedBase[branch], b.rs.ManualTrunk[branch], b.records[branch])
+}
+
+// recordedTrunks reads git's creation record of every branch whose trunk is a
+// tie that neither the creation record of this plugin nor a manual choice
+// settles: one batched call per build, nothing for the other branches.
+func (b *builder) recordedTrunks(r gitx.Runner, features []repo.Ref) map[string]string {
+	tiedOf := map[string][]string{}
+	var names []string
+	for _, ref := range features {
+		ahead, order := b.aheadCounts(ref.Name)
+		tied := tiedTrunks(ahead, order)
+		created, manual := b.rs.CreatedBase[ref.Name], b.rs.ManualTrunk[ref.Name]
+		if len(tied) < 2 || has(tied, created) || has(tied, manual) {
+			continue
+		}
+		tiedOf[ref.Name] = tied
+		names = append(names, ref.Name)
 	}
-	tied := tiedTrunks(ahead, order)
-	if len(tied) < 2 || has(tied, created) || has(tied, manual) {
-		return ""
+	out := map[string]string{}
+	if len(names) == 0 {
+		return out
 	}
-	return trunkNamed(creationRecord(b.ctx, b.runner, b.snap.Repo, branch), tied, b.remotes)
+	remotes := remoteNames(b.snap)
+	for branch, start := range creationRecords(b.ctx, r, b.snap.Repo, names) {
+		if t := trunkNamed(start, tiedOf[branch], remotes); t != "" {
+			out[branch] = t
+		}
+	}
+	return out
 }
 
 // tiedTrunks lists the trunks that share the smallest ahead count.

@@ -158,7 +158,7 @@ describe('DetailPanel', () => {
     expect(screen.getByText(/from git's record of where it was created/)).toBeTruthy();
     cleanup();
     renderPanel(branchOf('x', [], { trunkSource: 'count' }));
-    expect(screen.queryByText(/按新建时的起点|按你的指定/)).toBeNull();
+    expect(screen.queryByText(/按新建时的起点|按你的指定|按 git 记下的起点/)).toBeNull();
   });
 
   it('lists the changed files, the matching step per commit and the release state', () => {

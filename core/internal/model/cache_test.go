@@ -376,3 +376,49 @@ func TestForEachGuards(t *testing.T) {
 		}
 	}
 }
+
+// Git's creation record is read only for branches whose trunk is a tie, in
+// one batched call per build: none when nothing ties, one for any number of
+// tied branches, and an unchanged refresh still spawns at most the usual 4
+// processes plus that one.
+func TestCreationRecordIsOneBatchedRead(t *testing.T) {
+	r, rs := manyBranches(t, 4)
+	ver, snap := readSnap(t, r)
+	run := &countingRunner{}
+	if _, err := BuildCached(context.Background(), run, ver, snap, rs, r.Clock().Unix(), NewCache()); err != nil {
+		t.Fatal(err)
+	}
+	if n := run.count("log --walk-reflogs"); n != 0 {
+		t.Errorf("no branch ties, yet %d reflog reads:%s", n, run.breakdown())
+	}
+
+	// Both trunks at the same commit: every empty branch ties.
+	tr := testrepo.New(t)
+	tr.ApplyEnv()
+	tr.Branch("v2", "main")
+	tr.Push(tr.Dir, "origin", "v2")
+	for i := 0; i < 5; i++ {
+		tr.Git(tr.Dir, "branch", fmt.Sprintf("feature/t%d", i), "origin/main")
+	}
+	ver, snap = readSnap(t, tr)
+	c := NewCache()
+	now := tr.Clock().Unix()
+	run.reset()
+	v, err := BuildCached(context.Background(), run, ver, snap, rs, now, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := run.count("log --walk-reflogs"); n != 1 {
+		t.Errorf("%d reflog reads for 5 tied branches, want 1:%s", n, run.breakdown())
+	}
+	if bv := v.Branches["feature/t3"]; bv.Trunk != "main" || bv.TrunkSource != "reflog" {
+		t.Errorf("feature/t3: %q %q", bv.Trunk, bv.TrunkSource)
+	}
+	run.reset()
+	if _, err := BuildCached(context.Background(), run, ver, snap, rs, now, c); err != nil {
+		t.Fatal(err)
+	}
+	if n := run.n.Load(); n > 4+1 {
+		t.Fatalf("an unchanged refresh with ties spawned %d git processes:%s", n, run.breakdown())
+	}
+}

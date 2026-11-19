@@ -56,7 +56,7 @@ func legacyView(t *testing.T, r gitx.Runner, ver gitx.Version, snap repo.Snapsho
 	t.Helper()
 	ctx := context.Background()
 	facts := legacyFacts{m: &Matcher{R: r, Dir: snap.Repo}, r: r, dir: snap.Repo}
-	v, err := buildWith(ctx, r, NewCounter(r, snap.Repo, ver), facts, 1, snap, rs, now)
+	v, err := build(ctx, r, NewCounter(r, snap.Repo, ver), facts, 1, snap, rs, now)
 	if err != nil {
 		t.Fatal(err)
 	}
