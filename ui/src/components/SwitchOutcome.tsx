@@ -1,4 +1,3 @@
-import type { ComponentChildren } from 'preact';
 import type { Key, T } from '../i18n';
 import { en } from '../i18n/en';
 import { reasonText } from '../reasons';
@@ -17,9 +16,25 @@ function coded(t: T, prefix: 'shelf.why' | 'shelf.state' | 'switch.noff', code: 
 
 const whyOf = (t: T, s: Shelf) => (s.whyCode ? coded(t, 'shelf.why', s.whyCode, { branch: s.branch }) : '');
 
-// Only these states leave work that is not back and will not come back on its
-// own; the others either come back, or are already back.
-const BY_HAND = new Set(['kept', 'superseded', 'orphan']);
+// What to do next about a shelf that is not back in the folder:
+//   apply: it is in git stash list and nothing of it is in the folder;
+//   check: part or all of it may already be in the folder, so look first;
+//   gone:  it is no longer listed, but git may still have its commit;
+//   none:  it comes back on its own, it is already back, or this page does not
+//          know enough to say (a state or reason of a newer core).
+type Next = 'apply' | 'check' | 'gone' | 'none';
+
+// Only these states leave work that is not back and will not come back on its own.
+const NOT_AUTOMATIC = new Set(['kept', 'superseded', 'orphan']);
+// The reasons after which the work is whole in git stash list and none of it is in the folder.
+const WHOLE_IN_STASH = new Set(['', 'apply-failed', 'base-moved', 'not-on-branch', 'folder-dirty', 'path-exists', 'superseded', 'no-record']);
+
+function nextOf(s: Shelf): Next {
+  if (!NOT_AUTOMATIC.has(s.state)) return 'none';
+  if (s.whyCode === 'apply-partial' || s.whyCode === 'apply-mismatch') return 'check';
+  if (s.whyCode === 'entry-gone') return 'gone';
+  return WHOLE_IN_STASH.has(s.whyCode) ? 'apply' : 'none';
+}
 
 // English is the core's own detail, folded away; the line above says it in the page's language.
 function English({ t, text }: { t: T; text: string }) {
@@ -32,25 +47,36 @@ function English({ t, text }: { t: T; text: string }) {
   );
 }
 
-// ByHand is the command that puts a shelf back by hand.
-function ByHand({ t, hash }: { t: T; hash: string }) {
+// NextStep is the command for the next step about a shelf that is not back, if there is one.
+function NextStep({ t, s }: { t: T; s: Shelf }) {
+  const next = nextOf(s);
+  if (next === 'none') return null;
+  const label = next === 'check' ? t('switch.checkFirst') : next === 'gone' ? t('switch.goneHow') : t('switch.keptHow');
+  const command = next === 'check' ? `git stash show -p ${s.hash}` : `git stash apply --index ${s.hash}`;
   return (
     <div class="by-hand">
-      {t('switch.keptHow')} <code>{`git stash apply --index ${hash}`}</code>
+      {label} <code>{command}</code>
     </div>
   );
 }
 
+// keptLine says what is true of a shelf that was not put back.
+function keptLine(t: T, s: Shelf): string {
+  const vars = { branch: s.branch, hash: short(s.hash), why: whyOf(t, s) || coded(t, 'shelf.state', s.state, { branch: s.branch }) };
+  if (s.state === 'pending') return t('switch.keptPending', vars);
+  const next = nextOf(s);
+  if (next === 'check') return t(s.whyCode === 'apply-partial' ? 'switch.partial' : 'switch.mismatch', vars);
+  if (next === 'gone') return t('switch.gone', vars);
+  if (next === 'apply') return t('switch.kept', vars);
+  return t('switch.keptOther', vars);
+}
+
 // Kept says what happened to a shelf that was not put back.
 function Kept({ t, s }: { t: T; s: Shelf }) {
-  let line: ComponentChildren;
-  if (s.whyCode === 'apply-partial') line = t('switch.partial', { branch: s.branch, hash: short(s.hash) });
-  else if (s.state === 'pending') line = t('switch.keptPending', { branch: s.branch, why: whyOf(t, s) || coded(t, 'shelf.state', s.state, { branch: s.branch }) });
-  else line = t('switch.kept', { branch: s.branch, why: whyOf(t, s) || coded(t, 'shelf.state', s.state, { branch: s.branch }), hash: short(s.hash) });
   return (
     <>
-      <div class="bad">{line}</div>
-      {BY_HAND.has(s.state) && <ByHand t={t} hash={s.hash} />}
+      <div class="bad">{keptLine(t, s)}</div>
+      <NextStep t={t} s={s} />
       <English t={t} text={s.why} />
     </>
   );
@@ -76,8 +102,9 @@ export function SwitchOutcome({ t, branch, result: r, inPlace = false, stale = f
       {r.fastForwarded && <div>{t('switch.fastForwarded')}</div>}
       {r.noFastForward && <div>{coded(t, 'switch.noff', r.noFastForward)}</div>}
       <English t={t} text={r.aheadNote} />
-      {r.shelved && <div>{t('switch.shelved', { n: r.shelved.files.length, branch: r.shelved.branch })}</div>}
-      {r.restored && <div>{t('switch.restored', { n: r.restored.files.length, branch: r.restored.branch })}</div>}
+      {r.ok && r.shelved?.state === 'pending' && <div>{t('switch.shelved', { n: r.shelved.files.length, branch: r.shelved.branch })}</div>}
+      {!r.ok && r.shelved && r.restored && <div>{t('switch.shelvedBack', { n: r.shelved.files.length, branch: r.shelved.branch })}</div>}
+      {r.ok && r.restored && <div>{t('switch.restored', { n: r.restored.files.length, branch: r.restored.branch })}</div>}
       {r.restored && r.restored.state !== 'restored' && (
         <>
           <div class="muted">{t('switch.entryKept', { why: whyOf(t, r.restored) || coded(t, 'shelf.state', r.restored.state) })}</div>
@@ -111,7 +138,7 @@ function ShelfRow({ t, s }: { t: T; s: Shelf }) {
     <div class="shelf-row">
       <div>{head}</div>
       <div class="muted">{why ? t('shelf.stateWhy', { state, why }) : state}</div>
-      {BY_HAND.has(s.state) && <ByHand t={t} hash={s.hash} />}
+      <NextStep t={t} s={s} />
       <English t={t} text={s.why} />
     </div>
   );

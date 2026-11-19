@@ -152,15 +152,18 @@ describe('switch the main folder to the latest', () => {
     expect(h.after(before)).toEqual(['fetch', 'switch', 'fetch', 'switch', 'switch']);
   });
 
-  it('asks first, without sending anything, when the page already knows the main folder has changes', async () => {
+  it('lists what the core finds now, never the older list of the view', async () => {
     const h = switchHost({
-      answer: () => sw({ shelved: shelf({ branch: 'carol/feature/search', files: ['src/a.ts', 'src/b.ts', 'new.txt'] }) }),
+      answer: (p) =>
+        p.shelve
+          ? sw({ shelved: shelf({ branch: 'carol/feature/search', files: ['src/a.ts', 'new.txt'] }) })
+          : sw({ ok: false, reason: 'dirty', files: ['src/a.ts', 'new.txt'] }),
       view: (v) => {
         v.groups[0].trunk.folder = '';
         Object.assign(v.branches['carol/feature/search'], {
           mainFolder: true,
           folder: REPO,
-          dirty: { changed: 2, untracked: 1, files: ['src/a.ts', 'src/b.ts', 'new.txt'] },
+          dirty: { changed: 1, untracked: 0, files: ['old.txt'] }, // read before new.txt was made
         });
         return v;
       },
@@ -170,11 +173,14 @@ describe('switch the main folder to the latest', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Switch to main latest' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('new.txt')).toBeTruthy();
-    expect(h.after(before)).toEqual([]);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Shelve and switch' }));
-    await screen.findByText(/Shelved 3 uncommitted files of carol\/feature\/search/);
+    expect(within(dialog).queryByText('old.txt')).toBeNull();
+    expect(within(dialog).getByText(en('dialog.shelve.later'))).toBeTruthy();
     expect(h.after(before)).toEqual(['fetch', 'switch']);
-    expect(h.writes()[0].params).toMatchObject({ branch: 'main', latest: true, shelve: true });
+    expect(h.writes()[0].params).toMatchObject({ branch: 'main', latest: true, shelve: false });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Shelve and switch' }));
+    await screen.findByText(/Shelved 2 uncommitted files of carol\/feature\/search/);
+    expect(h.after(before)).toEqual(['fetch', 'switch', 'switch']);
+    expect(h.writes()[1].params).toMatchObject({ branch: 'main', latest: true, shelve: true });
   });
 
   it('does not offer to shelve when the main folder is already on that branch with changes', async () => {
@@ -214,12 +220,50 @@ describe('switch the main folder to the latest', () => {
     expect(detail('stash apply failed')).toBeTruthy();
   });
 
-  it('says plainly when part of the work is already back', async () => {
-    await switchOnce(sw({ keptShelf: shelf({ state: 'kept', whyCode: 'apply-partial', why: 'part of the work may now be in the folder' }) }));
-    expect(
-      await screen.findByText('Part of the shelved changes of main is already back in the folder, and all of them are still in git stash list as aaaaaaa.'),
-    ).toBeTruthy();
+  // Each code says only what is true of it, and the next step that fits.
+  const SHOW = `git stash show -p ${'a'.repeat(40)}`;
+  const truths: Array<{ code: string; state: string; says: string; step: 'apply' | 'check' | 'gone' | 'none' }> = [
+    { code: 'apply-partial', state: 'kept', says: 'Part of the shelved changes of main is already back in the folder, and all of them are still in git stash list as aaaaaaa.', step: 'check' },
+    { code: 'apply-mismatch', state: 'kept', says: 'The shelved changes of main were applied, but the folder does not match them: part or all of the work may already be in the folder. All of it is still in git stash list as aaaaaaa.', step: 'check' },
+    { code: 'entry-gone', state: 'kept', says: 'The shelved changes of main are no longer in git stash list.', step: 'gone' },
+    { code: 'folder-dirty', state: 'kept', says: 'The shelved changes of main were not put back: the folder has uncommitted changes. They are in git stash list as aaaaaaa.', step: 'apply' },
+    { code: 'superseded', state: 'superseded', says: 'The shelved changes of main were not put back: a newer shelf of main replaces it. They are in git stash list as aaaaaaa.', step: 'apply' },
+    { code: 'check-failed', state: 'kept', says: 'The shelved changes of main were not put back automatically (the folder or git stash list could not be read); their stash commit is aaaaaaa.', step: 'none' },
+    { code: 'later-code', state: 'kept', says: 'The shelved changes of main were not put back automatically (code later-code); their stash commit is aaaaaaa.', step: 'none' },
+  ];
+  for (const c of truths) {
+    it(`says only what is true for ${c.code}, and the next step that fits`, async () => {
+      await switchOnce(sw({ keptShelf: shelf({ state: c.state, whyCode: c.code, why: 'English detail' }) }));
+      expect(await screen.findByText(c.says)).toBeTruthy();
+      expect(!!screen.queryByText(APPLY), 'apply command').toBe(c.step === 'apply' || c.step === 'gone');
+      expect(!!screen.queryByText(SHOW), 'show command').toBe(c.step === 'check');
+      expect(!!screen.queryByText(en('switch.checkFirst')), 'check first').toBe(c.step === 'check');
+      expect(!!screen.queryByText(en('switch.goneHow')), 'only while git has it').toBe(c.step === 'gone');
+      if (c.code === 'entry-gone') expect(screen.queryByText(/They are in git stash list/)).toBeNull();
+    });
+  }
+
+  it('does not promise shelved work comes back when the switch failed and it was put back in place', async () => {
+    await switchOnce(sw({ ok: false, reason: 'git-failed', shelved: shelf(), restored: shelf({ state: 'restored' }) }));
+    expect(await screen.findByText('The 2 uncommitted files of main were shelved, then put back in place when the switch failed')).toBeTruthy();
+    expect(screen.queryByText(/they come back when you switch back/)).toBeNull();
+    expect(screen.queryByText('Put back the 2 shelved files of main')).toBeNull();
+  });
+
+  it('says where shelved work is kept when the switch failed and it could not be put back', async () => {
+    await switchOnce(
+      sw({
+        ok: false,
+        reason: 'restore-failed',
+        shelved: shelf(),
+        keptShelf: shelf({ state: 'kept', whyCode: 'folder-dirty', why: 'folder not clean' }),
+        detail: `the switch failed and the work could not be put back; it is kept in git stash list as ${'a'.repeat(40)}`,
+      }),
+    );
+    expect(await screen.findByText(en('switch.reason.restore-failed'))).toBeTruthy();
+    expect(screen.getByText('The shelved changes of main were not put back: the folder has uncommitted changes. They are in git stash list as aaaaaaa.')).toBeTruthy();
     expect(screen.getByText(APPLY)).toBeTruthy();
+    expect(screen.queryByText(/they come back when you switch back/)).toBeNull();
   });
 
   it('never offers to put back work that is already back', async () => {
@@ -304,6 +348,14 @@ describe('switch back', () => {
     const { container } = render(<App host={h.host} />);
     const back = await screen.findByRole('button', { name: 'Switch back to alice/feature/login' });
     expect(back.closest('.main-folder')!.parentElement).toBe(container.querySelector('.sidebar'));
+  });
+
+  it('points a partly applied shelf to git status first, without the apply command', async () => {
+    const partial = { previous: '', shelves: [shelf({ state: 'kept', whyCode: 'apply-partial', why: 'half way' })] };
+    render(<App host={switchHost({ state: partial }).host} />);
+    expect(await screen.findByText(en('switch.checkFirst'))).toBeTruthy();
+    expect(screen.getByText(`git stash show -p ${'a'.repeat(40)}`)).toBeTruthy();
+    expect(screen.queryByText(`git stash apply --index ${'a'.repeat(40)}`)).toBeNull();
   });
 
   it('says why kept work will not come back on its own, and how to put it back by hand', async () => {

@@ -3,7 +3,7 @@ import { rpc } from './api';
 import { HostError } from './host/types';
 import type { DiscoveryProblem, Host, ThemeKind } from './host/types';
 import { baseName } from './reasons';
-import type { AlignReport, DirtyCounts, Global, OpResult, RemoveFolderResult, SwitchResult, SwitchState, Theme, View } from './types';
+import type { AlignReport, Global, OpResult, RemoveFolderResult, SwitchResult, SwitchState, Theme, View } from './types';
 
 export type ViewMode = 'list' | 'graph';
 // create: a new branch from a trunk; createExisting: a folder for the selected local branch.
@@ -59,32 +59,31 @@ export interface SwitchTarget {
 }
 
 // ShelveAsk is a switch waiting for the user to confirm that the listed
-// uncommitted changes are shelved first.
+// uncommitted changes are shelved first. The files are the core's answer to
+// the switch that did not shelve, never an older list of the view.
 export interface ShelveAsk {
   repo: string;
   target: SwitchTarget;
   folder: string;
   files: string[];
-  more: number; // changed files not listed
   fetched: boolean; // the remote was read for this switch already
   stale: boolean; // that read failed: the switch goes to what was read before
 }
 
 // MainFolder is what the view says of the repository's main folder: where it
-// is and, when it is on a branch the view lists, that branch and its changes.
+// is and, when the view can tell, the branch it is on.
 export interface MainFolder {
   folder: string;
   branch: string; // "" when the view cannot tell
-  dirty: DirtyCounts | null; // null: clean, or not known (the folder is on a trunk)
 }
 
 // mainFolderOf finds the main folder: the folder of the branch checked out
 // there, else the repository path; and which branch it is on.
 export function mainFolderOf(view: View, repo: string): MainFolder {
   const b = Object.values(view.branches).find((x) => x.mainFolder && x.folder);
-  if (b) return { folder: b.folder, branch: b.name, dirty: b.dirty };
+  if (b) return { folder: b.folder, branch: b.name };
   const trunk = view.groups.find((g) => g.trunk.folder && samePath(g.trunk.folder, repo));
-  return { folder: repo, branch: trunk?.trunk.name ?? '', dirty: null };
+  return { folder: repo, branch: trunk?.trunk.name ?? '' };
 }
 
 const samePath = (a: string, b: string) => inside(a, b) && inside(b, a);
@@ -316,13 +315,17 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     };
 
     // readSwitchState reads where the main folder was switched away from and
-    // the shelves; a failed or odd answer leaves what the page showed.
+    // the shelves; a failed or odd answer leaves what the page showed, and
+    // only the latest read has the say.
+    let switchReads = 0;
     const readSwitchState = async (repo: string) => {
       const view = ref.current.view;
       if (!view) return;
+      const mine = ++switchReads;
       try {
         const s = await rpc(host, 'switchState', { repo, folder: mainFolderOf(view, repo).folder });
-        if (current(repo) && typeof s?.previous === 'string' && Array.isArray(s.shelves)) patch({ switchState: s });
+        const valid = typeof s?.previous === 'string' && Array.isArray(s.shelves);
+        if (mine === switchReads && current(repo) && valid) patch({ switchState: s });
       } catch {
         // the switch-back line stays as it was
       }
@@ -346,20 +349,14 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     };
 
     // switchMain switches the main folder. Without the user's confirm nothing
-    // is shelved: the first try never shelves, and when the folder has changes
-    // the confirm lists them; only its button sends the switch that shelves.
+    // is shelved: the first try never shelves, and when the core answers that
+    // the folder has changes, the confirm lists the files it named; only its
+    // button sends the switch that shelves.
     const switchMain = async (target: SwitchTarget, shelve: boolean, fetched: boolean, stale = false) => {
       const { repo, view } = ref.current;
       if (!repo || !view || !canWrite()) return;
       const main = mainFolderOf(view, repo);
       const away = main.branch !== target.branch;
-      if (!shelve && away && main.dirty) {
-        // the view knows there are changes: ask before anything is sent
-        const files = main.dirty.files;
-        const more = Math.max(0, main.dirty.changed + main.dirty.untracked - files.length);
-        patch({ ask: { repo, target, folder: main.folder, files, more, fetched, stale }, dialog: 'shelve', switchResult: null });
-        return;
-      }
       patch({ busy: true, switchResult: null, ask: null });
       try {
         if (target.latest && !fetched) {
@@ -373,7 +370,7 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
         // a dirty folder that is already on the branch cannot be updated under shelved work
         const inPlace = !result.ok && result.reason === 'dirty' && (shelve || !away);
         if (!result.ok && result.reason === 'dirty' && !inPlace) {
-          patch({ ask: { repo, target, folder: main.folder, files: result.files, more: 0, fetched, stale }, dialog: 'shelve' });
+          patch({ ask: { repo, target, folder: main.folder, files: result.files, fetched, stale }, dialog: 'shelve' });
         } else {
           patch({ switchResult: { branch: target.branch, result, back: target.back, inPlace, stale } });
         }

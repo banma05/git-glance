@@ -366,7 +366,8 @@ export function mockHost(): Host {
   const main = { on: 'main', dirty: ['src/app.ts', 'notes/todo.md'], previous: '', shelves: [] as Shelf[] };
   // &outcome=kept: switching back finds main moved, the work stays shelved;
   // &outcome=partial: putting it back fails half way; &outcome=orphan: git
-  // stash list also holds a Git Glance entry without a record.
+  // stash list also holds a Git Glance entry without a record; &outcome=failed:
+  // git refuses the switch after the work was shelved, and it is put back in place.
   const outcome = q.get('outcome') ?? '';
   const orphan: Shelf = {
     folder: '', branch: 'alice/feature/login', hash: hash(980), base: hash(201), time: nowSec() - 3 * DAY, files: [],
@@ -381,6 +382,12 @@ export function mockHost(): Host {
     const shelved: Shelf | null = main.dirty.length
       ? { folder: repo, branch: main.on, hash: hash(990), base: hash(100), time: nowSec(), files: [...main.dirty], state: 'pending', whyCode: '', why: '' }
       : null;
+    if (shelved && outcome === 'failed') {
+      return answer({
+        ok: false, reason: 'git-failed', shelved, restored: { ...shelved, state: 'restored' },
+        detail: 'error: The following untracked working tree files would be overwritten by checkout: build/config.json',
+      });
+    }
     const found = main.shelves.find((x) => x.branch === branch) ?? null;
     let restored: Shelf | null = null;
     let keptShelf: Shelf | null = null;

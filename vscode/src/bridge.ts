@@ -102,18 +102,41 @@ interface OpenDocument {
   isDirty: boolean;
 }
 
+// realOf is a path with its links, junctions and subst drives resolved, or the
+// path as given when it cannot be resolved (it does not exist, or no rights).
+function realOf(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
 // unsavedUnder lists, relative to folder and with "/", the open files with
-// unsaved changes that live in folder. Paths are compared without case on
-// Windows only.
-export function unsavedUnder(folder: string, docs: readonly OpenDocument[], platform: string = process.platform): string[] {
+// unsaved changes that live in folder. A file counts when its path is under
+// the folder as written, or once both are resolved to their real paths (an
+// editor may have opened the repository through a link, git names it without).
+// Paths are compared without case on Windows only. Documents that are not
+// files (untitled ones) are under no folder.
+export function unsavedUnder(
+  folder: string,
+  docs: readonly OpenDocument[],
+  platform: string = process.platform,
+  real: (p: string) => string = realOf,
+): string[] {
   const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
   const fold = (p: string) => (platform === 'win32' ? p.toLowerCase() : p);
-  const root = norm(folder);
+  const inside = (file: string, root: string) => {
+    const f = norm(file);
+    const r = norm(root);
+    return fold(f).startsWith(fold(r) + '/') ? f.slice(r.length + 1) : '';
+  };
+  const realRoot = real(folder);
   const out: string[] = [];
   for (const d of docs) {
     if (!d.isDirty || d.uri.scheme !== 'file') continue;
-    const file = norm(d.uri.fsPath);
-    if (fold(file).startsWith(fold(root) + '/')) out.push(file.slice(root.length + 1));
+    const rel = inside(d.uri.fsPath, folder) || inside(real(d.uri.fsPath), realRoot);
+    if (rel) out.push(rel);
   }
   return out;
 }
@@ -124,7 +147,9 @@ export function unsavedUnder(folder: string, docs: readonly OpenDocument[], plat
 function unsavedRefusal(params: unknown): object | undefined {
   const folder = isObject(params) ? params.folder : undefined;
   if (!isText(folder)) return undefined;
-  const files = unsavedUnder(folder, vscode.workspace.textDocuments);
+  // notebooks hold their unsaved state on the notebook, not on its cells
+  const docs = [...vscode.workspace.textDocuments, ...(vscode.workspace.notebookDocuments ?? [])];
+  const files = unsavedUnder(folder, docs);
   if (files.length === 0) return undefined;
   return {
     ok: false,
@@ -137,6 +162,7 @@ function unsavedRefusal(params: unknown): object | undefined {
     restored: null,
     keptShelf: null,
     fastForwarded: false,
+    noFastForward: '',
     aheadNote: '',
   };
 }

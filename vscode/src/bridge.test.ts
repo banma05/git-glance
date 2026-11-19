@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   writeText: vi.fn(async (_t: string) => undefined),
   showErrorMessage: vi.fn(async (_m: string) => undefined),
   docs: [] as Array<{ uri: { scheme: string; fsPath: string }; isDirty: boolean }>,
+  notebooks: [] as Array<{ uri: { scheme: string; fsPath: string }; isDirty: boolean }>,
 }));
 
 vi.mock('vscode', () => ({
@@ -17,6 +18,9 @@ vi.mock('vscode', () => ({
   workspace: {
     get textDocuments() {
       return h.docs;
+    },
+    get notebookDocuments() {
+      return h.notebooks;
     },
   },
   l10n: { t: (s: string, ...a: unknown[]) => s.replace(/\{(\d+)\}/g, (_m, i) => String(a[Number(i)])) },
@@ -41,6 +45,7 @@ beforeEach(() => {
   h.writeText.mockClear();
   h.showErrorMessage.mockClear();
   h.docs = [];
+  h.notebooks = [];
   deps = { core: { call } as any, post: (m) => posted.push(m), openWide: openWide as any, log: () => {} };
 });
 
@@ -68,6 +73,7 @@ describe('switch under unsaved editors', () => {
           restored: null,
           keptShelf: null,
           fastForwarded: false,
+          noFastForward: '',
           aheadNote: '',
         },
       },
@@ -84,6 +90,36 @@ describe('switch under unsaved editors', () => {
     await handleWebviewMessage({ type: 'call', id: 8, method: 'switch', params }, deps);
     expect(call).toHaveBeenCalledWith('switch', params, undefined, undefined);
     expect(posted).toEqual([{ type: 'result', id: 8, result: { ok: true } }]);
+  });
+
+  it('refuses switch while a notebook under the folder is dirty', async () => {
+    h.notebooks = [doc(path.join(root, 'nb', 'study.ipynb'), true)];
+    await handleWebviewMessage({ type: 'call', id: 10, method: 'switch', params }, deps);
+    expect(call).not.toHaveBeenCalled();
+    expect(posted[0].result).toMatchObject({ ok: false, reason: 'unsaved-editors', files: ['nb/study.ipynb'] });
+  });
+
+  it('sees a file that is under the folder through a link or junction', async () => {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'gg-real-'));
+    fs.mkdirSync(path.join(real, 'src'));
+    fs.writeFileSync(path.join(real, 'src', 'a.ts'), 'x');
+    const link = real + '-link';
+    fs.symlinkSync(real, link, 'junction'); // a junction on Windows (no rights needed), a symlink elsewhere
+    try {
+      // the editor opened the file through the link, git names the real folder
+      h.docs = [doc(path.join(link, 'src', 'a.ts'), true)];
+      await handleWebviewMessage({ type: 'call', id: 11, method: 'switch', params: { ...params, folder: real } }, deps);
+      // and the other way round
+      h.docs = [doc(path.join(real, 'src', 'a.ts'), true)];
+      await handleWebviewMessage({ type: 'call', id: 12, method: 'switch', params: { ...params, folder: link } }, deps);
+      expect(call).not.toHaveBeenCalled();
+      expect(posted.map((m) => [m.result.reason, m.result.files])).toEqual([
+        ['unsaved-editors', ['src/a.ts']],
+        ['unsaved-editors', ['src/a.ts']],
+      ]);
+    } finally {
+      fs.rmSync(link, { recursive: false, force: true });
+    }
   });
 
   it('leaves other writes alone', async () => {

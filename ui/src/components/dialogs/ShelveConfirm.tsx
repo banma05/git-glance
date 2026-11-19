@@ -19,8 +19,8 @@ export function ShelveConfirm({ t, state, actions }: Props) {
     <div>
       <p>{t('dialog.shelve.intro', { folder: a.folder, branch: a.target.branch })}</p>
       {a.files.length > 0 ? <FileList files={a.files} /> : <p class="muted">{t('dialog.shelve.unknown')}</p>}
-      {a.more > 0 && <p class="muted">{t('detail.moreFiles', { n: a.more })}</p>}
       <p class="muted">{t('dialog.shelve.how')}</p>
+      <p class="muted">{t('dialog.shelve.later')}</p>
       {moved && <p class="warn">{t('dialog.repoChanged')}</p>}
       <button class="btn" disabled={moved || state.busy || !!state.gitProblem} onClick={actions.confirmShelve}>
         {t('dialog.shelve.confirm')}

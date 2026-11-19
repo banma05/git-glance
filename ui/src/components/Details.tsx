@@ -90,7 +90,7 @@ function remoteOf(tv: TrunkView): string {
 
 // TrunkDetail is what a click on a trunk's name shows: what it is compared
 // through, its latest commit, its local branch, its roles and its branches.
-// It only reads; none of its buttons changes anything.
+// Its only buttons that change something switch the main folder.
 export function TrunkDetail({ t, group, config, newsOpen = false, locked = false, switched = null, actions }: TrunkDetailProps) {
   const tv = group.trunk;
   const notSet = <span class="muted">{t('trunk.notSet')}</span>;
