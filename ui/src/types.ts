@@ -212,18 +212,23 @@ export interface Shelf {
   hash: string; // the stash commit (40 or 64 hex)
   base: string; // HEAD when it was shelved
   time: number;
-  files: string[];
+  files: string[]; // its first 50 paths
+  fileCount: number; // the number of all its paths, at least files.length
   // pending | kept | superseded | restored | restored-entry-kept | orphan;
   // only pending is ever put back automatically; orphan only in switchState (folder "")
   state: string;
   // "" | base-moved | not-on-branch | folder-dirty | path-exists | check-failed | entry-gone |
   // apply-failed | apply-partial | apply-mismatch | entry-ambiguous | drop-failed | drop-shifted |
-  // superseded | no-record
+  // superseded | no-record; a base-moved shelf is always kept
   whyCode: string;
   why: string; // the English detail; "" exactly when whyCode is ""
+  taken: string[]; // with whyCode path-exists, every path it would write where something is on disk; else []
 }
 
-// SwitchResult is the answer of switch. Every key is always there.
+// SwitchResult is the answer of switch. Every key is always there. Reasons
+// beyond OpResult's: name-clash, update-verify-failed, track-verify-failed
+// (the folder is on the new branch; shelved stays pending for the way back),
+// shelf-failed, restore-failed, and unsaved-editors (made by the VS Code shell).
 export interface SwitchResult extends OpResult {
   shelved: Shelf | null; // work shelved on the way out
   restored: Shelf | null; // work put back: the arrival branch's, or the just-taken one after a failed move

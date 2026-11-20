@@ -56,7 +56,7 @@ describe('DetailPanel', () => {
   it('has no open button but a switch and a new folder button when the branch has no folder', () => {
     renderPanel(branchOf('x', [], { folder: '' }));
     expect(screen.queryByRole('button', { name: '在编辑器打开' })).toBeNull();
-    expect(screen.getByRole('button', { name: '切换到这里' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '切到 x 最新' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '新建文件夹' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '复制分支名' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '和…对比' })).toBeTruthy();
@@ -101,7 +101,7 @@ describe('DetailPanel', () => {
   it('has an open button and no switch button when the branch has a folder', () => {
     const a = actions();
     renderPanel(branchOf('x', [], { folder: '/w/wt-x' }), idle, zh, a);
-    expect(screen.queryByRole('button', { name: '切换到这里' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '切到 x 最新' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '在编辑器打开' }));
     expect(a.openFolder).toHaveBeenCalledWith('/w/wt-x');
   });
@@ -248,14 +248,14 @@ describe('DetailPanel in the app', () => {
     return { host, calls };
   }
 
-  const switchBtn = () => screen.getByRole('button', { name: '切换到这里' }) as HTMLButtonElement;
+  const switchBtn = () => screen.getByRole('button', { name: '切到 carol/feature/search 最新' }) as HTMLButtonElement;
 
   it('disables the switch button while the call is pending and shows the result after', async () => {
     let finish: (r: OpResult) => void = () => undefined;
     const { host, calls } = appHost(() => new Promise<OpResult>((r) => (finish = r)));
     render(<App host={host} />);
     fireEvent.click(await screen.findByText(named('feature/search')));
-    fireEvent.click(await screen.findByRole('button', { name: '切换到这里' }));
+    fireEvent.click(await screen.findByRole('button', { name: '切到 carol/feature/search 最新' }));
     await waitFor(() => expect(switchBtn().disabled).toBe(true));
     fireEvent.click(switchBtn());
     // the remote is read first, then the folder is switched once
@@ -280,7 +280,7 @@ describe('DetailPanel in the app', () => {
     render(<App host={host} />);
     fireEvent.click(await screen.findByText(named('feature/search')));
     await waitFor(() => expect(calls.filter((c) => c.method === 'view')).toHaveLength(2));
-    fireEvent.click(await screen.findByRole('button', { name: '切换到这里' }));
+    fireEvent.click(await screen.findByRole('button', { name: '切到 carol/feature/search 最新' }));
     await waitFor(() => expect(calls.filter((c) => c.method === 'view')).toHaveLength(3));
     expect(calls.filter((c) => c.method === 'switch')[0].params).toEqual({
       repo: '/demo/repo',

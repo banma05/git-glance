@@ -364,14 +364,15 @@ export function mockHost(): Host {
   // The main folder: the branch it is on, its uncommitted files, the branch it
   // was switched away from and the work shelved on the way.
   const main = { on: 'main', dirty: ['src/app.ts', 'notes/todo.md'], previous: '', shelves: [] as Shelf[] };
-  // &outcome=kept: switching back finds main moved, the work stays shelved;
-  // &outcome=partial: putting it back fails half way; &outcome=orphan: git
-  // stash list also holds a Git Glance entry without a record; &outcome=failed:
-  // git refuses the switch after the work was shelved, and it is put back in place.
+  // &outcome=kept: switching back finds main moved, the work stays shelved and
+  // is left to the user; &outcome=partial: putting it back fails half way;
+  // &outcome=orphan: git stash list also holds a Git Glance entry without a
+  // record; &outcome=failed: git refuses the switch after the work was
+  // shelved, and it is put back in place.
   const outcome = q.get('outcome') ?? '';
   const orphan: Shelf = {
-    folder: '', branch: 'alice/feature/login', hash: hash(980), base: hash(201), time: nowSec() - 3 * DAY, files: [],
-    state: 'orphan', whyCode: 'no-record', why: 'a git-glance shelf in git stash list that has no record',
+    folder: '', branch: 'alice/feature/login', hash: hash(980), base: hash(201), time: nowSec() - 3 * DAY, files: [], fileCount: 0,
+    state: 'orphan', whyCode: 'no-record', why: 'a git-glance shelf in git stash list that has no record', taken: [],
   };
   const switchMain = (branch: string, shelve: boolean, latest: boolean): SwitchResult => {
     const answer = (over: Partial<SwitchResult>): SwitchResult => ({
@@ -380,7 +381,10 @@ export function mockHost(): Host {
     });
     if (main.dirty.length > 0 && (!shelve || branch === main.on)) return answer({ ok: false, reason: 'dirty', files: [...main.dirty] });
     const shelved: Shelf | null = main.dirty.length
-      ? { folder: repo, branch: main.on, hash: hash(990), base: hash(100), time: nowSec(), files: [...main.dirty], state: 'pending', whyCode: '', why: '' }
+      ? {
+          folder: repo, branch: main.on, hash: hash(990), base: hash(100), time: nowSec(), files: [...main.dirty], fileCount: main.dirty.length,
+          state: 'pending', whyCode: '', why: '', taken: [],
+        }
       : null;
     if (shelved && outcome === 'failed') {
       return answer({
@@ -388,11 +392,14 @@ export function mockHost(): Host {
         detail: 'error: The following untracked working tree files would be overwritten by checkout: build/config.json',
       });
     }
-    const found = main.shelves.find((x) => x.branch === branch) ?? null;
+    const found = main.shelves.find((x) => x.branch === branch && x.state === 'pending') ?? null;
     let restored: Shelf | null = null;
     let keptShelf: Shelf | null = null;
     if (found && outcome === 'kept') {
-      keptShelf = { ...found, whyCode: 'base-moved', why: `${branch} moved from ${hash(100).slice(0, 12)} to ${hash(101).slice(0, 12)} since the work was shelved; putting it back could conflict` };
+      keptShelf = {
+        ...found, state: 'kept', whyCode: 'base-moved',
+        why: `${branch} moved from ${hash(100).slice(0, 12)} to ${hash(101).slice(0, 12)} since the work was shelved; putting it back could conflict`,
+      };
     } else if (found && outcome === 'partial') {
       keptShelf = {
         ...found, state: 'kept', whyCode: 'apply-partial',

@@ -178,7 +178,7 @@ describe('git too old', () => {
     expect(byName('New requirement folder').disabled).toBe(true);
     expect(byName('Compare two branches').disabled).toBe(false);
     fireEvent.click(screen.getByText(named('feature/search')));
-    expect(byName('Switch here').disabled).toBe(true);
+    expect(byName('Switch to carol/feature/search latest').disabled).toBe(true);
   });
 
   it('does not read the remote (a change for the core) and shows no fetch error', async () => {
@@ -431,17 +431,17 @@ describe('App failures and repo switching', () => {
     host.onRefresh = (cb) => (refresh = cb);
     render(<App host={host} />);
     fireEvent.click(await screen.findByText(named('feature/search')));
-    expect(await screen.findByRole('button', { name: 'Switch here' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Switch to carol/feature/search latest' })).toBeTruthy();
     gone = true;
     await act(async () => refresh());
     await waitFor(() => expect(screen.queryByText(named('feature/search'))).toBeNull());
-    expect(screen.queryByRole('button', { name: 'Switch here' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Switch to carol/feature/search latest' })).toBeNull();
     expect(screen.getByText('Click a row to see details')).toBeTruthy();
     // the selection went with the branch: a later view that has it again does not bring it back
     gone = false;
     await act(async () => refresh());
     await screen.findByText(named('feature/search'));
-    expect(screen.queryByRole('button', { name: 'Switch here' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Switch to carol/feature/search latest' })).toBeNull();
   });
 
   it('lets the latest read of the list win: a late empty answer never clears what a later read opened', async () => {
@@ -530,11 +530,11 @@ describe('trunk details', () => {
     fireEvent.click(headName('main'));
     fireEvent.click(screen.getByText(named('feature/search')));
     expect(pressed(headName('main'))).toBe('false');
-    expect(screen.getByRole('button', { name: 'Switch here' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Switch to carol/feature/search latest' })).toBeTruthy();
     fireEvent.click(headName('develop'));
     expect(container.querySelector('.row.selected')).toBeNull();
     expect(screen.getByText('Behind the remote by 3')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Switch here' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Switch to carol/feature/search latest' })).toBeNull();
   });
 
   it('shows a trunk from the graph title, and keeps it across the list and the graph', async () => {

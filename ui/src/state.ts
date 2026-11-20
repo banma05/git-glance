@@ -247,9 +247,13 @@ export function useApp(host: Host): { state: AppState; actions: Actions } {
     // canWrite is false while a write runs or when the core refuses every change.
     const canWrite = () => !ref.current.busy && !ref.current.gitProblem;
     // gitRan: the reasons of a result after which git did run, so the view changed.
-    const gitRan = (r: OpResult) => r.ok || r.reason === 'git-failed' || r.reason === 'verify-failed';
-    // switchRan: git changed something (a switch, a shelf taken or put back)
-    const switchRan = (r: SwitchResult) => gitRan(r) || !!r.shelved || !!r.restored || !!r.keptShelf || r.reason === 'restore-failed';
+    const GIT_RAN = new Set(['git-failed', 'verify-failed', 'update-verify-failed', 'track-verify-failed']);
+    const gitRan = (r: OpResult) => r.ok || GIT_RAN.has(r.reason);
+    // switchRan: git changed something (a switch, a shelf taken or put back). A
+    // failed shelving may have left part of the work in git stash list without
+    // a record, so the shelves are read again after it too.
+    const switchRan = (r: SwitchResult) =>
+      gitRan(r) || !!r.shelved || !!r.restored || !!r.keptShelf || r.reason === 'restore-failed' || r.reason === 'shelf-failed';
     const current = (repo: string) => ref.current.repo === repo;
 
     // failFor reports a failure of a call made for `repo`; once the user has moved

@@ -212,7 +212,7 @@ export function DetailPanel({ t, branch, state, actions, pick = null, assign }: 
         ) : (
           <>
             <button class="btn" disabled={locked} onClick={() => actions.switchTo(b.name)}>
-              {t('detail.switch')}
+              {t('switch.latest', { branch: b.name })}
             </button>
             <button class="btn" disabled={locked} onClick={() => actions.openDialog('createExisting')}>
               {t('detail.create')}

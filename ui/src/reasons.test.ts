@@ -13,11 +13,11 @@ const CODES: Record<ReasonKind, string[]> = {
   ],
   'align.skip': [
     'dirty', 'ahead', 'diverged', 'upstream-gone', 'folder-missing', 'checked-out-twice', 'hidden-changes', 'git-failed',
-    'in-progress', 'tracks-other-branch', 'verify-failed',
+    'in-progress', 'tracks-other-branch', 'verify-failed', 'shelf-pending',
   ],
   'switch.reason': [
     'dirty', 'folder-missing', 'checked-out-elsewhere', 'no-branch', 'detached', 'hidden-changes', 'git-failed', 'verify-failed',
-    'in-progress', 'shelf-failed', 'restore-failed', 'unsaved-editors',
+    'in-progress', 'shelf-failed', 'restore-failed', 'unsaved-editors', 'name-clash', 'update-verify-failed', 'track-verify-failed',
   ],
   'create.reason': [
     'bad-name', 'branch-exists', 'path-exists', 'path-inside-folder',
