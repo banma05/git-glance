@@ -16,7 +16,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: core/go.mod
-      - run: go test ./...
+      - name: go test
+        run: |
+          set -o pipefail
+          go test -timeout 30m ./... 2>&1 | tee test-output.txt
+        shell: bash
+        working-directory: core
+      - name: list failures
+        if: failure()
+        run: grep -E -- '--- FAIL|_test\.go:[0-9]+:|panic:|^FAIL|timed out|cannot|error' test-output.txt | head -60 | sed 's/^/::error::/'
+        shell: bash
         working-directory: core
 
   ui:
