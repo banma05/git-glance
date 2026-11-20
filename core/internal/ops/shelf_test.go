@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -267,7 +268,9 @@ func TestShelfKeepsUntrackedSkipsIgnored(t *testing.T) {
 }
 
 // The shelved branch moved while the folder was away: putting the work back
-// could conflict, so nothing is applied and the shelf stays in the stash.
+// could conflict, so nothing is applied and the shelf stays in the stash. It
+// could come back on its own only if the branch went back, so it is marked
+// kept (the page then says how to apply it by hand) and is not tried again.
 func TestSwitchBackKeepsShelfWhenBaseMoved(t *testing.T) {
 	f := newFixture(t)
 	f.onLogin(t)
@@ -288,7 +291,7 @@ func TestSwitchBackKeepsShelfWhenBaseMoved(t *testing.T) {
 	if back.KeptShelf.Hash != hash || !strings.Contains(back.KeptShelf.Why, "moved") || !strings.Contains(back.KeptShelf.Why, moved[:12]) {
 		t.Fatalf("kept = %+v", back.KeptShelf)
 	}
-	wantCode(t, "kept", back.KeptShelf, settings.ShelfPending, "base-moved")
+	wantCode(t, "kept", back.KeptShelf, settings.ShelfKept, "base-moved")
 	if f.read(t, "README") != "theirs\n" || f.status() != "" {
 		t.Fatalf("the folder changed: README %q, status %q", f.read(t, "README"), f.status())
 	}
@@ -299,7 +302,115 @@ func TestSwitchBackKeepsShelfWhenBaseMoved(t *testing.T) {
 	if len(st.Shelves) != 1 || st.Shelves[0].Hash != hash {
 		t.Fatalf("state = %+v", st)
 	}
-	wantOps(t, f, "shelve feature/login ok", "switch main ok", "switch feature/login ok")
+	wantCode(t, "listed", &st.Shelves[0], settings.ShelfKept, "base-moved")
+	// Even once the branch is back where the work was shelved, it is left to the user.
+	f.r.Git(f.r.Dir, "reset", "-q", "--hard", "HEAD~1")
+	f.sw(t, "main", SwitchOptions{})
+	if again := f.sw(t, "feature/login", SwitchOptions{}); !again.OK || again.Restored != nil || again.KeptShelf != nil || f.read(t, "README") != "init\n" {
+		t.Fatalf("again = %+v", again)
+	}
+	wantOps(t, f, "shelve feature/login ok", "switch main ok", "switch feature/login ok", "switch main ok", "switch feature/login ok")
+}
+
+// Align leaves a branch alone while work shelved from it waits on its
+// commit: moving it would keep the work from coming back. Once the work is
+// back, nothing holds the branch any more.
+func TestAlignSkipsBranchWithPendingShelf(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "README", "edited\n")
+	away := f.sw(t, "x", SwitchOptions{Shelve: true})
+	if !away.OK || away.Shelved == nil || away.Shelved.Branch != "main" {
+		t.Fatalf("away = %+v", away)
+	}
+	f.pushOther("main", "m.txt")
+	f.pushOther("y", "y.txt")
+	before := f.rev("main")
+	rep, err := Align(context.Background(), f.run, f.st, f.r.Dir, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := hasSkip(rep, "main", "shelf-pending")
+	if !ok || !strings.Contains(s.Detail, away.Shelved.Hash) || f.rev("main") != before {
+		t.Fatalf("report = %+v", rep)
+	}
+	if got := updatedNames(rep); !slices.Equal(got, []string{"y"}) {
+		t.Fatalf("updated = %v, want only y", got)
+	}
+	back := f.sw(t, "main", SwitchOptions{Shelve: true})
+	if back.Restored == nil || f.read(t, "README") != "edited\n" {
+		t.Fatalf("back = %+v", back)
+	}
+	f.r.Git(f.r.Dir, "checkout", "-q", "--", "README")
+	rep, err = Align(context.Background(), f.run, f.st, f.r.Dir, fixedNow)
+	if err != nil || !slices.Contains(updatedNames(rep), "main") {
+		t.Fatalf("report = %+v, err = %v", rep, err)
+	}
+}
+
+// corruptRecords makes the shelf records of the repository unreadable.
+func corruptRecords(t *testing.T, f *fixture) {
+	t.Helper()
+	p := filepath.Join(f.st.Dir, "shelves", settings.RepoKey(f.r.Dir)+".json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// When the shelf records cannot be read, any branch might hold a shelf:
+// Align moves nothing, and a switch to the latest does not move the branch.
+func TestUnreadableShelfRecordsMoveNoBranch(t *testing.T) {
+	f := newFixture(t)
+	mainBehind(t, f)
+	f.pushOther("y", "y.txt")
+	before, beforeY := f.rev("main"), f.rev("y")
+	corruptRecords(t, f)
+	if _, err := Align(context.Background(), f.run, f.st, f.r.Dir, fixedNow); err == nil || !strings.Contains(err.Error(), "shelf records") {
+		t.Fatalf("err = %v", err)
+	}
+	if f.rev("y") != beforeY || f.rev("main") != before {
+		t.Fatal("a branch moved")
+	}
+	res := f.sw(t, "main", SwitchOptions{Latest: true})
+	if !res.OK || res.FastForwarded || res.NoFastForward != "shelf-pending" || !strings.Contains(res.LogError, "shelf records") || f.rev("main") != before {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+// The folder went back to the branch by hand: a switch to the branch it is
+// on puts its shelf back, and a switch to its latest does so without moving
+// the branch under it.
+func TestSwitchInPlacePutsShelfBack(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "README", "edited\n")
+	if away := f.sw(t, "x", SwitchOptions{Shelve: true}); away.Shelved == nil {
+		t.Fatalf("away = %+v", away)
+	}
+	f.r.Git(f.r.Dir, "switch", "-q", "main")
+	res := f.sw(t, "main", SwitchOptions{})
+	if !res.OK || res.Restored == nil || res.Restored.State != settings.ShelfRestored || f.read(t, "README") != "edited\n" {
+		t.Fatalf("res = %+v", res)
+	}
+	// Nothing waits any more: the same switch does nothing.
+	if again := f.sw(t, "main", SwitchOptions{Shelve: true}); !again.OK || again.Restored != nil || again.KeptShelf != nil {
+		t.Fatalf("again = %+v", again)
+	}
+	wantOps(t, f, "shelve main ok", "switch x ok", "unshelve main ok", "drop-shelf main ok")
+
+	f.r.Git(f.r.Dir, "checkout", "-q", "--", "README")
+	f.write(t, "README", "second\n")
+	f.sw(t, "x", SwitchOptions{Shelve: true})
+	f.r.Git(f.r.Dir, "switch", "-q", "main")
+	f.pushOther("main", "m.txt")
+	f.r.Git(f.r.Dir, "fetch", "-q", "origin")
+	before := f.rev("main")
+	latest := f.sw(t, "main", SwitchOptions{Latest: true, Shelve: true})
+	if !latest.OK || latest.FastForwarded || latest.NoFastForward != "shelf-pending" || latest.Restored == nil ||
+		f.rev("main") != before || f.read(t, "README") != "second\n" {
+		t.Fatalf("latest = %+v", latest)
+	}
 }
 
 // The folder is not clean on arrival (a file came along with the switch):
@@ -544,7 +655,62 @@ func TestRestoreRefusesWhenShelvedPathExists(t *testing.T) {
 	if got := f.stashList(); !slices.Equal(got, []string{res.Shelved.Hash}) {
 		t.Fatalf("stash list = %v", got)
 	}
+	if !slices.Equal(back.KeptShelf.Taken, []string{"u.txt"}) {
+		t.Fatalf("taken = %v", back.KeptShelf.Taken)
+	}
 	wantOps(t, f, "shelve feature/login ok", "switch main ok", "switch feature/login ok")
+}
+
+// A shelf lists its first 50 paths and counts all of them.
+func TestShelfCountsAllFiles(t *testing.T) {
+	f := newFixture(t)
+	for i := 0; i < 60; i++ {
+		f.write(t, fmt.Sprintf("many/f%02d.txt", i), "new\n")
+	}
+	res := f.sw(t, "x", SwitchOptions{Shelve: true})
+	if !res.OK || res.Shelved == nil || len(res.Shelved.Files) != 50 || res.Shelved.FileCount != 60 {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+// Every path in the way is named, not only the first three the English
+// detail names: whoever moves them before applying by hand must know all of
+// them, or git overwrites an ignored one. A kept shelf's record keeps them.
+func TestKeptShelfNamesEveryPathInTheWay(t *testing.T) {
+	f := newFixture(t)
+	branchWithIgnoredBlocker(t, f)
+	names := []string{"n1.txt", "n2.txt", "n3.txt", "n4.txt", "n5.txt", "new.txt"}
+	for _, n := range names {
+		f.write(t, n, "new\n")
+	}
+	late := hookRunner{before: func(dir string, args []string) {
+		if args[0] == "switch" {
+			f.exclude(t, "gen.txt\nn*.txt\n")
+			for _, n := range names {
+				f.write(t, n, "in the way\n")
+			}
+		}
+	}}
+	res := f.swWith(t, late, "main", SwitchOptions{Shelve: true})
+	if res.Reason != "restore-failed" {
+		t.Fatalf("res = %+v", res)
+	}
+	wantCode(t, "kept", res.KeptShelf, settings.ShelfKept, "path-exists")
+	if !slices.Equal(res.KeptShelf.Taken, names) || !strings.Contains(res.KeptShelf.Why, ", ...") {
+		t.Fatalf("kept = %+v", res.KeptShelf)
+	}
+	if res.Shelved.FileCount != len(names)+1 {
+		t.Fatalf("file count = %d", res.Shelved.FileCount)
+	}
+	st := f.state(t)
+	if len(st.Shelves) != 1 || !slices.Equal(st.Shelves[0].Taken, names) || st.Shelves[0].FileCount != len(names)+1 {
+		t.Fatalf("listed = %+v", st.Shelves)
+	}
+	for _, n := range names {
+		if f.read(t, n) != "in the way\n" {
+			t.Fatalf("%s was overwritten", n)
+		}
+	}
 }
 
 // git stash apply would overwrite an ignored file where the shelf adds a
@@ -621,14 +787,20 @@ func TestRestoreReportsFailedApply(t *testing.T) {
 // one: the older one is never applied on its own, and stays listed.
 func TestNewerShelfSupersedesOlder(t *testing.T) {
 	f := newFixture(t)
-	base := f.onLogin(t)
+	f.onLogin(t)
 	f.write(t, "README", "first\n")
 	first := f.sw(t, "main", SwitchOptions{Shelve: true}).Shelved
-	wt := f.r.AddWorktree("login", "feature/login")
-	f.r.Commit(wt, "more", map[string]string{"more.txt": "more\n"})
-	f.r.Git(f.r.Dir, "worktree", "remove", wt)
-	if back := f.sw(t, "feature/login", SwitchOptions{Shelve: true}); back.KeptShelf == nil {
+	// a file comes along with the switch back: the first shelf stays pending
+	late := hookRunner{before: func(dir string, args []string) {
+		if args[0] == "switch" {
+			f.write(t, "late.txt", "came along\n")
+		}
+	}}
+	if back := f.swWith(t, late, "feature/login", SwitchOptions{Shelve: true}); back.KeptShelf == nil || back.KeptShelf.State != settings.ShelfPending {
 		t.Fatalf("back = %+v", back)
+	}
+	if err := os.Remove(filepath.Join(f.r.Dir, "late.txt")); err != nil {
+		t.Fatal(err)
 	}
 	f.write(t, "README", "second\n")
 	second := f.sw(t, "main", SwitchOptions{Shelve: true}).Shelved
@@ -641,11 +813,10 @@ func TestNewerShelfSupersedesOlder(t *testing.T) {
 	if back := f.sw(t, "feature/login", SwitchOptions{Shelve: true}); back.Restored == nil || back.Restored.Hash != second.Hash {
 		t.Fatalf("back = %+v", back)
 	}
-	// The branch goes back to the first shelf's base and the folder is clean:
-	// the superseded shelf is still not applied.
+	// The branch is at the first shelf's base and the folder is clean: the
+	// superseded shelf is still not applied.
 	f.r.Git(f.r.Dir, "checkout", "-q", "--", "README")
 	f.r.Git(f.r.Dir, "switch", "-q", "main")
-	f.r.Git(f.r.Dir, "branch", "-q", "-f", "feature/login", base)
 	if again := f.sw(t, "feature/login", SwitchOptions{Shelve: true}); again.Restored != nil || again.KeptShelf != nil || f.read(t, "README") != "init\n" {
 		t.Fatalf("again = %+v", again)
 	}

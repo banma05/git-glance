@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -27,9 +28,12 @@ type AlignItem struct {
 // assume-unchanged exist on disk), folder-missing (its folder was deleted from disk),
 // checked-out-twice (several folders hold the branch), tracks-other-branch
 // (its upstream is a branch of another name, such as a trunk; Detail names
-// it), in-progress (a stopped rebase or a bisect works on it), git-failed
-// (Detail is git's message) or verify-failed (git ran but the branch or its
-// folder is not where it should be afterwards; Detail says what).
+// it), in-progress (a stopped rebase or a bisect works on it), shelf-pending
+// (work a switch shelved from it waits to be put back on its current commit,
+// and moving it would keep that work from coming back; Detail names the
+// folder and the stash commit), git-failed (Detail is git's message) or
+// verify-failed (git ran but the branch or its folder is not where it should
+// be afterwards; Detail says what).
 type AlignSkip struct {
 	Branch string   `json:"branch"`
 	Reason string   `json:"reason"`
@@ -66,12 +70,17 @@ func Align(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot strin
 }
 
 // alignSnapshot aligns the branches of snap. Every update re-checks that the
-// repository still matches the snapshot.
+// repository still matches the snapshot. Shelf records that cannot be read
+// stop it before anything moves: any branch might hold a shelf.
 func alignSnapshot(ctx context.Context, r gitx.Runner, st settings.Store, repoRoot string, snap repo.Snapshot, now func() time.Time) (AlignReport, error) {
 	rep := AlignReport{Updated: []AlignItem{}, Skipped: []AlignSkip{}}
 	held, err := heldBranches(ctx, r, repoRoot)
 	if err != nil {
 		return rep, err
+	}
+	shelves, err := st.SwitchRecords(repoRoot)
+	if err != nil {
+		return rep, fmt.Errorf("reading the shelf records failed, so no branch was moved: %w", err)
 	}
 	remotes := map[string]bool{}
 	for _, rr := range snap.Remote {
@@ -88,6 +97,11 @@ func alignSnapshot(ctx context.Context, r gitx.Runner, st settings.Store, repoRo
 		}
 		if skip, ok := checkBranch(b, held); ok {
 			rep.Skipped = append(rep.Skipped, skip)
+			continue
+		}
+		if sh, ok := pendingAt(shelves, b); ok {
+			rep.Skipped = append(rep.Skipped, AlignSkip{Branch: b.Name, Reason: "shelf-pending", Files: []string{},
+				Detail: "work shelved from it in " + sh.Folder + " waits to be put back (stash commit " + sh.Hash + ")"})
 			continue
 		}
 		holders := holdersOf(snap, b.Name)

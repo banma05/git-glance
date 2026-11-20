@@ -438,6 +438,78 @@ func TestSwitchFromRemoteRefusals(t *testing.T) {
 	}
 }
 
+// A branch created from the remote must not be confused with another name.
+// On a case-insensitive file system, git switch -c Feature/X makes a packed
+// local feature/x answer for the remote's commit, moving it away from its
+// unpushed commit: that and the other clashes are refused, nothing runs.
+func TestSwitchFromRemoteRefusesNameClash(t *testing.T) {
+	f := newFixture(t)
+	f.r.Git(f.r.Dir, "switch", "-q", "-c", "feature/x")
+	mine := f.r.Commit(f.r.Dir, "unpushed", map[string]string{"x.txt": "mine\n"})
+	f.r.Git(f.r.Dir, "switch", "-q", "main")
+	f.r.Git(f.r.Dir, "pack-refs", "--all")
+	f.r.Git(f.other, "push", "-q", "origin", "main:Feature/X", "main:v4", "main:origin/v5")
+	f.r.Git(f.r.Dir, "fetch", "-q", "origin")
+	f.r.Git(f.r.Dir, "tag", "V4")
+	for _, branch := range []string{"Feature/X", "v4", "origin/v5"} {
+		res := f.sw(t, branch, SwitchOptions{Remote: "origin", Latest: true})
+		if res.OK || res.Reason != "name-clash" || res.Detail == "" {
+			t.Fatalf("%s: res = %+v", branch, res)
+		}
+	}
+	if f.rev("refs/heads/feature/x") != mine || f.head(f.r.Dir) != "refs/heads/main" {
+		t.Fatal("a branch or the folder moved")
+	}
+	if got := f.r.Git(f.r.Dir, "for-each-ref", "--format=%(refname)", "refs/heads/Feature", "refs/heads/v4", "refs/heads/origin"); got != "" {
+		t.Fatalf("a local branch was created: %q", got)
+	}
+	wantOps(t, f)
+}
+
+// git switched the folder to the branch it created from the remote, but the
+// check after it failed: the folder counts as switched (it can be switched
+// back), and the work shelved on the way stays shelved for the way back.
+func TestSwitchTrackCheckFailedKeepsShelfForTheWayBack(t *testing.T) {
+	f := newFixture(t)
+	f.r.Git(f.other, "push", "-q", "origin", "main:v2")
+	f.r.Git(f.r.Dir, "fetch", "-q", "origin")
+	f.write(t, "README", "edited\n")
+	run := skipRunner{skip: func(args []string) bool { return args[0] == "for-each-ref" && args[1] == "--format=%(upstream)" }}
+	res := f.swWith(t, run, "v2", SwitchOptions{Remote: "origin", Shelve: true})
+	if res.OK || res.Reason != "track-verify-failed" || res.Detail == "" || res.Shelved == nil ||
+		res.Shelved.State != settings.ShelfPending || res.Restored != nil || res.KeptShelf != nil {
+		t.Fatalf("res = %+v", res)
+	}
+	if f.head(f.r.Dir) != "refs/heads/v2" {
+		t.Fatal("the folder is not on v2")
+	}
+	if st := f.state(t); st.Previous != "main" || len(st.Shelves) != 1 || st.Shelves[0].State != settings.ShelfPending {
+		t.Fatalf("state = %+v", st)
+	}
+	back := f.sw(t, "main", SwitchOptions{Shelve: true})
+	if !back.OK || back.Restored == nil || f.read(t, "README") != "edited\n" {
+		t.Fatalf("back = %+v", back)
+	}
+}
+
+// Bringing the branch up to date ran but did not end where it should: the
+// reason says so (not "the folder is not on the branch"), nothing was
+// switched and the shelved work is back in place.
+func TestSwitchLatestUpdateCheckFailed(t *testing.T) {
+	f := newFixture(t)
+	mainBehind(t, f)
+	f.write(t, "README", "edited\n")
+	before := f.rev("main")
+	run := skipRunner{skip: func(args []string) bool { return args[0] == "fetch" && args[1] == "." }}
+	res := f.swWith(t, run, "main", SwitchOptions{Latest: true, Shelve: true})
+	if res.OK || res.Reason != "update-verify-failed" || res.Detail == "" || res.Restored == nil {
+		t.Fatalf("res = %+v", res)
+	}
+	if f.head(f.r.Dir) != "refs/heads/x" || f.read(t, "README") != "edited\n" || f.rev("main") != before || len(f.stashList()) != 0 {
+		t.Fatal("the folder or main is not as it was")
+	}
+}
+
 func TestSwitchRecordsPrevious(t *testing.T) {
 	f := newFixture(t)
 	if st := f.state(t); st.Previous != "" || len(st.Shelves) != 0 {

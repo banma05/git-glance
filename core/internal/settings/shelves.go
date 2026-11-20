@@ -11,20 +11,25 @@ import (
 // Shelf is uncommitted work of a folder that the tool put into git's stash
 // before switching the folder away from Branch. Hash is the stash commit (it
 // identifies the entry, whose stash@{n} index shifts), Base the commit HEAD
-// was on, Time the unix time it was shelved and Files its first 50 paths.
-// State is one of the Shelf* states; only a pending shelf is ever put back
-// on its own. WhyCode is "" or a machine-readable reason (the ops package
-// lists them) and Why the same reason as an English sentence.
+// was on, Time the unix time it was shelved, Files its first 50 paths and
+// FileCount the number of all its paths (at least len(Files)). State is one
+// of the Shelf* states; only a pending shelf is ever put back on its own.
+// WhyCode is "" or a machine-readable reason (the ops package lists them)
+// and Why the same reason as an English sentence. Taken lists, with WhyCode
+// path-exists, every path the shelf would write where something is already
+// on disk; it is empty otherwise.
 type Shelf struct {
-	Folder  string   `json:"folder"`
-	Branch  string   `json:"branch"`
-	Hash    string   `json:"hash"`
-	Base    string   `json:"base"`
-	Time    int64    `json:"time"`
-	Files   []string `json:"files"`
-	State   string   `json:"state"`
-	WhyCode string   `json:"whyCode"`
-	Why     string   `json:"why"`
+	Folder    string   `json:"folder"`
+	Branch    string   `json:"branch"`
+	Hash      string   `json:"hash"`
+	Base      string   `json:"base"`
+	Time      int64    `json:"time"`
+	Files     []string `json:"files"`
+	FileCount int      `json:"fileCount"`
+	State     string   `json:"state"`
+	WhyCode   string   `json:"whyCode"`
+	Why       string   `json:"why"`
+	Taken     []string `json:"taken"`
 }
 
 // Shelf states. Pending: in the stash, put back on the folder's next arrival
@@ -74,6 +79,12 @@ func normalizeSwitch(rec SwitchRecords) SwitchRecords {
 		sh := &rec.Shelves[i]
 		if sh.Files == nil {
 			sh.Files = []string{}
+		}
+		if sh.FileCount < len(sh.Files) {
+			sh.FileCount = len(sh.Files)
+		}
+		if sh.Taken == nil {
+			sh.Taken = []string{}
 		}
 		switch {
 		case sh.State != "":

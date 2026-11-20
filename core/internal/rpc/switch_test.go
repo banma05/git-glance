@@ -42,11 +42,11 @@ func TestSwitchShelvesOverRPC(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if want := []string{"base", "branch", "files", "folder", "hash", "state", "time", "why", "whyCode"}; !reflect.DeepEqual(keys, want) {
+	if want := []string{"base", "branch", "fileCount", "files", "folder", "hash", "state", "taken", "time", "why", "whyCode"}; !reflect.DeepEqual(keys, want) {
 		t.Fatalf("shelf keys = %v, want %v", keys, want)
 	}
-	if string(shelf["state"]) != `"pending"` || string(raw["noFastForward"]) != `""` {
-		t.Fatalf("shelf state %s, noFastForward %s", shelf["state"], raw["noFastForward"])
+	if string(shelf["state"]) != `"pending"` || string(raw["noFastForward"]) != `""` || string(shelf["fileCount"]) != "1" || string(shelf["taken"]) != "[]" {
+		t.Fatalf("shelf state %s, noFastForward %s, fileCount %s, taken %s", shelf["state"], raw["noFastForward"], shelf["fileCount"], shelf["taken"])
 	}
 	var res struct {
 		OK      bool `json:"ok"`

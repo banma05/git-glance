@@ -20,63 +20,65 @@ type reason struct{ code, why string }
 // is on sh's branch at sh.Base, clean, and nothing is on disk where the shelf
 // would create a file. After a verified apply the stash entry is dropped. It
 // returns the restored shelf or the kept one, with state and reason. A kept
-// shelf stays pending when only those conditions were not met and failing is
-// not set; otherwise it is marked kept and never applied on its own again.
+// shelf stays pending when only the folder's state was in the way (it is
+// tried again on the next arrival) and failing is not set; otherwise it is
+// marked kept and never applied on its own again. A shelf whose branch moved
+// is always marked kept: it could come back only if the branch went back.
 func (s *switchRun) restore(sh settings.Shelf, failing bool) (restored, kept *settings.Shelf) {
-	r, err := s.blocksRestore(sh)
+	r, taken, err := s.blocksRestore(sh)
 	if err != nil {
 		r = reason{whyCheckFailed, "the folder could not be checked: " + failDetail(err)}
 	}
 	if r.code != "" {
-		return nil, s.keep(sh, r, failing)
+		return nil, s.keep(sh, r, failing || r.code == whyBaseMoved, taken)
 	}
 	list, err := stashList(s.ctx, s.r, s.dir())
 	switch {
 	case err != nil:
-		return nil, s.keep(sh, reason{whyCheckFailed, "git stash list could not be read: " + failDetail(err)}, failing)
+		return nil, s.keep(sh, reason{whyCheckFailed, "git stash list could not be read: " + failDetail(err)}, failing, nil)
 	case len(indexesOf(list, sh.Hash)) == 0:
-		return nil, s.keep(sh, reason{whyEntryGone, "it is no longer in git stash list"}, true)
+		return nil, s.keep(sh, reason{whyEntryGone, "it is no longer in git stash list"}, true, nil)
 	}
 	if r := s.apply(sh); r.code != "" {
-		return nil, s.keep(sh, r, true)
+		return nil, s.keep(sh, r, true, nil)
 	}
 	return s.drop(sh), nil
 }
 
 // blocksRestore explains why applying sh now could conflict, or returns the
-// zero reason.
-func (s *switchRun) blocksRestore(sh settings.Shelf) (reason, error) {
+// zero reason. With path-exists, taken lists every path in the way.
+func (s *switchRun) blocksRestore(sh settings.Shelf) (r reason, taken []string, err error) {
 	head, err := headRef(s.ctx, s.r, s.dir())
 	if err != nil {
-		return reason{}, err
+		return reason{}, nil, err
 	}
 	if head != "refs/heads/"+sh.Branch {
-		return reason{whyNotOnBranch, fmt.Sprintf("the folder is on %s, not %s", head, sh.Branch)}, nil
+		return reason{whyNotOnBranch, fmt.Sprintf("the folder is on %s, not %s", head, sh.Branch)}, nil, nil
 	}
 	at, err := revParse(s.ctx, s.r, s.dir(), "HEAD")
 	if err != nil {
-		return reason{}, err
+		return reason{}, nil, err
 	}
 	if at != sh.Base {
 		return reason{whyBaseMoved, fmt.Sprintf("%s moved from %s to %s since the work was shelved; putting it back could conflict",
-			sh.Branch, short(sh.Base), short(at))}, nil
+			sh.Branch, short(sh.Base), short(at))}, nil, nil
 	}
 	st, err := readFolderStatus(s.ctx, s.r, s.dir())
 	if err != nil {
-		return reason{}, err
+		return reason{}, nil, err
 	}
 	if !st.clean() {
-		return reason{whyFolderDirty, "the folder has changes (" + firstFiles(st.files) + "); putting the work back could conflict"}, nil
+		return reason{whyFolderDirty, "the folder has changes (" + firstFiles(st.files) + "); putting the work back could conflict"}, nil, nil
 	}
-	taken, err := s.takenPaths(sh)
+	taken, err = s.takenPaths(sh)
 	if err != nil {
-		return reason{}, err
+		return reason{}, nil, err
 	}
 	if len(taken) > 0 {
 		return reason{whyPathExists, "files the shelf would create are already on disk (" + firstFiles(taken) +
-			"); putting the work back would stop on them or overwrite them"}, nil
+			"); putting the work back would stop on them or overwrite them"}, taken, nil
 	}
-	return reason{}, nil
+	return reason{}, nil, nil
 }
 
 // takenPaths lists the paths sh would create that something on disk already
@@ -269,7 +271,7 @@ func (s *switchRun) drop(sh settings.Shelf) *settings.Shelf {
 		}
 		rec.Shelves = kept
 	})
-	sh.State, sh.WhyCode, sh.Why = settings.ShelfRestored, "", ""
+	sh.State, sh.WhyCode, sh.Why, sh.Taken = settings.ShelfRestored, "", "", []string{}
 	return &sh
 }
 
@@ -316,13 +318,13 @@ func (s *switchRun) storeAgain(branch, hash string) string {
 	return "it was stored again as stash@{0}"
 }
 
-// keep returns sh with reason r: pending, or kept (and marked so) when mark
-// is set.
-func (s *switchRun) keep(sh settings.Shelf, r reason, mark bool) *settings.Shelf {
-	sh.State, sh.WhyCode, sh.Why = settings.ShelfPending, r.code, r.why
+// keep returns sh with reason r and, for path-exists, the paths in its way:
+// pending, or kept (and marked so) when mark is set.
+func (s *switchRun) keep(sh settings.Shelf, r reason, mark bool, taken []string) *settings.Shelf {
+	sh.State, sh.WhyCode, sh.Why, sh.Taken = settings.ShelfPending, r.code, r.why, append([]string{}, taken...)
 	if mark {
 		sh.State = settings.ShelfKept
-		s.markShelf(sh.Hash, sh.State, r)
+		s.markShelf(sh.Hash, sh.State, r, sh.Taken)
 	}
 	return &sh
 }
@@ -331,7 +333,7 @@ func (s *switchRun) keep(sh settings.Shelf, r reason, mark bool) *settings.Shelf
 // its record so that it is not applied twice.
 func (s *switchRun) keepApplied(sh settings.Shelf, r reason) *settings.Shelf {
 	r.why = "put back, but its stash entry was kept: " + r.why
-	sh.State, sh.WhyCode, sh.Why = settings.ShelfRestoredEntryKept, r.code, r.why
-	s.markShelf(sh.Hash, sh.State, r)
+	sh.State, sh.WhyCode, sh.Why, sh.Taken = settings.ShelfRestoredEntryKept, r.code, r.why, []string{}
+	s.markShelf(sh.Hash, sh.State, r, sh.Taken)
 	return &sh
 }

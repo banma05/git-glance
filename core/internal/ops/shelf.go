@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/banma05/git-glance/core/internal/gitx"
+	"github.com/banma05/git-glance/core/internal/repo"
 	"github.com/banma05/git-glance/core/internal/settings"
 )
 
@@ -211,7 +212,7 @@ func (s *switchRun) stashPush(files []string) (*settings.Shelf, string) {
 	if after != "" && after != top {
 		sh = &settings.Shelf{
 			Folder: dir, Branch: s.from(), Hash: after, Base: base, Time: t,
-			Files: capFiles(files), State: settings.ShelfPending,
+			Files: capFiles(files), FileCount: len(files), State: settings.ShelfPending, Taken: []string{},
 		}
 		entry.After = after
 	}
@@ -251,12 +252,13 @@ func (s *switchRun) checkShelved(sh *settings.Shelf, base string) string {
 	return ""
 }
 
-// markShelf stores state and reason on the record of hash.
-func (s *switchRun) markShelf(hash, state string, r reason) {
+// markShelf stores state, reason and the paths in the way on the record of
+// hash.
+func (s *switchRun) markShelf(hash, state string, r reason, taken []string) {
 	s.editRecords(func(rec *settings.SwitchRecords) {
 		for i := range rec.Shelves {
-			if rec.Shelves[i].Hash == hash {
-				rec.Shelves[i].State, rec.Shelves[i].WhyCode, rec.Shelves[i].Why = state, r.code, r.why
+			if sh := &rec.Shelves[i]; sh.Hash == hash {
+				sh.State, sh.WhyCode, sh.Why, sh.Taken = state, r.code, r.why, taken
 			}
 		}
 	})
@@ -274,6 +276,17 @@ func (s *switchRun) editRecords(edit func(*settings.SwitchRecords)) error {
 		s.addLogError("saving the shelf records failed: " + err.Error())
 	}
 	return err
+}
+
+// pendingAt returns a pending shelf of any folder that sits on b's current
+// commit: moving b would keep it from ever being put back on its own.
+func pendingAt(rec settings.SwitchRecords, b repo.Ref) (settings.Shelf, bool) {
+	for _, sh := range rec.Shelves {
+		if sh.State == settings.ShelfPending && sh.Branch == b.Name && sh.Base == b.Hash {
+			return sh, true
+		}
+	}
+	return settings.Shelf{}, false
 }
 
 // pendingShelf returns the newest pending shelf the folder left on branch.

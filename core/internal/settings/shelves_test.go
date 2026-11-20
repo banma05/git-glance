@@ -71,14 +71,14 @@ func TestSwitchRecordsNormalizesNilLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Previous == nil || out.Shelves[0].Files == nil {
+	if out.Previous == nil || out.Shelves[0].Files == nil || out.Shelves[0].Taken == nil {
 		t.Fatalf("records = %#v, want non-nil lists", out)
 	}
 	data, err := json.Marshal(out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"shelves":[{"folder":"","branch":"","hash":"h","base":"","time":0,"files":[],"state":"pending","whyCode":"","why":""}],"previous":[]}`
+	want := `{"shelves":[{"folder":"","branch":"","hash":"h","base":"","time":0,"files":[],"fileCount":0,"state":"pending","whyCode":"","why":"","taken":[]}],"previous":[]}`
 	if string(data) != want {
 		t.Fatalf("json = %s\nwant   %s", data, want)
 	}

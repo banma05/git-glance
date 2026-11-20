@@ -113,7 +113,7 @@ func readOrphans(ctx context.Context, r gitx.Runner, repoRoot string, hashes []s
 			continue
 		}
 		orphans[f[0]] = settings.Shelf{
-			Branch: branch, Hash: f[0], Base: parents[0], Time: at, Files: []string{},
+			Branch: branch, Hash: f[0], Base: parents[0], Time: at, Files: []string{}, Taken: []string{},
 			State: settings.ShelfOrphan, WhyCode: whyNoRecord,
 			Why: "a Git Glance shelf without a record (the tool stopped before recording it); it is in git stash list",
 		}
