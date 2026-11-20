@@ -113,10 +113,13 @@ function realOf(p: string): string {
 }
 
 // unsavedUnder lists, relative to folder and with "/", the open files with
-// unsaved changes that live in folder. A file counts when its path is under
-// the folder as written, or once both are resolved to their real paths (an
-// editor may have opened the repository through a link, git names it without).
-// Paths are compared without case on Windows only. Documents that are not
+// unsaved changes that live in folder, each once. A file counts when its path
+// is under the folder as written, or once both are resolved to their real
+// paths (an editor may have opened the repository through a link, git names
+// it without). Paths are compared without case on every system: macOS and
+// Windows ignore case by default, and where they do not, a needless refusal
+// is the safe mistake. Network paths are never resolved (that would reach
+// out to the network); they are compared as written. Documents that are not
 // files (untitled ones) are under no folder.
 export function unsavedUnder(
   folder: string,
@@ -125,18 +128,57 @@ export function unsavedUnder(
   real: (p: string) => string = realOf,
 ): string[] {
   const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
-  const fold = (p: string) => (platform === 'win32' ? p.toLowerCase() : p);
   const inside = (file: string, root: string) => {
     const f = norm(file);
     const r = norm(root);
-    return fold(f).startsWith(fold(r) + '/') ? f.slice(r.length + 1) : '';
+    const ff = f.toLowerCase();
+    const fr = r.toLowerCase();
+    if (!ff.startsWith(fr + '/')) return '';
+    // lower case keeps the length of nearly every name; when it does not, the lower-case name is shown
+    return ff.length === f.length && fr.length === r.length ? f.slice(r.length + 1) : ff.slice(fr.length + 1);
   };
-  const realRoot = real(folder);
+  const resolve = (p: string) => (unsafeFolderPath(p, platform) ? p : real(p));
+  const realRoot = resolve(folder);
   const out: string[] = [];
   for (const d of docs) {
     if (!d.isDirty || d.uri.scheme !== 'file') continue;
-    const rel = inside(d.uri.fsPath, folder) || inside(real(d.uri.fsPath), realRoot);
-    if (rel) out.push(rel);
+    const rel = inside(d.uri.fsPath, folder) || inside(resolve(d.uri.fsPath), realRoot);
+    if (rel && !out.includes(rel)) out.push(rel);
+  }
+  return out;
+}
+
+const isUri = (v: unknown): v is OpenDocument['uri'] =>
+  isObject(v) && typeof v.scheme === 'string' && typeof v.fsPath === 'string';
+
+// dirtyTabs are the open tabs with unsaved changes, as documents. Custom
+// editors (an image or hex editor, for example) keep their unsaved state on
+// the tab, not on a text or notebook document.
+function dirtyTabs(): OpenDocument[] {
+  const out: OpenDocument[] = [];
+  for (const group of vscode.window.tabGroups?.all ?? []) {
+    for (const tab of group.tabs) {
+      if (!tab.isDirty || !isObject(tab.input)) continue;
+      // a diff tab edits its modified side
+      for (const uri of [tab.input.uri, tab.input.modified]) {
+        if (isUri(uri)) out.push({ uri, isDirty: true });
+      }
+    }
+  }
+  return out;
+}
+
+const SWITCH_KEYS = ['repo', 'folder', 'branch', 'latest', 'shelve', 'remote'] as const;
+
+// switchParams rebuilds the params of a switch from exactly the keys the core
+// reads, or is undefined when the folder is not text. The core matches keys
+// without case and keeps the last of duplicate keys, so the original object
+// could name another folder than the one checked here.
+function switchParams(params: unknown): Record<string, unknown> | undefined {
+  if (!isObject(params) || !isText(params.folder)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const k of SWITCH_KEYS) {
+    if (params[k] !== undefined) out[k] = params[k];
   }
   return out;
 }
@@ -144,11 +186,9 @@ export function unsavedUnder(
 // unsavedRefusal is the answer to a switch of a folder that has open files with
 // unsaved changes: git would change those files under the editor. The core is
 // not asked.
-function unsavedRefusal(params: unknown): object | undefined {
-  const folder = isObject(params) ? params.folder : undefined;
-  if (!isText(folder)) return undefined;
+function unsavedRefusal(folder: string): object | undefined {
   // notebooks hold their unsaved state on the notebook, not on its cells
-  const docs = [...vscode.workspace.textDocuments, ...(vscode.workspace.notebookDocuments ?? [])];
+  const docs = [...vscode.workspace.textDocuments, ...(vscode.workspace.notebookDocuments ?? []), ...dirtyTabs()];
   const files = unsavedUnder(folder, docs);
   if (files.length === 0) return undefined;
   return {
@@ -185,10 +225,16 @@ export async function handleWebviewMessage(msg: unknown, deps: BridgeDeps): Prom
       if (id === undefined) return;
       if (typeof msg.method !== 'string' || !METHOD_NAME.test(msg.method)) return fail('bad-message', vscode.l10n.t('Invalid method.'));
       if (msg.params !== undefined && !isObject(msg.params)) return fail('bad-message', vscode.l10n.t('Invalid parameters.'));
-      const refused = msg.method === 'switch' ? unsavedRefusal(msg.params) : undefined;
-      if (refused) {
-        deps.post({ type: 'result', id, result: refused });
-        return;
+      let params = msg.params as object | undefined;
+      if (msg.method === 'switch') {
+        const checked = switchParams(msg.params);
+        if (!checked) return fail('bad-message', vscode.l10n.t('Invalid parameters.'));
+        const refused = unsavedRefusal(checked.folder as string);
+        if (refused) {
+          deps.post({ type: 'result', id, result: refused });
+          return;
+        }
+        params = checked;
       }
       const started = Date.now();
       try {
@@ -196,7 +242,7 @@ export async function handleWebviewMessage(msg: unknown, deps: BridgeDeps): Prom
           // the problems go first, so the page never shows a plain "no repository" for a failed discovery
           deps.post({ type: 'discovery', problems: await deps.beforeRepos() });
         }
-        const result = await deps.core.call(msg.method, msg.params as object | undefined, undefined, deps.signal);
+        const result = await deps.core.call(msg.method, params, undefined, deps.signal);
         deps.post({ type: 'result', id, result });
       } catch (e: any) {
         const code = String(e?.code ?? 'error');

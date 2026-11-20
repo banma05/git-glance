@@ -9,12 +9,20 @@ const h = vi.hoisted(() => ({
   showErrorMessage: vi.fn(async (_m: string) => undefined),
   docs: [] as Array<{ uri: { scheme: string; fsPath: string }; isDirty: boolean }>,
   notebooks: [] as Array<{ uri: { scheme: string; fsPath: string }; isDirty: boolean }>,
+  tabs: [] as Array<{ isDirty: boolean; input: unknown }>,
 }));
 
 vi.mock('vscode', () => ({
   commands: { executeCommand: h.executeCommand },
   env: { clipboard: { writeText: h.writeText } },
-  window: { showErrorMessage: h.showErrorMessage },
+  window: {
+    showErrorMessage: h.showErrorMessage,
+    tabGroups: {
+      get all() {
+        return [{ tabs: h.tabs }];
+      },
+    },
+  },
   workspace: {
     get textDocuments() {
       return h.docs;
@@ -46,6 +54,7 @@ beforeEach(() => {
   h.showErrorMessage.mockClear();
   h.docs = [];
   h.notebooks = [];
+  h.tabs = [];
   deps = { core: { call } as any, post: (m) => posted.push(m), openWide: openWide as any, log: () => {} };
 });
 
@@ -122,6 +131,49 @@ describe('switch under unsaved editors', () => {
     }
   });
 
+  it('refuses switch while a custom editor under the folder is dirty', async () => {
+    const image = { scheme: 'file', fsPath: path.join(root, 'img', 'logo.png') };
+    h.tabs = [
+      { isDirty: true, input: { uri: image, viewType: 'imagePreview' } },
+      { isDirty: true, input: { original: { scheme: 'git', fsPath: '/x' }, modified: { scheme: 'file', fsPath: path.join(root, 'b.ts') } } },
+      { isDirty: true, input: undefined }, // a terminal or webview: nothing to place
+      { isDirty: false, input: { uri: { scheme: 'file', fsPath: path.join(root, 'saved.ts') } } },
+    ];
+    h.docs = [doc(path.join(root, 'b.ts'), true)]; // the same file as the diff tab: listed once
+    await handleWebviewMessage({ type: 'call', id: 13, method: 'switch', params }, deps);
+    expect(call).not.toHaveBeenCalled();
+    expect(posted[0].result).toMatchObject({ ok: false, reason: 'unsaved-editors', files: ['b.ts', 'img/logo.png'] });
+  });
+
+  it('forwards only the keys it checked, so another spelling of folder cannot slip past', async () => {
+    const clean = fs.mkdtempSync(path.join(os.tmpdir(), 'gg-clean-'));
+    h.docs = [doc(path.join(root, 'src', 'login.ts'), true)];
+    // the core reads keys without case and keeps the last of duplicate keys
+    const sneaky = { ...params, folder: clean, Folder: root, FOLDER: root, extra: 1 };
+    await handleWebviewMessage({ type: 'call', id: 14, method: 'switch', params: sneaky }, deps);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call.mock.calls[0][1]).toEqual({ ...params, folder: clean });
+  });
+
+  it('refuses a switch whose folder is not text, without asking the core', async () => {
+    h.docs = [doc(path.join(root, 'src', 'login.ts'), true)];
+    const { folder: _folder, ...rest } = params;
+    const bad: Array<[number, object | undefined]> = [
+      [15, { ...rest, FOLDER: root }],
+      [16, { ...rest, folder: 5, Folder: root }],
+      [17, { ...rest, folder: '' }],
+      [18, undefined],
+    ];
+    for (const [id, p] of bad) await handleWebviewMessage({ type: 'call', id, method: 'switch', params: p }, deps);
+    expect(call).not.toHaveBeenCalled();
+    expect(posted.map((m) => [m.id, m.error?.code])).toEqual([
+      [15, 'bad-message'],
+      [16, 'bad-message'],
+      [17, 'bad-message'],
+      [18, 'bad-message'],
+    ]);
+  });
+
   it('leaves other writes alone', async () => {
     h.docs = [doc(path.join(root, 'src', 'login.ts'), true)];
     await handleWebviewMessage({ type: 'call', id: 9, method: 'align', params: { repo: root } }, deps);
@@ -132,10 +184,20 @@ describe('switch under unsaved editors', () => {
 describe('unsavedUnder', () => {
   const d = (fsPath: string, isDirty = true) => ({ uri: { scheme: 'file', fsPath }, isDirty });
 
-  it('compares paths without case on Windows only', () => {
+  it('compares paths without case on every system', () => {
     const docs = [d('C:\\Work\\Repo\\src\\a.ts'), d('c:/work/repo/b.ts'), d('C:\\Work\\Repo2\\c.ts')];
     expect(unsavedUnder('c:\\work\\repo\\', docs, 'win32')).toEqual(['src/a.ts', 'b.ts']);
-    expect(unsavedUnder('/home/dev/Repo', [d('/home/dev/repo/a.ts'), d('/home/dev/Repo/b.ts')], 'linux')).toEqual(['b.ts']);
+    const mac = [d('/Users/dev/repo/a.ts'), d('/Users/dev/Repo/B.ts'), d('/Users/dev/Repo2/c.ts')];
+    expect(unsavedUnder('/Users/dev/Repo', mac, 'darwin')).toEqual(['a.ts', 'B.ts']);
+    expect(unsavedUnder('/home/dev/Repo', [d('/home/dev/repo/a.ts'), d('/home/dev/Repo/b.ts')], 'linux')).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('never resolves a network path', () => {
+    const real = vi.fn((p: string) => p);
+    const docs = [d('//host/share/repo/a.ts'), d('/home/dev/other/b.ts')];
+    expect(unsavedUnder('//host/share/repo', docs, 'linux', real)).toEqual(['a.ts']);
+    expect(unsavedUnder('\\\\host\\share\\repo', [d('\\\\host\\share\\repo\\c.ts')], 'win32', real)).toEqual(['c.ts']);
+    expect(real.mock.calls.map((c) => c[0])).toEqual(['/home/dev/other/b.ts']);
   });
 
   it('skips saved and non-file documents', () => {
